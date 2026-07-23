@@ -1,0 +1,94 @@
+name: CI - PR 自动检查
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+
+jobs:
+  lint-and-type-check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ruff 代码风格检查
+        run: ruff check app/ tests/ contracts/
+
+      - name: MyPy 类型检查
+        run: mypy app/ contracts/ --strict --ignore-missing-imports
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: prd2tsd
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 技术栈合规测试
+        run: pytest tests/test_tech_stack_compliance.py -v
+
+      - name: 注释完整性测试
+        run: pytest tests/test_lint.py -v
+
+      - name: 单元测试
+        run: pytest tests/unit/ -v --tb=short
+
+      - name: 集成测试
+        run: pytest tests/integration/ -v --tb=short
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/prd2tsd
+
+  tech-stack-compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查禁止依赖
+        run: |
+          if grep -qi "langchain\|chromadb\|qdrant-client\|flask\|django\|redis\|celery" requirements.txt; then
+            echo "❌ 发现禁止的依赖包"
+            exit 1
+          fi
+          echo "✅ 技术栈合规检查通过"

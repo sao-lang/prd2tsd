@@ -1,0 +1,104 @@
+# PRD2TechSpec 技术栈声明
+# 此文件是唯一权威的技术选型清单。
+# 任何新依赖必须在此登记，黑名单中的库不得出现在任何 import 中。
+
+framework:
+  agent_orchestration: langgraph    # LangGraph StateGraph
+  rag: llamaindex                   # PropertyGraphIndex（禁用 langchain）
+  llm_client: openai                # OpenAI SDK（兼容 DeepSeek API）
+
+embedding:
+  model: BAAI/bge-large-zh-v1.5
+  dimension: 1024
+  provider: huggingface             # sentence-transformers
+
+storage:
+  vector: pgvector                  # PostgreSQL 16 扩展
+  graph: neo4j                      # 5.x Community
+  cache: redis                      # 7.x
+  object: minio                     # 文档/图片存储
+
+# === 测试 & 质量 ===
+test:
+  runner: pytest
+  async: pytest-asyncio
+  linter: ruff
+  type_checker: mypy
+
+# === 黑名单（禁止引入） ===
+# langchain 生态（已指定 LlamaIndex）
+forbidden:
+  - langchain
+  - langchain-core
+  - langchain-community
+  - langchain-openai
+  - langchain-anthropic
+  - langchain-google-genai
+  - langchain-text-splitters
+  - langchainhub
+  - chromadb                     # 已指定 PGVector
+  - qdrant-client
+  - weaviate-client
+  - milvus
+  - pinecone-client
+  - celery                       # Phase 5 前不用
+  - redis                        # Phase 5 前不用
+  - flask
+  - django
+
+llm_models:
+  primary: deepseek-v3
+  fallback: gpt-4o-mini
+  judge: gpt-4o-mini                # 评测用低成本模型
+
+api:
+  framework: fastapi
+  async_worker: celery              # Phase 1 引入
+
+observability:
+  tracing: opentelemetry
+  metrics: prometheus
+  dashboard: grafana
+  llm_observability: langfuse
+
+document_parsing:
+  pdf: docling                      # 或 unstructured
+  docx: python-docx
+  html: readability-lxml
+
+# 白名单：允许导入的顶级包
+allowed:
+  - langgraph
+  - llama_index
+  - openai
+  - fastapi
+  - uvicorn
+  - pydantic
+  - pydantic_settings
+  - psycopg2
+  - neo4j
+  - redis
+  - minio
+  - celery
+  - prometheus_client
+  - opentelemetry
+  - langfuse
+  - docling
+  - readability
+  - beautifulsoup4
+  - pandas
+  - weasyprint
+  - python_docx
+  - httpx
+  - pytest
+  - ruff
+  - mypy
+
+# 黑名单：禁止出现在任何 import 中
+excluded:
+  - langchain
+  - chromadb
+  - pinecone
+  - weaviate
+  - milvus
+  - qdrant_client

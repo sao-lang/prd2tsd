@@ -1,0 +1,28 @@
+name: 定时备份
+
+on:
+  schedule:
+    # 每天 UTC 3:00 执行备份
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 备份 PostgreSQL
+        run: |
+          echo "备份 PostgreSQL 数据库..."
+          # VIBE_DEFER(块 D): 添加实际 pg_dump 命令
+          # pg_dump -h ${{ secrets.DB_HOST }} -U ${{ secrets.DB_USER }} \
+          #   -d prd2tsd -f prd2tsd-backup-$(date +%Y%m%d).sql
+
+      - name: 上传备份到 S3 兼容存储
+        run: |
+          echo "上传备份文件..."
+          # VIBE_DEFER(块 D): 添加实际 S3 上传命令
+
+      - name: 清理 30 天前的备份
+        run: |
+          echo "清理旧备份..."
