@@ -9,6 +9,7 @@ applyTo: '**/*.py'
 - 异常处理：捕获具体异常类型，禁止 `except: pass`
 - 使用 `pathlib` 而非 `os.path`
 - 遵循 PEP 8 规范
+- 使用uv、ruff等工具
 
 ## 注释规范
 
@@ -33,4 +34,4 @@ applyTo: '**/*.py'
 - 运行 `ruff check .` 检查代码质量（替代 flake8，速度更快）
 - 运行 `ruff format .` 格式化代码（替代 black，与 ruff 无缝集成）
 - 运行 `mypy .` 检查类型注解
-- 确保 `ruff check` 无 error 和 warning
+- 确保 `ruff check` 无 error 和 warning，确保代码无flake和pylance报错

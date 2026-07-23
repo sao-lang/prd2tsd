@@ -1,0 +1,38 @@
+# === Web Framework ===
+fastapi>=0.110
+uvicorn[standard]
+
+# === ORM & Database ===
+sqlalchemy>=2.0
+asyncpg
+alembic
+
+# === Config ===
+pydantic-settings>=2.0
+
+# === Auth ===
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt>=4.0
+
+# === LLM Gateway ===
+openai>=1.0
+
+# === Infrastructure Clients ===
+redis[hiredis]>=5.0
+minio>=7.0
+neo4j>=5.0
+
+# === Data Security ===
+httpx
+
+# === Testing ===
+aiosqlite
+pytest-asyncio
+
+# === Dev / Test ===
+pytest>=8.0
+pytest-asyncio
+pytest-cov
+ruff
+mypy
