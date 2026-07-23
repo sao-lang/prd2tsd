@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request
 
-from app.auth.middleware import _SCOPE_ORG_ID, _SCOPE_USER_ID, _SCOPE_WS_ID, _SCOPE_PERMISSIONS
+from app.auth.middleware import _SCOPE_ORG_ID, _SCOPE_PERMISSIONS, _SCOPE_USER_ID, _SCOPE_WS_ID
 from app.auth.permissions import permission_checker
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
 

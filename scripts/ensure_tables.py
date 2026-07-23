@@ -1,8 +1,13 @@
 """确保数据库表存在。"""
-import asyncio, sys, os
+import asyncio
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.models.base import Base
+
 
 async def main():
     engine = create_async_engine("postgresql+asyncpg://postgres:postgres@localhost:5432/prd2tsd")

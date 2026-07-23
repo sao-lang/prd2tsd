@@ -1,6 +1,7 @@
 # === Web Framework ===
 fastapi>=0.110
 uvicorn[standard]
+python-multipart>=0.0.9
 
 # === ORM & Database ===
 sqlalchemy>=2.0
@@ -22,6 +23,14 @@ openai>=1.0
 redis[hiredis]>=5.0
 minio>=7.0
 neo4j>=5.0
+
+# === Knowledge Layer (Block B) ===
+llama-index-core>=0.11.0
+llama-index-graph-stores-neo4j>=0.3.0
+llama-index-vector-stores-postgres>=0.3.0
+llama-index-embeddings-huggingface>=0.4.0
+sentence-transformers>=3.0
+pgvector>=0.3.0
 
 # === Data Security ===
 httpx

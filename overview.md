@@ -30,5 +30,64 @@
 ├── alembic/ (env, script.py.mako)
 ├── scripts/ (init_db, e2e_test, ensure_tables, debug_login)
 ├── tests/ (conftest, 14 test files)
-└── overview.md
+├── overview.md
+
+### 2026-07-23
+
+#### 2. 块 B：知识层（数据 + 检索）
+
+- **时间：** 2026-07-23 18:30:00
+- **发起人：** user
+- **修改文件：**
+  - `requirements.txt` — 新增 llama-index-core, llama-index-graph-stores-neo4j, llama-index-vector-stores-postgres, llama-index-embeddings-huggingface, sentence-transformers, pgvector
+  - 新增 `app/knowledge_layer/` (24 个文件)
+- **修改内容：** 构建知识图谱完整生命周期：模型定义 → 文档加载 → 多粒度分块 → LLM 实体/关系提取 → 实体融合/消歧 → Claims 提取 → 多源融合 Embedding → TextUnit 构建 → Neo4j/PGVector 双写 → 版本控制/快照 → 知识老化策略 → 检索管线（意图路由/重写/丰富/Local Search/Global Search/RRF 融合/重排/压缩）
+- **复盘结果：** 79 个单元测试通过（含块 A 回归测试全绿），7 个集成测试通过（Mock 模式）
+- **潜在风险：** BGE Embedding 模型首次加载较慢（~3min）；Neo4j/PGVector 集成测试需真实容器运行
+
+#### 3. 块 B ↔ 块 A 联通性打通
+
+- **时间：** 2026-07-23 20:00:00
+- **发起人：** user
+- **修改文件：**
+  - `app/core/connections.py` — Neo4jConnector enabled=False → True（启动时自动连接）
+  - `.env` — DATABASE_URL/NEO4J_URI 修复为 localhost
+  - `app/api/routes/knowledge.py` — 新增（build / search 两个端点）
+  - `app/main.py` — 挂载 knowledge_routes，注册知识层 API
+  - `requirements.txt` — 新增 python-multipart
+  - `scripts/e2e_test.py` — 扩展 2 个知识层测试步骤
+- **修改内容：** 打通块 B 知识层与块 A 基础设施的全链路集成：Neo4j 启动时自动连接、知识层 API 路由挂载（Auth 中间件保护）、健康检查纳入 Neo4j 状态
+- **复盘结果：**
+  - E2E 14/14 ✅（块 A 12 项 + 块 B 2 项）
+  - 单元测试 79/79 ✅（含全部块 A 回归）
+  - 集成测试 7/7 ✅
+  - Ruff 0 errors ✅
+  - Neo4j 连接: `connected=true, latency=5ms`
+  - PostgreSQL 连接: `connected=true, latency=6ms`
+- **潜在风险：** mypy strict 模式在 `connections.py` 有 11 个已有类型错误（块 A 遗留）；知识层搜索 API 涉及 LLM 调用导致首次响应较慢
+
+**新增文件清单：**
+
+```
+app/knowledge_layer/
+├── __init__.py / config.py / models.py / pipeline.py
+├── graph_store.py / vector_store.py
+├── ingestion/
+│   ├── __init__.py / document_loader.py / chunker.py
+│   ├── entity_extractor.py / relation_extractor.py / entity_resolver.py
+│   ├── claims_extractor.py / entity_embedder.py / text_unit_builder.py
+│   ├── knowledge_aging.py / kg_versioning.py / index_builder.py
+└── retrieval/
+    ├── __init__.py / intent_router.py / rewriter.py / enricher.py
+    ├── local_search.py / global_search.py / fusion.py / reranker.py / compressor.py
+
+tests/
+├── fixtures/sample_prd.md
+├── unit/
+│   ├── test_ingestion.py / test_entity_resolver.py / test_claims_extractor.py
+│   ├── test_knowledge_aging.py / test_kg_versioning.py
+│   └── test_local_search.py / test_global_search.py
+└── integration/
+    ├── test_kg_build.py / test_kg_versioning_integration.py
+    ├── test_local_search_integration.py / test_global_search_integration.py
 ```

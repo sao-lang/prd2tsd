@@ -36,7 +36,9 @@ async def init_database() -> None:
     print("✅ 所有表已创建")
 
     # 创建会话
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
 
     async with session_factory() as session:
         # 检查是否需要插入初始数据
@@ -63,17 +65,29 @@ async def init_database() -> None:
                     name="admin",
                     is_system=True,
                     permissions=[
-                        "workspace:create", "workspace:read", "workspace:update",
-                        "workspace:delete", "workspace:manage_members",
-                        "prd:create", "prd:read", "prd:update", "prd:delete",
-                        "model_config:read", "model_config:update",
+                        "workspace:create",
+                        "workspace:read",
+                        "workspace:update",
+                        "workspace:delete",
+                        "workspace:manage_members",
+                        "prd:create",
+                        "prd:read",
+                        "prd:update",
+                        "prd:delete",
+                        "model_config:read",
+                        "model_config:update",
                     ],
                 ),
                 Role(
                     organization_id=org.id,
                     name="editor",
                     is_system=True,
-                    permissions=["workspace:read", "prd:create", "prd:read", "prd:update"],
+                    permissions=[
+                        "workspace:read",
+                        "prd:create",
+                        "prd:read",
+                        "prd:update",
+                    ],
                 ),
                 Role(
                     organization_id=org.id,

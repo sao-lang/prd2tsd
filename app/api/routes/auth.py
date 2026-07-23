@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
 import bcrypt as _bcrypt
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,89 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 logger = get_logger("prd2tsd.auth.routes")
 
 
+async def _create_user(db: AsyncSession, req: RegisterRequest) -> User:
+    """创建用户。
+
+    Args:
+        db: 数据库会话。
+        req: 注册请求。
+
+    Returns:
+        创建的用户。
+    """
+    hashed_pw = _bcrypt.hashpw(req.password.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
+    user = User(
+        email=req.email, display_name=req.display_name,
+        hashed_password=hashed_pw, auth_provider="jwt",
+        auth_id=req.email, status="active",
+    )
+    db.add(user)
+    await db.flush()
+    return user
+
+
+async def _create_default_org(db: AsyncSession, user: User) -> Organization:
+    """创建默认组织。
+
+    Args:
+        db: 数据库会话。
+        user: 用户对象。
+
+    Returns:
+        创建的组织。
+    """
+    org = Organization(
+        name=f"{user.display_name}的组织",
+        slug=f"org-{user.id[:8]}", plan="free",
+    )
+    db.add(org)
+    await db.flush()
+    return org
+
+
+async def _create_personal_workspace(db: AsyncSession, org: Organization, user: User) -> Workspace:
+    """创建个人工作空间。
+
+    Args:
+        db: 数据库会话。
+        org: 组织对象。
+        user: 用户对象。
+
+    Returns:
+        创建的工作空间。
+    """
+    ws = Workspace(
+        organization_id=org.id,
+        name=f"{user.display_name}的工作空间",
+        slug=f"ws-{user.id[:8]}",
+    )
+    db.add(ws)
+    await db.flush()
+    return ws
+
+
+async def _create_default_role(db: AsyncSession, org: Organization) -> Role:
+    """创建默认 admin 角色。
+
+    Args:
+        db: 数据库会话。
+        org: 组织对象。
+
+    Returns:
+        创建的角色。
+    """
+    permissions = [
+        "workspace:create", "workspace:read", "workspace:update",
+        "workspace:delete", "workspace:manage_members",
+        "prd:create", "prd:read", "prd:update", "prd:delete",
+        "model_config:read", "model_config:update",
+    ]
+    role = Role(organization_id=org.id, name="admin", is_system=True, permissions=permissions)
+    db.add(role)
+    await db.flush()
+    return role
+
+
 @router.post("/register", response_model=TokenResponse, status_code=201)
 async def register(
     req: RegisterRequest,
@@ -40,75 +123,22 @@ async def register(
     Raises:
         HTTPException: 邮箱已注册时抛出 409。
     """
-    # 检查邮箱是否已注册
     result = await db.execute(select(User).where(User.email == req.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="邮箱已注册")
 
-    # 创建用户
-    hashed_pw = _bcrypt.hashpw(req.password.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
-    user = User(
-        email=req.email,
-        display_name=req.display_name,
-        hashed_password=hashed_pw,
-        auth_provider="jwt",
-        auth_id=req.email,
-        status="active",
-    )
-    db.add(user)
-    await db.flush()
-
-    # 创建默认组织
-    org = Organization(
-        name=f"{req.display_name}的组织",
-        slug=f"org-{user.id[:8]}",
-        plan="free",
-    )
-    db.add(org)
-    await db.flush()
-
-    # 创建个人工作空间
-    ws = Workspace(
-        organization_id=org.id,
-        name=f"{req.display_name}的工作空间",
-        slug=f"ws-{user.id[:8]}",
-    )
-    db.add(ws)
-    await db.flush()
-
-    # 创建默认角色
-    admin_role = Role(
-        organization_id=org.id,
-        name="admin",
-        is_system=True,
-        permissions=[
-            "workspace:create", "workspace:read", "workspace:update",
-            "workspace:delete", "workspace:manage_members",
-            "prd:create", "prd:read", "prd:update", "prd:delete",
-            "model_config:read", "model_config:update",
-        ],
-    )
-    db.add(admin_role)
-    await db.flush()
-
-    # 添加团队成员
-    member = TeamMember(
-        workspace_id=ws.id,
-        user_id=user.id,
-        role_id=admin_role.id,
-    )
-    db.add(member)
+    user = await _create_user(db, req)
+    org = await _create_default_org(db, user)
+    ws = await _create_personal_workspace(db, org, user)
+    admin_role = await _create_default_role(db, org)
+    db.add(TeamMember(workspace_id=ws.id, user_id=user.id, role_id=admin_role.id))
     await db.commit()
 
-    # 签发 Token
     access_token = token_manager.create_access_token(
-        user_id=str(user.id),
-        org_id=str(org.id),
-        ws_id=str(ws.id),
-        permissions=admin_role.permissions,
+        user_id=str(user.id), org_id=str(org.id),
+        ws_id=str(ws.id), permissions=admin_role.permissions,
     )
     refresh_token = token_manager.create_refresh_token(str(user.id))
-
     logger.info("用户注册成功: %s", req.email)
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 

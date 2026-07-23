@@ -13,7 +13,7 @@ from app.llm_gateway.models import (
     LLMResponse,
     RerankResponse,
 )
-from app.llm_gateway.provider import ProviderFactory
+from app.llm_gateway.providers import ProviderFactory
 from app.llm_gateway.router import ModelRouter
 
 # 全局单例
