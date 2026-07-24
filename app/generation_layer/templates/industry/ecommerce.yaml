@@ -1,0 +1,42 @@
+# 电商行业模板
+sections:
+  - id: project_overview
+    title: 项目概述
+    level: 1
+    required: true
+  - id: business_flow
+    title: 业务流程
+    level: 1
+    required: true
+  - id: overall_architecture
+    title: 总体架构
+    level: 1
+    required: true
+  - id: module_design
+    title: 模块详细设计
+    level: 1
+    required: true
+  - id: data_design
+    title: 数据设计
+    level: 1
+    required: true
+  - id: api_design
+    title: API 设计
+    level: 1
+    required: true
+  - id: payment_design
+    title: 支付设计
+    level: 1
+    required: true
+  - id: inventory_design
+    title: 库存设计
+    level: 1
+    required: true
+  - id: deployment
+    title: 部署方案
+    level: 1
+    required: true
+  - id: security
+    title: 安全设计
+    level: 1
+    required: true

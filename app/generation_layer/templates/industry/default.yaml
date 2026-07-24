@@ -1,0 +1,38 @@
+# 默认行业模板
+sections:
+  - id: project_overview
+    title: 项目概述
+    level: 1
+    required: true
+  - id: overall_architecture
+    title: 总体架构
+    level: 1
+    required: true
+  - id: module_design
+    title: 模块详细设计
+    level: 1
+    required: true
+  - id: tech_stack
+    title: 技术栈
+    level: 1
+    required: true
+  - id: data_design
+    title: 数据设计
+    level: 1
+    required: true
+  - id: api_design
+    title: API 设计
+    level: 1
+    required: true
+  - id: deployment
+    title: 部署方案
+    level: 1
+    required: true
+  - id: security
+    title: 安全设计
+    level: 1
+    required: false
+  - id: qa
+    title: 质量保证
+    level: 1
+    required: false

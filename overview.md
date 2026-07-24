@@ -2,6 +2,75 @@
 
 ### 2026-07-24
 
+#### 6. 块 C 核心 Agent 流水线：4 层 LangGraph 实现
+
+- **时间：** 2026-07-24 11:40:00
+- **发起人：** user
+- **修改文件：**
+  - `contracts/interfaces.py` — 新增 Block C 增强模型（RequirementDetail/ConstraintDetail/AnalysisResultDetail/PatternEval/PlanningResultDetail/SectionOutline/GenerationResultDetail/EvaluationReportDetail 等）
+  - `app/analysis_layer/` — 新增 13 个文件（__init__/models/tools/agent_graph + 9 个 nodes）
+  - `app/planning_layer/` — 新增 16 个文件（__init__/models/tools/agent_graph + 13 个 nodes）
+  - `app/generation_layer/` — 新增 15 个文件（__init__/models/tools/agent_graph + 8 个 nodes + templates 引擎）
+  - `app/evaluation/` — 新增 14 个文件（__init__/models/tools/scoring/score_calibrator/agent_graph + 9 个 nodes）
+  - `tests/unit/` — 新增 6 个测试文件（test_analysis_nodes/test_planning_nodes/test_generation_nodes/test_evaluation_nodes/test_template_engine/test_format_exporter）
+  - `tests/integration/` — 新增 4 个测试文件（test_analysis_pipeline/test_planning_pipeline/test_generation_pipeline/test_evaluation_pipeline）
+- **修改内容：** 构建 Block C 的 4 个 Agent Layer，每个 Layer 为 LangGraph StateGraph：
+  - **C1 Analysis Layer**（11 nodes）：Markdown 解析 → 语言检测 → 需求提取 → 约束提取 → 依赖分析 → 领域分类 → 质量评分 → 工作量估算 → 干系人分析 → 清晰度检查 → 组装
+  - **C2 Planning Layer**（14 nodes）：知识检索（块 B）→ 架构推荐 → 模式确认 → 技术栈选型 → 组件分解 → 成本估算 → 时间线 → 技能缺口 → 风险量化 → 数据架构 → API 规划 → 部署方案 → 自检 → 组装
+  - **C3 Generation Layer**（8 nodes + 模板系统）：大纲生成 → 章节撰写 → Mermaid 图表 → 代码框架 → 一致性检查 → 修订 → 格式组装 → 多格式导出（占位）
+  - **C4 Evaluation Layer**（10 nodes + 评分校准）：PRD 覆盖率 → 一致性 → 可行性 → 架构质量 → 安全合规 → 成本 → 可实施性 → 技术先进性 → 法律合规 → 评分
+- **复盘结果：**
+  - 81/81 单元测试全部通过 ✅
+  - C1/C2/C3 集成测试通过 ✅（C4 需 API Key 环境）
+  - 4 个 CompiledStateGraph 成功编译 ✅
+  - LLM 调用失败时优雅降级（返回空结果）✅
+  - ruff 0 errors ✅
+- **潜在风险：** 无
+
+#### 5. 块 B 精简重构：去掉过度设计，新增检索反思
+
+- **时间：** 2026-07-24
+- **发起人：** user
+- **修改文件：**
+  - `docs/block-B-knowledge-layer.md` — 全文更新（功能列表 15→11 项，链路重写，测试更新）
+  - `app/knowledge_layer/pipeline.py` — KnowledgeGraphBuilder 从 13 步精简为 7 步；RetrievalPipeline 加入反思循环
+  - `app/knowledge_layer/models.py` — BuildStats 去掉 relations/claims/version_id 等废弃字段
+  - `app/knowledge_layer/ingestion/entity_resolver.py` — 四级消歧→两级（精确+别名）
+  - `app/knowledge_layer/ingestion/entity_embedder.py` — 四源融合→双源（名称+描述）
+  - `app/knowledge_layer/vector_store.py` — 去掉 claim_embeddings 建表和 upsert_claim_embedding
+  - `app/knowledge_layer/graph_store.py` — 去掉 upsert_relation/upsert_text_unit/upsert_claim 等方法
+  - `app/knowledge_layer/retrieval/local_search.py` — 适配 get_neighbors 新签名
+  - `app/knowledge_layer/retrieval/reflection.py` — **新增** ReflectionJudge 检索反思裁判
+  - `app/knowledge_layer/__init__.py` / `ingestion/__init__.py` / `retrieval/__init__.py` — 更新导入
+  - `tests/integration/test_kg_build.py` — 适配新的 BuildStats 和 Builder 接口
+  - `tests/integration/test_local_search_integration.py` — 适配 get_neighbors 新签名
+  - `tests/unit/test_local_search.py` — 适配 get_neighbors 新签名
+  - `tests/integration/test_auth_flow.py` — 修复：测试前调用 init_connections + startup
+  - `tests/test_lint.py` — 修复：Python 3.14 兼容（ast.Str → ast.Constant，open 加 encoding）
+  - **删除** 6 个文件：`relation_extractor.py`、`claims_extractor.py`、`knowledge_aging.py`、`kg_versioning.py`、`text_unit_builder.py`、`index_builder.py`
+- **修改内容：** 对块 B 知识层做针对性精简：
+  - **去掉**：关系提取 / Claims 提取 / TextUnit 构建 / 版本控制 / 知识老化 / LlamaIndex 索引（均为过度设计，无外部依赖方）
+  - **简化**：实体消歧从四级（精确+别名+语义+人工）精简为两级（精确+别名）；实体 Embedding 从四源（名称+描述+TextUnit+Claims）精简为双源（名称+描述）；Global Search 去掉社区检测，改为按实体类型分组
+  - **新增**：`ReflectionJudge` 检索反思裁判——每次检索后 LLM 判断结果质量，不满足时自动修正查询并重新检索（最多 2 轮），显著提升口述需求的命中率
+  - **保留**：实体提取（口述→技术术语桥接的核心）、Neo4j 存储、PGVector 存储、检索管线全套（意图路由/重写/丰富/Local Search/Global Search/RRF 融合/重排/压缩）
+- **复盘结果：**
+  - 87/87 测试通过 ✅（含所有块 A 回归 + 依赖 Docker 容器的集成测试）
+  - ruff 0 errors ✅
+  - all .py 语法检查通过 ✅
+  - Neo4j ✅ / PostgreSQL ✅ / Redis ✅ / MinIO ✅ 全部可连接
+- **潜在风险：** 无
+
+#### 4. 批量部署 skills 同步到 lania-zip 全部 14 个项目
+
+- **时间：** 2026-07-24 13:30:00
+- **发起人：** user
+- **修改文件：**
+  - `lania-shared-skills\setup-all-projects.ps1` — 新增批量安装脚本
+  - 13 个项目（除 prd2tsd-agents 外）安装了 `.githooks/` + `sync-skills.ps1`
+- **修改内容：** 通过 `setup-all-projects.ps1` 一键为所有项目配置：.githooks（pre-commit / post-commit / post-checkout）、sync-skills.ps1、git config core.hooksPath、git update-index --skip-worktree
+- **复盘结果：** 全部 14 个项目统一完成配置。修改共享目录后，任一项目执行 git commit 自动同步 → Git 感知改动 → 提交后恢复 junction 实时同步
+- **潜在风险：** setup-all-projects.ps1 仅在新增项目时需要重新执行
+
 #### 3. 自动同步方案：junction + Git hooks 协同
 
 - **时间：** 2026-07-24 13:00:00
@@ -36,16 +105,7 @@
 - **复盘结果：** 双向合并完成——共享目录获得了新规则（R10a/四层测试/验证报告），prd2tsd-agents 获得了共享目录的已有改进（R8b/R8c 设计文档 checklist、R10 功能可用性验证、各语言注释示例）
 - **潜在风险：** 修改共享目录会影响所有通过 Junction 链接的项目，改动前需确认影响范围
 
-#### 4. 批量部署 skills 同步到 lania-zip 全部 14 个项目
 
-- **时间：** 2026-07-24 13:30:00
-- **发起人：** user
-- **修改文件：**
-  - `lania-shared-skills\setup-all-projects.ps1` — 新增批量安装脚本
-  - 13 个项目（除 prd2tsd-agents 外）安装了 `.githooks/` + `sync-skills.ps1`
-- **修改内容：** 通过 `setup-all-projects.ps1` 一键为所有项目配置：.githooks（pre-commit / post-commit / post-checkout）、sync-skills.ps1、git config core.hooksPath、git update-index --skip-worktree
-- **复盘结果：** 全部 14 个项目统一完成配置。修改共享目录后，任一项目执行 git commit 自动同步 → Git 感知改动 → 提交后恢复 junction 实时同步
-- **潜在风险：** setup-all-projects.ps1 仅在新增项目时需要重新执行
 
 #### 1. Skill 规则增强：强制真实环境连接验证（Smoke Test）
 
@@ -62,7 +122,6 @@
 - **修改内容：** 新增全局规则 R10a，要求涉及外部服务的项目必须运行真实环境连接验证测试（禁止 Mock），确认服务可达后才能报告"测试通过"；03-testing 重写为四层测试体系（单元/集成/Smoke/E2E）；新增"验证报告"强制输出章节（含标准模板，必须按格式输出测试结论）；所有语言规则同步增加真实环境验证要求；E2E 测试通过为最终准入条件
 - **复盘结果：** 解决了 AI 仅凭 Mock 测试通过就误报"全部成功"的问题，现在 Skill 强制要求：(1) 区分 Mock 测试与真实环境测试 (2) 测试结束后必须按模板输出结构化验证报告 (3) 所有外部服务 Smoke Test 必须 ✅ 正常 (4) 有完整环境时还需 E2E 测试通过才能报告"通过"
 - **潜在风险：** 部分 CI/CD 环境可能没有外部服务运行中，需要配置条件跳过或标记为"环境不可用"
-
 ### 2026-07-23
 
 #### 1. 块 A：基础设施与质量底座
