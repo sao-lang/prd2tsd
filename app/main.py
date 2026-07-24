@@ -10,8 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import auth as auth_routes
+from app.api.routes import evaluate as evaluate_routes
+from app.api.routes import generate as generate_routes
 from app.api.routes import knowledge as knowledge_routes
 from app.api.routes import model_config as model_config_routes
+from app.api.routes import review as review_routes
 from app.api.routes import workspace as workspace_routes
 from app.api.routes import workspace_members as workspace_members_routes
 from app.api.schemas.response import HealthResponse
@@ -132,6 +135,9 @@ app.include_router(workspace_routes.router)
 app.include_router(workspace_members_routes.router)
 app.include_router(model_config_routes.router)
 app.include_router(knowledge_routes.router)
+app.include_router(generate_routes.router)
+app.include_router(review_routes.router)
+app.include_router(evaluate_routes.router)
 
 
 @app.get("/")

@@ -2,6 +2,36 @@
 
 ### 2026-07-24
 
+#### 7. 块 D 全链路串联 + API：Orchestrator + Adapter + 异步任务
+
+- **时间：** 2026-07-24 13:10:00
+- **发起人：** user
+- **修改文件：**
+  - `app/orchestrator/` — 新增 10 个文件（__init__/state/main_graph/routing/human_review/iteration + adapters/__init__ + 4 个 Adapter）
+  - `app/task_manager.py` — 新增（in-memory 异步任务管理器）
+  - `app/api/routes/generate.py` — 新增（POST /generate + GET /tasks/{id}）
+  - `app/api/routes/review.py` — 新增（GET /review/pending + POST /review/{id}/{stage}）
+  - `app/api/routes/evaluate.py` — 新增（POST /evaluate）
+  - `app/api/deps.py` — 新增 get_orchestrator 懒加载依赖
+  - `app/main.py` — 注册 3 个新路由
+  - `tests/unit/test_orchestrator.py` — 新增（16 个单元测试）
+  - `tests/integration/test_pipeline.py` — 新增（4 个集成测试）
+  - `tests/e2e/test_full_flow.py` — 新增（端到端测试，需 RUN_E2E_TESTS=1）
+- **修改内容：** 构建 Block D 全链路串联：
+  - **OrchestratorState**（TypedDict + TenantContext + make_initial_state）：串联 4 层全局状态
+  - **4 个 Adapter**（Analysis/Planning/Generation/Evaluation）：OrchestratorState ↔ LayerState 无损转换
+  - **KnowledgeRetrievalNode**：调用块 B RetrievalPipeline，失败时优雅降级
+  - **HumanReviewNode**：使用 LangGraph interrupt 机制暂停等待人工反馈
+  - **IterationDecider**：评分≥85 接受 / ≥70 按维度回退 / <70 迭代或人工介入
+  - **FinalAssemblyNode**：汇总输出
+  - **TaskManager**：asyncio.create_task + in-memory dict 管理任务生命周期
+- **复盘结果：**
+  - 16/16 单元测试通过 ✅
+  - 4/4 集成测试通过 ✅（Mock LLM + Mock Pipeline）
+  - ruff 0 errors, ruff format 已对齐 ✅
+  - 块 A/B/C 零修改 ✅（遵守铁律）
+- **潜在风险：** 无
+
 #### 6. 块 C 核心 Agent 流水线：4 层 LangGraph 实现
 
 - **时间：** 2026-07-24 11:40:00
