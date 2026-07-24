@@ -23,7 +23,7 @@ $SharedRoot = "E:\vsc-workspace\lania-shared-skills"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TargetDir = Join-Path $ProjectRoot ".github\skills"
 
-$Skills = @("ai-coding-rules", "debug-tools")
+$Skills = @("ai-coding-rules", "commit-rules", "debug-principles", "debug-tools", "doc-rules", "grill-me", "refactor-rules")
 
 # ── 辅助函数 ──
 
@@ -49,7 +49,7 @@ function Set-SkipWorktree($ProjectRoot) {
 
 function Copy-SharedToProject {
     Write-Host "🔄 复制真实文件到项目 ..." -ForegroundColor Cyan
-    @("ai-coding-rules", "debug-tools") | ForEach-Object {
+    $Skills | ForEach-Object {
         $src = Join-Path $SharedRoot $_
         $dst = Join-Path $TargetDir $_
         if (Test-Path $src) {
@@ -72,7 +72,7 @@ if (-not (Test-Path $SharedRoot)) {
 if ($ToReal) {
     # 移除 junction → 复制真实文件 → 清除 skip-worktree
     Write-Host "🔁 切换为真实文件模式（供 Git 提交）..." -ForegroundColor Yellow
-    @("ai-coding-rules", "debug-tools") | ForEach-Object {
+    $Skills | ForEach-Object {
         $p = Join-Path $TargetDir $_
         if ((Test-Path $p) -and (Test-IsJunction $p)) {
             cmd /c "rmdir /s /q $p" 2>$null
@@ -86,7 +86,7 @@ if ($ToReal) {
 elseif ($ToJunction) {
     # 移除真实文件 → 创建 junction → 设置 skip-worktree
     Write-Host "🔁 切换为 junction 模式（实时同步）..." -ForegroundColor Yellow
-    @("ai-coding-rules", "debug-tools") | ForEach-Object {
+    $Skills | ForEach-Object {
         $p = Join-Path $TargetDir $_
         if (Test-Path $p) {
             if (Test-IsJunction $p) {
