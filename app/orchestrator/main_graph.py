@@ -189,6 +189,7 @@ def build_and_compile(
     generation_graph: StateGraph,
     evaluation_graph: StateGraph,
     retrieval_pipeline: RetrievalPipeline | None = None,
+    use_checkpointer: bool = False,
 ) -> StateGraph:
     """构建并编译主编排 StateGraph。
 
@@ -198,10 +199,13 @@ def build_and_compile(
         generation_graph: 编译后的 Generation Layer StateGraph。
         evaluation_graph: 编译后的 Evaluation Layer StateGraph。
         retrieval_pipeline: RetrievalPipeline 实例（可选）。
+        use_checkpointer: 是否启用 MemorySaver checkpointer（用于 interrupt/resume）。
 
     Returns:
         编译后的主编排 StateGraph。
     """
+    from langgraph.checkpoint.memory import MemorySaver
+
     graph = build_orchestrator_graph(
         analysis_graph=analysis_graph,
         planning_graph=planning_graph,
@@ -209,4 +213,7 @@ def build_and_compile(
         evaluation_graph=evaluation_graph,
         retrieval_pipeline=retrieval_pipeline,
     )
+
+    if use_checkpointer:
+        return graph.compile(checkpointer=MemorySaver())
     return graph.compile()

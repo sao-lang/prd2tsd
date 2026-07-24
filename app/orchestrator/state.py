@@ -11,14 +11,14 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from contracts.interfaces import (
-    AnalysisResult,
-    Component,
-    Constraint,
+    AnalysisResultDetail,
+    ComponentDetail,
+    ConstraintDetail,
     EvaluationReportDetail,
     GenerationResultDetail,
-    PlanningResult,
-    Requirement,
-    TechChoice,
+    PlanningResultDetail,
+    RequirementDetail,
+    TechChoiceDetail,
 )
 
 
@@ -50,14 +50,14 @@ class OrchestratorState(TypedDict):
     knowledge_context: Any  # knowledge_layer.models.RetrievalContext | None
 
     # ── 块 C1 Analysis ──
-    analysis_result: AnalysisResult
-    extracted_requirements: list[Requirement]
-    extracted_constraints: list[Constraint]
+    analysis_result: AnalysisResultDetail
+    extracted_requirements: list[RequirementDetail]
+    extracted_constraints: list[ConstraintDetail]
 
     # ── 块 C2 Planning ──
-    planning_result: PlanningResult
-    component_decomposition: list[Component]
-    tech_stack_choices: list[TechChoice]
+    planning_result: PlanningResultDetail
+    component_decomposition: list[ComponentDetail]
+    tech_stack_choices: list[TechChoiceDetail]
 
     # ── 块 C3 Generation ──
     generation_result: GenerationResultDetail
@@ -124,19 +124,10 @@ def make_initial_state(
         "permissions": permissions or [],
         "tenant_context": tenant_context or TenantContext(),
         "knowledge_context": None,
-        "analysis_result": AnalysisResult(
-            project_name="",
-            summary="",
-            requirements=[],
-            constraints=[],
-        ),
+        "analysis_result": AnalysisResultDetail(project_name="", summary=""),
         "extracted_requirements": [],
         "extracted_constraints": [],
-        "planning_result": PlanningResult(
-            architecture_pattern="",
-            tech_stack=[],
-            components=[],
-        ),
+        "planning_result": PlanningResultDetail(),
         "component_decomposition": [],
         "tech_stack_choices": [],
         "generation_result": GenerationResultDetail(),

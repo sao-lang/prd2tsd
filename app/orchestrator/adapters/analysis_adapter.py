@@ -32,9 +32,9 @@ class AnalysisAdapter:
             更新后的 OrchestratorState。
         """
         # 1. 提取 Analysis Layer 需要的输入
-        analysis_input = {
+        # 注意：AnalysisState 只接收 prd_raw，不接收 prd_file_type
+        analysis_input: dict = {
             "prd_raw": state["prd_raw"],
-            "prd_file_type": state.get("prd_file_type", "md"),
         }
 
         # 2. 如果有 knowledge_context，注入到 analysis_input

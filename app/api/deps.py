@@ -82,5 +82,6 @@ def get_orchestrator():
         generation_graph=generation_graph,
         evaluation_graph=evaluation_graph,
         retrieval_pipeline=None,
+        use_checkpointer=True,  # 启用 MemorySaver 以支持 interrupt/resume
     )
     return _orchestrator_instance

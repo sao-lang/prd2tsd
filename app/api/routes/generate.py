@@ -39,12 +39,18 @@ async def create_generation_task(
 
     异步执行全链路分析→规划→生成→评测。
     """
+    # 从 team_memberships 中提取用户角色
+    user_role = ""
+    if current_user.team_memberships:
+        first_membership = current_user.team_memberships[0]
+        user_role = getattr(first_membership.role, "name", "") if hasattr(first_membership, "role") else ""
+
     task_id = await task_manager.create_task(
         prd_raw=req.prd_content,
         prd_file_type=req.prd_type,
         workspace_id=req.workspace_id,
         user_id=str(current_user.id),
-        user_role=current_user.role.name if hasattr(current_user, "role") else "",
+        user_role=user_role,
         orchestrator=orchestrator,
     )
     return GenerateResponse(task_id=task_id)
