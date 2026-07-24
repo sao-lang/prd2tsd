@@ -18,11 +18,21 @@ async def call_llm(prompt: str, model: str | None = None, **kwargs: Any) -> str:
     Returns:
         LLM 返回文本。不可用时返回空字符串。
     """
-    from app.core.llm import llm_complete
+    from app.core.logger import get_logger
+    from app.llm_gateway import gateway
 
     try:
-        return await llm_complete(prompt, model=model, **kwargs)
-    except Exception:
+        node = kwargs.pop("node", "")
+        resp = await gateway.complete(
+            prompt=prompt,
+            task_type="evaluation_scoring",
+            layer="evaluation",
+            node=node,
+            model=model,
+        )
+        return resp.content
+    except Exception as exc:
+        get_logger("prd2tsd.evaluation").warning("LLM 调用失败（evaluation）: %s", exc)
         return ""
 
 

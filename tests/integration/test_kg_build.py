@@ -41,8 +41,8 @@ async def test_build_from_markdown(tmp_path) -> None:
                      description="关系型数据库"),
         ]
     )
-    builder.entity_embedder.embed_entity = MagicMock(return_value=[0.1] * 1024)
-    builder.entity_embedder.embed_text = MagicMock(return_value=[0.1] * 1024)
+    builder.entity_embedder.embed_entity = AsyncMock(return_value=[0.1] * 1024)
+    builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
 
     stats = await builder.build_from_document(str(md_file))
 
@@ -66,8 +66,73 @@ async def test_build_empty_file(tmp_path) -> None:
 
     builder = KnowledgeGraphBuilder(graph_store=mock_graph, vector_store=mock_vector)
     builder.entity_extractor.extract = AsyncMock(return_value=[])
-    builder.entity_embedder.embed_text = MagicMock(return_value=[0.1] * 1024)
+    builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
 
     stats = await builder.build_from_document(str(md_file))
+    assert stats.entities == 0
+    assert stats.chunks == 0
+
+
+@pytest.mark.asyncio
+async def test_build_from_text() -> None:
+    """验证从文本内容构建实体索引（无需文件路径）。"""
+    text = "用户服务使用 Spring Boot 框架，基于 PostgreSQL 数据库存储。"
+
+    mock_graph = MagicMock()
+    mock_graph.get_all_entities = AsyncMock(return_value=[])
+    mock_graph.upsert_entities = AsyncMock(return_value=[])
+
+    mock_vector = MagicMock()
+    mock_vector.ensure_extensions = AsyncMock()
+    mock_vector.upsert_chunk = AsyncMock()
+    mock_vector.upsert_entity_embedding = AsyncMock()
+
+    builder = KnowledgeGraphBuilder(
+        graph_store=mock_graph,
+        vector_store=mock_vector,
+    )
+    builder.entity_extractor.extract = AsyncMock(
+        return_value=[
+            KGEntity(id="e1", name="Spring Boot", type="TechStack",
+                     category="框架", description="Java 框架"),
+        ]
+    )
+    builder.entity_embedder.embed_entity = AsyncMock(return_value=[0.1] * 1024)
+    builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
+
+    stats = await builder.build_from_text(
+        text=text,
+        source_name="https://example.com/test",
+        workspace_id="ws-1",
+    )
+
+    assert stats.entities >= 1
+    assert stats.chunks >= 1
+    assert stats.file_path == "https://example.com/test"
+    assert stats.workspace_id == "ws-1"
+
+    # 验证写入 Neo4j
+    mock_graph.upsert_entities.assert_awaited_once()
+
+    # 验证写入 PGVector
+    mock_vector.ensure_extensions.assert_awaited_once()
+    mock_vector.upsert_chunk.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_from_text_empty() -> None:
+    """验证空文本构建。"""
+    mock_graph = MagicMock()
+    mock_graph.get_all_entities = AsyncMock(return_value=[])
+    mock_graph.upsert_entities = AsyncMock(return_value=[])
+
+    mock_vector = MagicMock()
+    mock_vector.ensure_extensions = AsyncMock()
+
+    builder = KnowledgeGraphBuilder(graph_store=mock_graph, vector_store=mock_vector)
+    builder.entity_extractor.extract = AsyncMock(return_value=[])
+    builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
+
+    stats = await builder.build_from_text(text="", source_name="test")
     assert stats.entities == 0
     assert stats.chunks == 0

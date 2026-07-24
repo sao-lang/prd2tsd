@@ -10,11 +10,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import auth as auth_routes
+from app.api.routes import batch as batch_routes
+from app.api.routes import collaboration as collaboration_routes
+from app.api.routes import documents as documents_routes
 from app.api.routes import evaluate as evaluate_routes
 from app.api.routes import generate as generate_routes
+from app.api.routes import integrations as integrations_routes
 from app.api.routes import knowledge as knowledge_routes
 from app.api.routes import model_config as model_config_routes
+from app.api.routes import multimodal as multimodal_routes
 from app.api.routes import review as review_routes
+from app.api.routes import sessions as sessions_routes
+from app.api.routes import web_indexing as web_indexing_routes
 from app.api.routes import workspace as workspace_routes
 from app.api.routes import workspace_members as workspace_members_routes
 from app.api.schemas.response import HealthResponse
@@ -24,6 +31,7 @@ from app.core.connections import connection_manager, init_connections
 from app.core.exceptions import Prd2TsdError
 from app.core.logger import get_logger, setup_logger
 from app.llm_gateway import config_manager
+from app.observability.metrics import metrics_app
 
 logger = get_logger("prd2tsd")
 
@@ -45,6 +53,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # 初始化 LLM Gateway
     logger.info("LLM Gateway 就绪")
+
+    # 初始化观测性（块 E）
+    from app.observability import tracer  # noqa: F401
+    logger.info("OpenTelemetry 追踪已初始化: %s", settings.OTEL_SERVICE_NAME)
 
     logger.info("%s 启动完成", settings.APP_NAME)
     yield
@@ -128,6 +140,22 @@ async def health_check() -> HealthResponse:
     )
 
 
+# ── Prometheus 指标端点 ──
+
+
+@app.get("/api/v1/metrics", include_in_schema=False)
+async def metrics_endpoint(request: Request) -> JSONResponse:
+    """Prometheus 指标暴露端点。
+
+    Args:
+        request: 请求对象。
+
+    Returns:
+        Prometheus 格式的指标数据。
+    """
+    return await metrics_app(request)  # type: ignore[arg-type]
+
+
 # ── 注册路由 ──
 
 app.include_router(auth_routes.router)
@@ -138,6 +166,13 @@ app.include_router(knowledge_routes.router)
 app.include_router(generate_routes.router)
 app.include_router(review_routes.router)
 app.include_router(evaluate_routes.router)
+app.include_router(sessions_routes.router)
+app.include_router(documents_routes.router)
+app.include_router(web_indexing_routes.router)
+app.include_router(integrations_routes.router)
+app.include_router(multimodal_routes.router)
+app.include_router(collaboration_routes.router)
+app.include_router(batch_routes.router)
 
 
 @app.get("/")

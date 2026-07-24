@@ -72,7 +72,10 @@ class KnowledgeRetrievalNode:
 
 
 class FinalAssemblyNode:
-    """最终组装节点 — 汇总所有层输出为最终结果。"""
+    """最终组装节点 — 汇总所有层输出为最终结果。
+
+    E5 增强：任务完成后自动触发 Webhook 通知。
+    """
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """组装最终结果。
@@ -86,6 +89,27 @@ class FinalAssemblyNode:
         logger.info("最终组装: task=%s", state.get("task_id"))
         state["status"] = "complete"
         state["progress"] = 1.0
+
+        # E5 增强：任务完成后触发 Webhook 通知
+        try:
+            from app.integrations.webhook import WebhookSender, integration_hub
+            workspace_id = state.get("workspace_id", "")
+            task_id = state.get("task_id", "")
+            if workspace_id and task_id:
+                await integration_hub.notify(
+                    event="task.completed",
+                    payload={
+                        "task_id": task_id,
+                        "workspace_id": workspace_id,
+                        "status": "completed",
+                        "progress": 1.0,
+                    },
+                    sender=WebhookSender(),
+                )
+                logger.info("Webhook 通知已发送: task=%s", task_id)
+        except Exception as exc:
+            logger.warning("Webhook 通知发送失败（不影响主流程）: %s", exc)
+
         return state
 
 

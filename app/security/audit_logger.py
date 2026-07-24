@@ -52,7 +52,10 @@ class AuditLogger:
 
     每条日志包含前一条日志的哈希值，形成哈希链。
     篡改任意一条日志都会导致链断裂，可被检测。
+    注意：当前使用内存存储（self._entries），重启后日志丢失。
+    生产环境需迁移到 PostgreSQL 持久化。
     """
+    # PRODUCTION: 生产环境需迁移到 PostgreSQL 持久化存储
 
     def __init__(self) -> None:
         """初始化审计日志记录器。"""

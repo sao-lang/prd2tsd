@@ -12,6 +12,12 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.models.base import Base
 
+# 导入所有模型子类以注册到 Base.metadata（供 autogenerate 检测变更）
+from app.models import (  # noqa: F401
+    BudgetConfig, LLMCallLog, Organization, Role, Session, SessionMessage,
+    TeamMember, UploadedDocument, User, Workspace,
+)
+
 # Alembic Config
 config = context.config
 if config.config_file_name is not None:

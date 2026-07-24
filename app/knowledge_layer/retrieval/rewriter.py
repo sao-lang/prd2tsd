@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.core.llm import llm_complete
 from app.core.logger import get_logger
+from app.llm_gateway import gateway
 
 logger = get_logger("prd2tsd.knowledge.rewriter")
 
@@ -44,13 +44,16 @@ class QueryRewriter:
             子查询列表（至少包含原始查询）。
         """
         try:
-            response = await llm_complete(
+            resp = await gateway.complete(
                 prompt=REWRITE_PROMPT.format(query=query),
+                task_type="default",
+                layer="knowledge",
+                node="query_rewriter",
                 model=self._model,
                 temperature=0.3,
                 max_tokens=512,
             )
-            lines = [line.strip() for line in response.strip().split("\n") if line.strip()]
+            lines = [line.strip() for line in resp.content.strip().split("\n") if line.strip()]
             # 确保原始查询也在列表中
             all_queries = [query] + [line for line in lines if line.lower() != query.lower()]
             logger.debug("查询重写: %s -> %s", query, all_queries[:5])

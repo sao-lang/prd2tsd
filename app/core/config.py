@@ -81,14 +81,30 @@ class Settings(BaseSettings):
     MODEL_CONFIG__VISION__OPENAI__BASE_URL: str = "https://api.openai.com/v1"
     MODEL_CONFIG__VISION__OPENAI__DEFAULT_MODEL: str = "gpt-4o"
 
+    # ── Observability (Block E) ──
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+    OTEL_SERVICE_NAME: str = "prd2tsd"
+    PROMETHEUS_PORT: int = 9090
+
+    # ── Budget (Block E) ──
+    BUDGET_DEFAULT_MONTHLY_USD: float = 100.0
+    BUDGET_DEFAULT_ALERT_THRESHOLD: float = 0.9
+    BUDGET_DEFAULT_AUTO_DOWNGRADE: bool = True
+
+    # ── Rate Limiter (Block E) ──
+    RATE_LIMIT_DEFAULT_RPM: int = 60       # 每分钟请求数
+    RATE_LIMIT_DEFAULT_TPM: int = 100000   # 每分钟 Token 数
+
+    # ── Gateway Capability Modes ──
+    EMBEDDING_MODE: str = "auto"        # auto / api / local
+    RERANK_MODE: str = "auto"           # auto / api / local
+    IMAGE_ENCODE_MODE: str = "local"    # auto / api / local（当前无 API，默认 local）
+    CLIP_MODEL_NAME: str = "openai/clip-vit-base-patch32"
+
     # ── Model Routing Rules ──
     MODEL_ROUTING__ANALYSIS_REQUIREMENT__TYPE: str = "llm"
     MODEL_ROUTING__ANALYSIS_REQUIREMENT__PROVIDER: str = "deepseek"
     MODEL_ROUTING__ANALYSIS_REQUIREMENT__MODEL: str = "deepseek-chat"
-
-    MODEL_ROUTING__ANALYSIS_CONSTRAINT__TYPE: str = "llm"
-    MODEL_ROUTING__ANALYSIS_CONSTRAINT__PROVIDER: str = "deepseek"
-    MODEL_ROUTING__ANALYSIS_CONSTRAINT__MODEL: str = "deepseek-chat"
 
     MODEL_ROUTING__PLANNING_ARCHITECTURE__TYPE: str = "llm"
     MODEL_ROUTING__PLANNING_ARCHITECTURE__PROVIDER: str = "deepseek"
@@ -97,6 +113,10 @@ class Settings(BaseSettings):
     MODEL_ROUTING__EVALUATION_SCORING__TYPE: str = "judge"
     MODEL_ROUTING__EVALUATION_SCORING__PROVIDER: str = "openai"
     MODEL_ROUTING__EVALUATION_SCORING__MODEL: str = "gpt-4o-mini"
+
+    MODEL_ROUTING__GENERATION__TYPE: str = "llm"
+    MODEL_ROUTING__GENERATION__PROVIDER: str = "deepseek"
+    MODEL_ROUTING__GENERATION__MODEL: str = "deepseek-chat"
 
     MODEL_ROUTING__EMBEDDING__TYPE: str = "embedding"
     MODEL_ROUTING__EMBEDDING__PROVIDER: str = "openai"

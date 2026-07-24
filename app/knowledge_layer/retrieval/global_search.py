@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.llm import llm_complete
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
 from app.knowledge_layer.graph_store import Neo4jGraphStore
 from app.knowledge_layer.models import CommunityReport, ScoredDoc
+from app.llm_gateway import gateway
 
 logger = get_logger("prd2tsd.knowledge.global_search")
 
@@ -223,16 +223,19 @@ class GlobalSearch:
             聚合后的答案。
         """
         try:
-            response = await llm_complete(
+            resp = await gateway.complete(
                 prompt=COMMUNITY_SUMMARY_PROMPT.format(
                     reports=reports_text[:4000],
                     query=query,
                 ),
+                task_type="default",
+                layer="knowledge",
+                node="global_search",
                 model=self._model,
                 temperature=0.3,
                 max_tokens=2048,
             )
-            return response
+            return resp.content
         except Exception as e:
             logger.warning("Global Search 聚合失败: %s", str(e))
             return f"基于社区报告的分析（查询: {query}）:\n\n{reports_text[:1000]}"

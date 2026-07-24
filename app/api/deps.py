@@ -8,8 +8,9 @@ from app.orchestrator.main_graph import build_and_compile
 from app.security.audit_logger import audit_logger
 from app.security.data_masking import DataMaskingEngine
 
-# 缓存编译后的 Orchestrator（懒加载）
+# 缓存编译后的 Orchestrator 和 DataMaskingEngine（懒加载）
 _orchestrator_instance = None
+_masking_engine_instance = None
 
 
 async def get_db_session():
@@ -42,12 +43,15 @@ def get_config_manager():
 
 
 def get_masking_engine():
-    """获取数据脱敏引擎。
+    """获取数据脱敏引擎（单例缓存）。
 
     Returns:
         DataMaskingEngine 实例。
     """
-    return DataMaskingEngine()
+    global _masking_engine_instance
+    if _masking_engine_instance is None:
+        _masking_engine_instance = DataMaskingEngine()
+    return _masking_engine_instance
 
 
 def get_audit_logger():

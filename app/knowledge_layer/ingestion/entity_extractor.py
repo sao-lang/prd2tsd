@@ -6,9 +6,9 @@ import json
 import uuid
 from typing import Any
 
-from app.core.llm import llm_complete
 from app.core.logger import get_logger
 from app.knowledge_layer.models import Chunk, KGEntity
+from app.llm_gateway import gateway
 
 logger = get_logger("prd2tsd.knowledge.entity_extractor")
 
@@ -73,13 +73,16 @@ class EntityExtractor:
         """
         prompt = EXTRACTION_PROMPT.format(text=chunk.text[:2000])
         try:
-            response = await llm_complete(
+            resp = await gateway.complete(
                 prompt=prompt,
+                task_type="default",
+                layer="knowledge",
+                node="entity_extractor",
                 model=self._model,
                 temperature=0.1,
                 max_tokens=2048,
             )
-            entities_data = self._parse_response(response)
+            entities_data = self._parse_response(resp.content)
         except Exception as e:
             logger.warning("实体提取失败 (chunk %d): %s", chunk.index, str(e))
             return []

@@ -1,0 +1,43 @@
+# 告警规则
+groups:
+  - name: prd2tsd-alerts
+    rules:
+      # 成本异常：某模型小时成本超过 10 美元
+      - alert: HighLLMCost
+        expr: increase(llm_cost_total_usd[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM 成本异常（{{ $labels.model }}）"
+          description: "模型 {{ $labels.model }} 过去 1 小时成本 ${{ $value }}"
+
+      # 质量评分下降：过去 10 次评分均值低于 60
+      - alert: QualityDecline
+        expr: avg_over_time(evaluation_score[1h]) < 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "质量评分持续下降"
+          description: "过去 1 小时平均评分 {{ $value }}，低于 60 分阈值"
+
+      # 高延迟：P99 延迟超过 10 秒
+      - alert: HighLatency
+        expr: histogram_quantile(0.99, rate(llm_latency_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM 高延迟（{{ $labels.model }}）"
+          description: "模型 {{ $labels.model }} P99 延迟 {{ $value }}s"
+
+      # 任务失败率上升
+      - alert: HighTaskFailureRate
+        expr: rate(tasks_total{status="failed"}[15m]) / rate(tasks_total[15m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "任务失败率超过 10%"
+          description: "过去 15 分钟任务失败率 {{ $value | humanizePercentage }}"

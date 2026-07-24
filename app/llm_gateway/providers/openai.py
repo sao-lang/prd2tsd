@@ -128,11 +128,5 @@ class OpenAIProvider(BaseProvider):
         Returns:
             估算成本（美元）。
         """
-        rates = {
-            "deepseek-chat": (0.0005, 0.002),
-            "gpt-4o-mini": (0.00015, 0.0006),
-            "gpt-4o": (0.005, 0.015),
-            "text-embedding-3-small": (0.00002, 0.0),
-        }
-        rate = rates.get(model, (0.001, 0.002))
-        return (prompt_tokens * rate[0] + completion_tokens * rate[1]) / 1000
+        from app.llm_gateway.pricing import estimate_cost
+        return estimate_cost(model, prompt_tokens, completion_tokens)

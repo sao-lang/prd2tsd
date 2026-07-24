@@ -7,9 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from app.core.llm import llm_complete
 from app.core.logger import get_logger
 from app.knowledge_layer.models import ScoredDoc
+from app.llm_gateway import gateway
 
 logger = get_logger("prd2tsd.knowledge.reflection")
 
@@ -82,13 +82,13 @@ class ReflectionJudge:
         prompt = REFLECTION_PROMPT.format(query=query, results=formatted)
 
         try:
-            response = await llm_complete(
+            response = await gateway.complete(
                 prompt=prompt,
                 model=self._model,
                 temperature=0.1,
                 max_tokens=512,
             )
-            result = self._parse_response(response)
+            result = self._parse_response(response.content)
             logger.debug(
                 "反思结果: judgment=%s, reason=%s",
                 result.judgment,

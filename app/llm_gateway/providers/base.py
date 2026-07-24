@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Any
 
 from app.llm_gateway.models import EmbeddingResponse, LLMResponse, RerankResponse
 from contracts.models import ModelConfig
 
 
-class BaseProvider:
+class BaseProvider(ABC):
     """Provider 抽象基类。"""
 
     def __init__(self, config: ModelConfig) -> None:
@@ -19,6 +20,7 @@ class BaseProvider:
         """
         self.config = config
 
+    @abstractmethod
     async def complete(self, prompt: str, model: str = "", **kwargs: Any) -> LLMResponse:
         """调用 LLM 生成文本。子类必须实现。
 
@@ -32,6 +34,7 @@ class BaseProvider:
         """
         raise NotImplementedError
 
+    @abstractmethod
     async def embed(self, texts: list[str], model: str = "", **kwargs: Any) -> EmbeddingResponse:
         """调用 Embedding 模型。子类必须实现。
 
@@ -45,6 +48,7 @@ class BaseProvider:
         """
         raise NotImplementedError
 
+    @abstractmethod
     async def rerank(self, query: str, docs: list[str], model: str = "", **kwargs: Any) -> RerankResponse:
         """调用 Rerank 模型。子类必须实现。
 

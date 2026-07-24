@@ -68,6 +68,8 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
     """工作空间上下文中间件。
 
     从请求头或查询参数中提取当前工作空间 ID，设置到 request.scope。
+    注意：X-Workspace-ID 请求头仅在 JWT Token 未携带 ws_id 时生效，
+    不可覆盖 Token 中已认证的工作空间。
     """
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
@@ -82,7 +84,8 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
         """
         _init_scope(request.scope)
 
-        # 如果尚未设置 ws_id，尝试从请求中提取
+        # 仅当 JWT Token 未设置 ws_id 时，才从请求头/查询参数提取
+        # 防止用户通过 X-Workspace-ID 请求头越权访问其他工作空间
         if not request.scope.get(_SCOPE_WS_ID):
             ws_id = request.headers.get("X-Workspace-ID", "")
             if not ws_id:

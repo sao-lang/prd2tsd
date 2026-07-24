@@ -1,12 +1,23 @@
-"""LLM 客户端 — 基于 OpenAI SDK，兼容 DeepSeek API 格式。"""
+"""LLM 客户端（已废弃）— 所有调用已迁移至 app.llm_gateway.gateway。
+
+请使用 gateway.complete() 替代，它集成预算控制、速率限制、OpenTelemetry 追踪、
+语义缓存和 Provider 路由。详见 app/llm_gateway/__init__.py。
+"""
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from app.core.config import settings
+
+warnings.warn(
+    "app.core.llm 已废弃，请使用 app.llm_gateway.gateway.complete() 替代",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 def create_llm_client(
@@ -15,17 +26,11 @@ def create_llm_client(
     timeout: int = 60,
     max_retries: int = 3,
 ) -> AsyncOpenAI:
-    """创建 OpenAI 兼容的异步 LLM 客户端。
+    """（已废弃）创建 OpenAI 兼容的异步 LLM 客户端。
 
-    Args:
-        api_key: API 密钥。为 None 时从配置读取。
-        base_url: API 端点。为 None 时从配置读取。
-        timeout: 超时秒数。
-        max_retries: 最大重试次数。
-
-    Returns:
-        配置好的 AsyncOpenAI 客户端。
+    请改用 gateway.complete()，见 app.llm_gateway。
     """
+    warnings.warn("create_llm_client 已废弃", DeprecationWarning, stacklevel=2)
     return AsyncOpenAI(
         api_key=api_key or settings.MODEL_CONFIG__LLM__DEEPSEEK__API_KEY or "",
         base_url=base_url or settings.MODEL_CONFIG__LLM__DEEPSEEK__BASE_URL,
@@ -43,23 +48,11 @@ async def llm_complete(
     max_tokens: int = 4096,
     **kwargs: Any,
 ) -> str:
-    """调用 LLM 生成文本。
+    """（已废弃）调用 LLM 生成文本。
 
-    Args:
-        prompt: 输入提示词。
-        model: 模型名。为 None 时使用配置的默认模型。
-        api_key: API 密钥。为 None 时从配置读取。
-        base_url: API 端点。为 None 时从配置读取。
-        temperature: 温度参数。
-        max_tokens: 最大生成 Token 数。
-        **kwargs: 额外参数传递给 OpenAI API。
-
-    Returns:
-        生成的文本内容。
-
-    Raises:
-        Exception: API 调用失败时抛出。
+    请改用 gateway.complete()，见 app.llm_gateway。
     """
+    warnings.warn("llm_complete 已废弃，请使用 gateway.complete()", DeprecationWarning, stacklevel=2)
     client = create_llm_client(api_key=api_key, base_url=base_url)
     response = await client.chat.completions.create(
         model=model or settings.MODEL_CONFIG__LLM__DEEPSEEK__DEFAULT_MODEL,

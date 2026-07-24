@@ -35,6 +35,20 @@ pgvector>=0.3.0
 # === Data Security ===
 httpx
 
+# === Observability (Block E) ===
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp-proto-grpc>=1.20.0
+prometheus-client>=0.19.0
+
+# === Task Queue (Block E) ===
+celery>=5.3.0
+
+# === Multimodal (Block E) ===
+transformers>=4.40.0
+cohere>=5.0
+Pillow>=10.0
+
 # === Testing ===
 aiosqlite
 pytest-asyncio

@@ -38,7 +38,7 @@ class IterationDecider:
 
         if report is None:
             # 没有评测报告 → 重做生成
-            state["iteration_count"] = iteration_count + 1
+            # 注意：iteration_count 已在 EvaluationAdapter 中递增，此处不再重复加
             return self.ROUTE_MAP["regenerate"]
 
         # 兼容 dict 和 BaseModel 两种格式
