@@ -1,16 +1,16 @@
-"""Neo4j 图存储封装 — 实体 + 关系 + TextUnit + Claims 的 CRUD 操作。"""
+"""Neo4j 图存储封装 — 实体的 CRUD 操作。"""
 
 from __future__ import annotations
 
 import uuid
 from typing import Any
 
-from neo4j import AsyncDriver, Record
+from neo4j import AsyncDriver
 
 from app.core.connections import connection_manager
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
-from app.knowledge_layer.models import Claim, KGEntity, KGRelation, TextUnit
+from app.knowledge_layer.models import KGEntity
 
 logger = get_logger("prd2tsd.knowledge.graph_store")
 
@@ -86,134 +86,6 @@ class Neo4jGraphStore:
             实体 ID 列表。
         """
         return [await self.upsert_entity(e) for e in entities]
-
-    async def upsert_relation(self, relation: KGRelation) -> str:
-        """创建或更新关系。
-
-        Args:
-            relation: 关系对象。
-
-        Returns:
-            关系 ID。
-        """
-        relation_id = relation.id or str(uuid.uuid4())
-        driver = await self._get_driver()
-        async with driver.session(database=self._database) as session:
-            await session.run(
-                """
-                MATCH (source:KGEntity {id: $source_id})
-                MATCH (target:KGEntity {id: $target_id})
-                MERGE (source)-[r:KGRelation {id: $id}]->(target)
-                SET r.type = $type,
-                    r.reason = $reason,
-                    r.confidence = $confidence,
-                    r.workspace_id = $workspace_id,
-                    r.source_text_unit_id = $source_text_unit_id,
-                    r.updated_at = timestamp()
-                """,
-                id=relation_id,
-                source_id=relation.source,
-                target_id=relation.target,
-                type=relation.type,
-                reason=relation.reason,
-                confidence=relation.confidence,
-                workspace_id=relation.workspace_id,
-                source_text_unit_id=relation.source_text_unit_id,
-            )
-        logger.debug("关系已保存: %s -> %s (%s)", relation.source, relation.target, relation_id)
-        return relation_id
-
-    async def upsert_relations(self, relations: list[KGRelation]) -> list[str]:
-        """批量创建或更新关系。
-
-        Args:
-            relations: 关系列表。
-
-        Returns:
-            关系 ID 列表。
-        """
-        return [await self.upsert_relation(r) for r in relations]
-
-    async def upsert_text_unit(self, text_unit: TextUnit) -> str:
-        """创建或更新 TextUnit 节点。
-
-        Args:
-            text_unit: TextUnit 对象。
-
-        Returns:
-            TextUnit ID。
-        """
-        tu_id = text_unit.id or str(uuid.uuid4())
-        driver = await self._get_driver()
-        async with driver.session(database=self._database) as session:
-            await session.run(
-                """
-                MERGE (tu:TextUnit {id: $id})
-                SET tu.text = $text,
-                    tu.section_path = $section_path,
-                    tu.chunk_index = $chunk_index,
-                    tu.workspace_id = $workspace_id,
-                    tu.updated_at = timestamp()
-                """,
-                id=tu_id,
-                text=text_unit.text,
-                section_path=text_unit.section_path,
-                chunk_index=text_unit.chunk_index,
-                workspace_id=text_unit.workspace_id,
-            )
-        logger.debug("TextUnit 已保存: %s", tu_id)
-        return tu_id
-
-    async def upsert_claim(self, claim: Claim) -> str:
-        """创建或更新 Claim 节点。
-
-        Args:
-            claim: Claim 对象。
-
-        Returns:
-            Claim ID。
-        """
-        claim_id = claim.id or str(uuid.uuid4())
-        driver = await self._get_driver()
-        async with driver.session(database=self._database) as session:
-            await session.run(
-                """
-                MERGE (c:Claim {id: $id})
-                SET c.subject = $subject,
-                    c.subject_entity_id = $subject_entity_id,
-                    c.object = $object,
-                    c.object_entity_id = $object_entity_id,
-                    c.claim_type = $claim_type,
-                    c.content = $content,
-                    c.confidence = $confidence,
-                    c.workspace_id = $workspace_id,
-                    c.source_text_unit_id = $source_text_unit_id,
-                    c.updated_at = timestamp()
-                """,
-                id=claim_id,
-                subject=claim.subject,
-                subject_entity_id=claim.subject_entity_id,
-                object=claim.object,
-                object_entity_id=claim.object_entity_id,
-                claim_type=claim.claim_type,
-                content=claim.content,
-                confidence=claim.confidence,
-                workspace_id=claim.workspace_id,
-                source_text_unit_id=claim.source_text_unit_id,
-            )
-        logger.debug("Claim 已保存: %s", claim_id)
-        return claim_id
-
-    async def upsert_claims(self, claims: list[Claim]) -> list[str]:
-        """批量创建或更新 Claims。
-
-        Args:
-            claims: Claim 列表。
-
-        Returns:
-            Claim ID 列表。
-        """
-        return [await self.upsert_claim(c) for c in claims]
 
     async def get_entity(self, entity_id: str) -> KGEntity | None:
         """根据 ID 获取实体。
@@ -294,8 +166,8 @@ class Neo4jGraphStore:
         entity_id: str,
         max_depth: int = 2,
         workspace_id: str = "",
-    ) -> tuple[list[KGEntity], list[KGRelation]]:
-        """获取实体的邻接子图。
+    ) -> list[KGEntity]:
+        """获取实体的邻接实体。
 
         Args:
             entity_id: 中心实体 ID。
@@ -303,14 +175,13 @@ class Neo4jGraphStore:
             workspace_id: 工作空间 ID。
 
         Returns:
-            (实体列表, 关系列表)。
+            邻接实体列表。
         """
         driver = await self._get_driver()
         cypher = """
             MATCH path = (e:KGEntity {id: $entity_id})-[*1..$max_depth]-(neighbor)
             UNWIND nodes(path) AS n
-            UNWIND relationships(path) AS r
-            RETURN COLLECT(DISTINCT n) AS entities, COLLECT(DISTINCT r) AS relations
+            RETURN COLLECT(DISTINCT n) AS entities
         """
         params: dict[str, Any] = {"entity_id": entity_id, "max_depth": max_depth}
         if workspace_id:
@@ -323,10 +194,8 @@ class Neo4jGraphStore:
             result = await session.run(cypher, **params)
             record = await result.single()
         if record is None:
-            return [], []
-        entities = [self._record_to_entity(n) for n in record["entities"]]
-        relations = [self._record_to_relation(r) for r in record["relations"]]
-        return entities, relations
+            return []
+        return [self._record_to_entity(n) for n in record["entities"]]
 
     async def get_all_entities(self, workspace_id: str = "") -> list[KGEntity]:
         """获取所有实体（用于老化/备份等）。
@@ -391,7 +260,7 @@ class Neo4jGraphStore:
         updated = record["updated"] if record else 0
         return updated > 0
 
-    async def run_cypher(self, query: str, params: dict[str, Any] | None = None) -> list[Record]:
+    async def run_cypher(self, query: str, params: dict[str, Any] | None = None) -> list[Any]:
         """执行任意 Cypher 查询（用于版本控制快照/回滚等）。
 
         Args:
@@ -428,23 +297,4 @@ class Neo4jGraphStore:
             workspace_id=props.get("workspace_id", ""),
         )
 
-    def _record_to_relation(self, rel: Any) -> KGRelation:
-        """将 Neo4j 关系记录转为 KGRelation。
 
-        Args:
-            rel: Neo4j 关系对象。
-
-        Returns:
-            KGRelation 实例。
-        """
-        props = dict(rel)
-        return KGRelation(
-            id=props.get("id", ""),
-            source=rel.start_node.get("id", "") if hasattr(rel, "start_node") else "",
-            target=rel.end_node.get("id", "") if hasattr(rel, "end_node") else "",
-            type=props.get("type", "depends_on"),
-            reason=props.get("reason", ""),
-            confidence=float(props.get("confidence", 0.9)),
-            source_text_unit_id=props.get("source_text_unit_id", ""),
-            workspace_id=props.get("workspace_id", ""),
-        )

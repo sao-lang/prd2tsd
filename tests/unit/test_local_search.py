@@ -24,7 +24,7 @@ class TestLocalSearch:
                 KGEntity(id="e2", name="PostgreSQL", type="TechStack", description="Database"),
             ]
         )
-        mock.get_neighbors = AsyncMock(return_value=([], []))
+        mock.get_neighbors = AsyncMock(return_value=[])
         return mock
 
     async def test_search_returns_entities(self, graph_store_mock) -> None:

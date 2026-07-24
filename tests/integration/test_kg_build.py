@@ -23,17 +23,12 @@ async def test_build_from_markdown(tmp_path) -> None:
     mock_graph = MagicMock()
     mock_graph.get_all_entities = AsyncMock(return_value=[])
     mock_graph.upsert_entities = AsyncMock(return_value=[])
-    mock_graph.upsert_relations = AsyncMock(return_value=[])
-    mock_graph.upsert_text_unit = AsyncMock(return_value="")
-    mock_graph.upsert_claims = AsyncMock(return_value=[])
 
     mock_vector = MagicMock()
     mock_vector.ensure_extensions = AsyncMock()
-    mock_vector.upsert_text_unit = AsyncMock()
+    mock_vector.upsert_chunk = AsyncMock()
     mock_vector.upsert_entity_embedding = AsyncMock()
-    mock_vector.upsert_claim_embedding = AsyncMock()
 
-    # Mock LLM 调用
     builder = KnowledgeGraphBuilder(
         graph_store=mock_graph,
         vector_store=mock_vector,
@@ -46,15 +41,14 @@ async def test_build_from_markdown(tmp_path) -> None:
                      description="关系型数据库"),
         ]
     )
-    builder.relation_extractor.extract = AsyncMock(return_value=[])
-    builder.claims_extractor.extract = AsyncMock(return_value=[])
-    builder.versioning.create_snapshot = AsyncMock(return_value="snap_v1")
+    builder.entity_embedder.embed_entity = MagicMock(return_value=[0.1] * 1024)
+    builder.entity_embedder.embed_text = MagicMock(return_value=[0.1] * 1024)
 
     stats = await builder.build_from_document(str(md_file))
 
     assert stats.entities >= 2
+    assert stats.chunks >= 1
     assert stats.file_path == str(md_file)
-    assert stats.version_id == "snap_v1"
 
 
 @pytest.mark.asyncio
@@ -66,19 +60,14 @@ async def test_build_empty_file(tmp_path) -> None:
     mock_graph = MagicMock()
     mock_graph.get_all_entities = AsyncMock(return_value=[])
     mock_graph.upsert_entities = AsyncMock(return_value=[])
-    mock_graph.upsert_relations = AsyncMock(return_value=[])
-    mock_graph.upsert_text_unit = AsyncMock(return_value="")
-    mock_graph.upsert_claims = AsyncMock(return_value=[])
 
     mock_vector = MagicMock()
     mock_vector.ensure_extensions = AsyncMock()
 
     builder = KnowledgeGraphBuilder(graph_store=mock_graph, vector_store=mock_vector)
     builder.entity_extractor.extract = AsyncMock(return_value=[])
-    builder.relation_extractor.extract = AsyncMock(return_value=[])
-    builder.claims_extractor.extract = AsyncMock(return_value=[])
-    builder.versioning.create_snapshot = AsyncMock(return_value="snap_empty")
+    builder.entity_embedder.embed_text = MagicMock(return_value=[0.1] * 1024)
 
     stats = await builder.build_from_document(str(md_file))
     assert stats.entities == 0
-    assert stats.relations == 0
+    assert stats.chunks == 0

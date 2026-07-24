@@ -6,14 +6,10 @@ from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
 from app.knowledge_layer.graph_store import Neo4jGraphStore
 from app.knowledge_layer.ingestion.chunker import MultiGranularityChunker
-from app.knowledge_layer.ingestion.claims_extractor import ClaimsExtractor
 from app.knowledge_layer.ingestion.document_loader import DocumentLoader
 from app.knowledge_layer.ingestion.entity_embedder import EntityEmbedder
 from app.knowledge_layer.ingestion.entity_extractor import EntityExtractor
 from app.knowledge_layer.ingestion.entity_resolver import EntityResolver
-from app.knowledge_layer.ingestion.kg_versioning import KnowledgeGraphVersioning
-from app.knowledge_layer.ingestion.relation_extractor import RelationExtractor
-from app.knowledge_layer.ingestion.text_unit_builder import TextUnitBuilder
 from app.knowledge_layer.models import (
     BuildStats,
     RetrievalContext,
@@ -25,6 +21,7 @@ from app.knowledge_layer.retrieval.fusion import RRFFusion
 from app.knowledge_layer.retrieval.global_search import GlobalSearch
 from app.knowledge_layer.retrieval.intent_router import IntentRouter
 from app.knowledge_layer.retrieval.local_search import LocalSearch
+from app.knowledge_layer.retrieval.reflection import ReflectionJudge
 from app.knowledge_layer.retrieval.reranker import ReRanker
 from app.knowledge_layer.retrieval.rewriter import QueryRewriter
 from app.knowledge_layer.vector_store import PGVectorStore
@@ -33,14 +30,13 @@ logger = get_logger("prd2tsd.knowledge.pipeline")
 
 
 class KnowledgeGraphBuilder:
-    """知识图谱构建器 — 文档→知识图谱的完整生命周期。"""
+    """知识图谱构建器 — 文档→实体索引。"""
 
     def __init__(
         self,
         graph_store: Neo4jGraphStore | None = None,
         vector_store: PGVectorStore | None = None,
         entity_extractor_model: str | None = None,
-        relation_extractor_model: str | None = None,
     ) -> None:
         """初始化构建器。
 
@@ -48,7 +44,6 @@ class KnowledgeGraphBuilder:
             graph_store: Neo4j 图存储。
             vector_store: PGVector 向量存储。
             entity_extractor_model: 实体提取 LLM 模型名。
-            relation_extractor_model: 关系提取 LLM 模型名。
         """
         self.graph_store = graph_store or Neo4jGraphStore()
         self.vector_store = vector_store or PGVectorStore()
@@ -58,19 +53,15 @@ class KnowledgeGraphBuilder:
             paragraph_max_words=kn_config.paragraph_max_words,
         )
         self.entity_extractor = EntityExtractor(model=entity_extractor_model)
-        self.relation_extractor = RelationExtractor(model=relation_extractor_model)
         self.entity_resolver = EntityResolver()
-        self.claims_extractor = ClaimsExtractor(model=entity_extractor_model)
         self.entity_embedder = EntityEmbedder()
-        self.text_unit_builder = TextUnitBuilder()
-        self.versioning = KnowledgeGraphVersioning(graph_store=self.graph_store)
 
     async def build_from_document(
         self,
         file_path: str,
         workspace_id: str = "",
     ) -> BuildStats:
-        """从文档构建知识图谱。
+        """从文档构建实体索引。
 
         Args:
             file_path: 文档路径。
@@ -79,7 +70,7 @@ class KnowledgeGraphBuilder:
         Returns:
             构建统计。
         """
-        logger.info("开始从文档构建知识图谱: %s", file_path)
+        logger.info("开始构建实体索引: %s", file_path)
 
         # 1. 加载文档
         text = self.doc_loader.load(file_path)
@@ -93,54 +84,22 @@ class KnowledgeGraphBuilder:
         # 4. 实体消歧
         existing_entities = await self.graph_store.get_all_entities(workspace_id)
         resolved_entities = await self.entity_resolver.resolve_batch(entities, existing_entities)
-        # 标记 workspace_id
         for entity in resolved_entities:
             if not entity.workspace_id:
                 entity.workspace_id = workspace_id
 
-        # 5. 关系提取
-        relations = await self.relation_extractor.extract(resolved_entities, chunks)
-        for relation in relations:
-            if not relation.workspace_id:
-                relation.workspace_id = workspace_id
-
-        # 6. 构建 TextUnit
-        text_units = self.text_unit_builder.build(
-            chunks=chunks,
-            entities=resolved_entities,
-            relations=relations,
-            workspace_id=workspace_id,
-        )
-
-        # 7. Claims 提取
-        claims = await self.claims_extractor.extract(text_units, resolved_entities)
-        for claim in claims:
-            if not claim.workspace_id:
-                claim.workspace_id = workspace_id
-
-        # 8. 实体 Embedding
+        # 5. 实体 Embedding（双源：名称+描述）
         for entity in resolved_entities:
-            related_units = [tu for tu in text_units if entity.id in tu.entities]
-            related_claims = [c for c in claims if c.subject_entity_id == entity.id]
-            entity.embedding = self.entity_embedder.embed_entity(entity, related_units, related_claims)
+            entity.embedding = self.entity_embedder.embed_entity(entity)
 
-        # 9. TextUnit Embedding
-        tu_embeddings = self.entity_embedder.embed_text_units(text_units)
-
-        # 10. Claims Embedding
-        claim_embeddings = self.entity_embedder.embed_claims(claims)
-
-        # 11. 写入 Neo4j
+        # 6. 写入 Neo4j（仅实体）
         await self.graph_store.upsert_entities(resolved_entities)
-        await self.graph_store.upsert_relations(relations)
-        for tu in text_units:
-            await self.graph_store.upsert_text_unit(tu)
-        await self.graph_store.upsert_claims(claims)
 
-        # 12. 写入 PGVector
+        # 7. 写入 PGVector
         await self.vector_store.ensure_extensions()
-        for tu, emb in zip(text_units, tu_embeddings, strict=False):
-            await self.vector_store.upsert_text_unit(tu, emb)
+        for chunk in chunks:
+            chunk_emb = self.entity_embedder.embed_text(chunk.text)
+            await self.vector_store.upsert_chunk(chunk, chunk_emb)
         for entity in resolved_entities:
             if entity.embedding:
                 await self.vector_store.upsert_entity_embedding(
@@ -151,37 +110,24 @@ class KnowledgeGraphBuilder:
                     embedding=entity.embedding,
                     workspace_id=workspace_id,
                 )
-        for claim, emb in zip(claims, claim_embeddings, strict=False):
-            await self.vector_store.upsert_claim_embedding(claim, emb)
-
-        # 13. 创建版本快照
-        version_id = await self.versioning.create_snapshot(
-            name=f"build_from_{file_path.split('/')[-1]}",
-            workspace_id=workspace_id,
-        )
 
         stats = BuildStats(
             entities=len(resolved_entities),
-            relations=len(relations),
-            text_units=len(text_units),
-            claims=len(claims),
+            chunks=len(chunks),
             file_path=file_path,
             workspace_id=workspace_id,
-            version_id=version_id,
         )
 
         logger.info(
-            "知识图谱构建完成: entities=%d, relations=%d, text_units=%d, claims=%d",
+            "实体索引构建完成: entities=%d, chunks=%d",
             stats.entities,
-            stats.relations,
-            stats.text_units,
-            stats.claims,
+            stats.chunks,
         )
         return stats
 
 
 class RetrievalPipeline:
-    """多路检索主入口。"""
+    """多路检索主入口（含反思循环）。"""
 
     def __init__(
         self,
@@ -202,8 +148,10 @@ class RetrievalPipeline:
         self.local_search = LocalSearch(graph_store=self.graph_store)
         self.global_search = GlobalSearch(graph_store=self.graph_store)
         self.fusion = RRFFusion()
+        self.reflection = ReflectionJudge()
         self.reranker = ReRanker()
         self.compressor = Compressor()
+        self.max_reflection_rounds = 2
 
     async def retrieve(
         self,
@@ -234,46 +182,67 @@ class RetrievalPipeline:
         # 3. 查询丰富
         enriched_query, matched_entity_ids = await self.enricher.enrich(query, workspace_id)
 
-        # 4. 多路检索
+        # 4. ⭐ 带反思循环的检索
+        current_query = query
         all_results: list[ScoredDoc] = []
-        local_docs: list[ScoredDoc] = []
-        global_docs: list[ScoredDoc] = []
 
-        if detected_mode in ("local", "hybrid"):
-            for sq in sub_queries[:3]:
-                sq_docs = await self.local_search.search_as_docs(sq, workspace_id, top_k)
-                local_docs.extend(sq_docs)
-            # 去重
-            seen_ids: set[str] = set()
-            unique_local: list[ScoredDoc] = []
-            for doc in local_docs:
-                if doc.id not in seen_ids:
-                    seen_ids.add(doc.id)
-                    unique_local.append(doc)
-            all_results.extend(unique_local)
+        for round_idx in range(self.max_reflection_rounds + 1):
+            # 4a. 多路检索
+            local_docs: list[ScoredDoc] = []
+            global_docs: list[ScoredDoc] = []
+            global_result = None
 
-        if detected_mode in ("global", "hybrid"):
-            global_result = await self.global_search.search(query, workspace_id)
-            global_docs = await self.global_search.search_as_docs(query, workspace_id)
-            all_results.extend(global_docs)
+            if detected_mode in ("local", "hybrid"):
+                for sq in sub_queries[:3]:
+                    sq_docs = await self.local_search.search_as_docs(sq, workspace_id, top_k)
+                    local_docs.extend(sq_docs)
+                seen_ids: set[str] = set()
+                unique_local: list[ScoredDoc] = []
+                for doc in local_docs:
+                    if doc.id not in seen_ids:
+                        seen_ids.add(doc.id)
+                        unique_local.append(doc)
+                all_results = unique_local
 
-        # 5. RRF 融合（hybrid 模式）
-        if detected_mode == "hybrid" and local_docs and global_docs:
-            all_results = self.fusion.fuse(local_docs, global_docs)
+            if detected_mode in ("global", "hybrid"):
+                global_result = await self.global_search.search(current_query, workspace_id)
+                global_docs = await self.global_search.search_as_docs(current_query, workspace_id)
+                all_results.extend(global_docs)
 
-        # 6. 重排
-        reranked = self.reranker.rerank(query, all_results, top_k)
+            # 4b. RRF 融合（hybrid 模式）
+            if detected_mode == "hybrid" and local_docs and global_docs:
+                all_results = self.fusion.fuse(local_docs, global_docs)
 
-        # 7. 压缩
+            # 4c. 反思裁判 — 最后一轮不反思
+            if round_idx < self.max_reflection_rounds:
+                reflection = await self.reflection.judge(current_query, all_results)
+                if reflection.judgment == "accept":
+                    logger.info("反思第%d轮: accept", round_idx + 1)
+                    break
+                logger.info(
+                    "反思第%d轮: refine — %s → %s",
+                    round_idx + 1,
+                    reflection.reason,
+                    reflection.refined_query,
+                )
+                current_query = reflection.refined_query or current_query
+                sub_queries = [current_query]
+            else:
+                logger.info("反思达到最大轮数(%d)，采用当前结果", self.max_reflection_rounds)
+
+        # 5. 重排
+        reranked = self.reranker.rerank(current_query, all_results, top_k)
+
+        # 6. 压缩
         compressed = self.compressor.compress(reranked)
 
-        # 8. 组装结果
+        # 7. 组装结果
         context = RetrievalContext(
             query=query,
             mode=detected_mode,
             results=compressed,
             text_unit_evidence=[],
-            community_summary=global_result.answer if detected_mode in ("global", "hybrid") else "",
+            community_summary=global_result.answer if detected_mode in ("global", "hybrid") and global_result else "",
         )
 
         logger.info(

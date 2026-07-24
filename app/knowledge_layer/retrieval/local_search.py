@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
 from app.knowledge_layer.graph_store import Neo4jGraphStore
@@ -88,9 +86,8 @@ class LocalSearch:
 
         # 2. 子图遍历（1-2 跳）
         neighbor_entities: list[KGEntity] = []
-        neighbor_relations: list[Any] = []
         for entity in matched_entities[:5]:  # 限制中心实体数
-            neighbors, relations = await self._graph_store.get_neighbors(
+            neighbors = await self._graph_store.get_neighbors(
                 entity_id=entity.id,
                 max_depth=2,
                 workspace_id=workspace_id,
@@ -99,7 +96,6 @@ class LocalSearch:
                 if n.id not in seen_ids:
                     seen_ids.add(n.id)
                     neighbor_entities.append(n)
-            neighbor_relations.extend(relations)
 
         # 3. 构建 TextUnit 证据
         text_unit_evidence: list[TextUnit] = []
@@ -119,7 +115,6 @@ class LocalSearch:
             query=query,
             matched_entities=matched_entities,
             neighbor_entities=neighbor_entities,
-            neighbor_relations=neighbor_relations,
             text_unit_evidence=text_unit_evidence[:k],
         )
 
@@ -141,7 +136,6 @@ class LocalSearch:
         query: str,
         matched_entities: list[KGEntity],
         neighbor_entities: list[KGEntity],
-        neighbor_relations: list[Any],
         text_unit_evidence: list[TextUnit],
     ) -> str:
         """将检索结果组装成结构化上下文。
@@ -150,7 +144,6 @@ class LocalSearch:
             query: 原始查询。
             matched_entities: 匹配的实体。
             neighbor_entities: 邻接实体。
-            neighbor_relations: 邻接关系。
             text_unit_evidence: TextUnit 证据。
 
         Returns:
@@ -168,12 +161,6 @@ class LocalSearch:
             parts.append("### 相关实体\n")
             for e in neighbor_entities[:10]:
                 parts.append(f"- {e.name} ({e.type})")
-            parts.append("")
-
-        if neighbor_relations:
-            parts.append("### 实体关系\n")
-            for r in neighbor_relations[:10]:
-                parts.append(f"- {r.source} -> {r.target} ({r.type})")
             parts.append("")
 
         if text_unit_evidence:

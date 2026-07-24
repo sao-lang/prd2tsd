@@ -31,7 +31,7 @@ def test_all_functions_have_docstrings():
 
     files_without_docstring: list[str] = []
     for py_file in _get_py_files(app_dir):
-        with open(py_file) as f:
+        with open(py_file, encoding="utf-8") as f:
             try:
                 tree = ast.parse(f.read())
             except SyntaxError:
@@ -45,7 +45,7 @@ def test_all_functions_have_docstrings():
                     continue
                 # 检查是否有 docstring
                 if not (node.body and isinstance(node.body[0], ast.Expr)
-                        and isinstance(node.body[0].value, (ast.Constant, ast.Str))):
+                        and isinstance(node.body[0].value, ast.Constant)):
                     files_without_docstring.append(f"{py_file}:{node.lineno} {node.name}")
 
     if files_without_docstring:
@@ -61,7 +61,7 @@ def test_no_todo_or_fixme():
 
     violations: list[str] = []
     for py_file in _get_py_files(app_dir):
-        with open(py_file) as f:
+        with open(py_file, encoding="utf-8") as f:
             for i, line in enumerate(f, 1):
                 stripped = line.strip()
                 if ("TODO" in stripped or "FIXME" in stripped) and "VIBE_DEFER" not in stripped:

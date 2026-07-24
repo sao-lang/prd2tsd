@@ -154,13 +154,9 @@ class BuildStats(BaseModel):
     """知识图谱构建统计。"""
 
     entities: int = 0
-    relations: int = 0
-    text_units: int = 0
-    claims: int = 0
-    communities: int = 0
+    chunks: int = 0
     file_path: str = ""
     workspace_id: str = ""
-    version_id: str = ""
 
 
 class Chunk(BaseModel):

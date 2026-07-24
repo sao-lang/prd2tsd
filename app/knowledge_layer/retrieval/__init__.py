@@ -1,4 +1,4 @@
-"""Retrieval — 多路检索管线。"""
+"""Retrieval — 多路检索管线（含反思）。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from app.knowledge_layer.retrieval.fusion import RRFFusion
 from app.knowledge_layer.retrieval.global_search import GlobalSearch
 from app.knowledge_layer.retrieval.intent_router import IntentRouter
 from app.knowledge_layer.retrieval.local_search import LocalSearch
+from app.knowledge_layer.retrieval.reflection import ReflectionJudge
 from app.knowledge_layer.retrieval.reranker import ReRanker
 from app.knowledge_layer.retrieval.rewriter import QueryRewriter
 
@@ -20,4 +21,5 @@ __all__ = [
     "RRFFusion",
     "ReRanker",
     "Compressor",
+    "ReflectionJudge",
 ]

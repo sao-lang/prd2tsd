@@ -1,5 +1,68 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-07-24
+
+#### 3. 自动同步方案：junction + Git hooks 协同
+
+- **时间：** 2026-07-24 13:00:00
+- **发起人：** user
+- **修改文件：**
+  - `.github/skills/ai-coding-rules` — 替换为 Junction → `lania-shared-skills`（实时同步）
+  - `.github/skills/debug-tools` — 替换为 Junction → `lania-shared-skills`（实时同步）
+  - `.githooks/pre-commit` — 重写，提交前：拆 junction → 复制真实文件 → clear skip-worktree → git add
+  - `.githooks/post-commit` — 新增，提交后：删真实文件 → 重建 junction → set skip-worktree
+  - `.githooks/post-checkout` — 更新，检出后检测异常状态并恢复 junction
+  - `sync-skills.ps1` — 重写，支持三种模式：默认/ToReal/ToJunction
+- **修改内容：** 最终方案：开发时用 junction 实时同步共享目录更改 + skip-worktree 让 Git 忽略；提交时 pre-commit 自动转真实文件让 Git 感知改动并加入提交；提交后 post-commit 自动恢复 junction。
+- **复盘结果：**
+  - ✅ 日常改共享目录 → 项目实时同步（junction）
+  - ✅ `git status` 日常不显示 junction 文件（skip-worktree）
+  - ✅ `git commit` → pre-commit 自动转真实文件 → Git 感知改动 → 提交 → post-commit 恢复 junction
+  - ✅ 手动切换：`.\sync-skills.ps1 -ToReal` / `-ToJunction`
+  - ✅ `lania-agent-runtime` 非 Git 项目，junction 全自动
+
+#### 2. Skill 规则合并至共享目录 + Git 兼容方案
+
+- **时间：** 2026-07-24 12:30:00
+- **发起人：** user
+- **修改文件：**
+  - `E:\vsc-workspace\lania-shared-skills\ai-coding-rules\` — 合并所有改动至共享中心
+  - `E:\vsc-workspace\lania-shared-skills\sync-to-project.ps1` — 新增同步脚本
+  - `prd2tsd-agents\.github\skills\ai-coding-rules` — 恢复为真实目录（Git 兼容），通过 `sync-to-project.ps1` 与共享目录同步
+  - `lania-agent-runtime\.github\skills\ai-coding-rules` — Junction → `lania-shared-skills`（非 Git 项目，junction 自动同步）
+  - `lania-agent-runtime\.github\copilot-instructions.md` — 新建
+- **修改内容：** 共享目录合并完成后，发现 prd2tsd-agents 用 Junction 会导致 Git 显示文件被删除。已将 prd2tsd-agents 恢复为真实文件目录，新增 `sync-to-project.ps1` 同步脚本用于手动从共享目录同步到各项目
+- **修改内容：** 将四层测试体系、真实环境验证、验证报告模板等改动合并到共享目录 `lania-shared-skills`；prd2tsd-agents 的 ai-coding-rules 从独立副本改为 Junction 链接，修改共享目录即自动同步所有项目
+- **复盘结果：** 双向合并完成——共享目录获得了新规则（R10a/四层测试/验证报告），prd2tsd-agents 获得了共享目录的已有改进（R8b/R8c 设计文档 checklist、R10 功能可用性验证、各语言注释示例）
+- **潜在风险：** 修改共享目录会影响所有通过 Junction 链接的项目，改动前需确认影响范围
+
+#### 4. 批量部署 skills 同步到 lania-zip 全部 14 个项目
+
+- **时间：** 2026-07-24 13:30:00
+- **发起人：** user
+- **修改文件：**
+  - `lania-shared-skills\setup-all-projects.ps1` — 新增批量安装脚本
+  - 13 个项目（除 prd2tsd-agents 外）安装了 `.githooks/` + `sync-skills.ps1`
+- **修改内容：** 通过 `setup-all-projects.ps1` 一键为所有项目配置：.githooks（pre-commit / post-commit / post-checkout）、sync-skills.ps1、git config core.hooksPath、git update-index --skip-worktree
+- **复盘结果：** 全部 14 个项目统一完成配置。修改共享目录后，任一项目执行 git commit 自动同步 → Git 感知改动 → 提交后恢复 junction 实时同步
+- **潜在风险：** setup-all-projects.ps1 仅在新增项目时需要重新执行
+
+#### 1. Skill 规则增强：强制真实环境连接验证（Smoke Test）
+
+- **时间：** 2026-07-24 12:00:00
+- **发起人：** user
+- **修改文件：**
+  - `.github/skills/ai-coding-rules/rules/00-base.instructions.md` — 新增 R10a 真实环境验证规则
+  - `.github/skills/ai-coding-rules/rules/03-testing.instructions.md` — 重写为测试分层规范，增加 Smoke Test 强制要求
+  - `.github/skills/ai-coding-rules/rules/01-typescript.instructions.md` — Testing 节增加真实环境验证
+  - `.github/skills/ai-coding-rules/rules/08-dart.instructions.md` — Testing 节增加真实环境验证
+  - `.github/skills/ai-coding-rules/rules/09-rust.instructions.md` — Testing 节增加真实环境验证
+  - `.github/skills/ai-coding-rules/rules/10-python.instructions.md` — Testing 节增加真实环境验证
+  - `.github/skills/ai-coding-rules/rules/11-go.instructions.md` — Testing 节增加真实环境验证
+- **修改内容：** 新增全局规则 R10a，要求涉及外部服务的项目必须运行真实环境连接验证测试（禁止 Mock），确认服务可达后才能报告"测试通过"；03-testing 重写为四层测试体系（单元/集成/Smoke/E2E）；新增"验证报告"强制输出章节（含标准模板，必须按格式输出测试结论）；所有语言规则同步增加真实环境验证要求；E2E 测试通过为最终准入条件
+- **复盘结果：** 解决了 AI 仅凭 Mock 测试通过就误报"全部成功"的问题，现在 Skill 强制要求：(1) 区分 Mock 测试与真实环境测试 (2) 测试结束后必须按模板输出结构化验证报告 (3) 所有外部服务 Smoke Test 必须 ✅ 正常 (4) 有完整环境时还需 E2E 测试通过才能报告"通过"
+- **潜在风险：** 部分 CI/CD 环境可能没有外部服务运行中，需要配置条件跳过或标记为"环境不可用"
+
 ### 2026-07-23
 
 #### 1. 块 A：基础设施与质量底座

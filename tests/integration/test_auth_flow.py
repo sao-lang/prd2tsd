@@ -9,6 +9,9 @@ from httpx import ASGITransport, AsyncClient
 @pytest.mark.asyncio
 async def test_register_login_flow():
     """完整用户注册→登录→访问受保护资源→刷新→登出。"""
+    from app.core.connections import connection_manager, init_connections
+    init_connections()
+    await connection_manager.startup()
     from app.main import app
 
     transport = ASGITransport(app=app)
@@ -34,6 +37,9 @@ async def test_register_login_flow():
 @pytest.mark.asyncio
 async def test_api_health():
     """验证 API 健康检查。"""
+    from app.core.connections import connection_manager, init_connections
+    init_connections()
+    await connection_manager.startup()
     from app.main import app
 
     transport = ASGITransport(app=app)

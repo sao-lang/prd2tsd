@@ -1,4 +1,4 @@
-"""PGVector 向量存储封装 — TextUnit / Entity Embedding 的向量读写。"""
+"""PGVector 向量存储封装 — Chunk / Entity Embedding 的向量读写。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.connections import connection_manager
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
-from app.knowledge_layer.models import Claim, ScoredDoc, TextUnit
+from app.knowledge_layer.models import Chunk, ScoredDoc
 
 logger = get_logger("prd2tsd.knowledge.vector_store")
 
@@ -72,38 +72,22 @@ class PGVectorStore:
             """
             )
         )
-        await session.execute(
-            text(
-                f"""
-            CREATE TABLE IF NOT EXISTS claim_embeddings (
-                id VARCHAR(64) PRIMARY KEY,
-                claim_type VARCHAR(64) DEFAULT '',
-                content TEXT NOT NULL,
-                subject_entity_id VARCHAR(64) DEFAULT '',
-                embedding vector({self._dimension}),
-                workspace_id VARCHAR(64) DEFAULT '',
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-            """
-            )
-        )
         await session.commit()
         logger.info("PGVector 表已就绪")
 
-    async def upsert_text_unit(
+    async def upsert_chunk(
         self,
-        text_unit: TextUnit,
+        chunk: Chunk,
         embedding: list[float] | None = None,
     ) -> None:
-        """写入 TextUnit 向量。
+        """写入 Chunk 向量。
 
         Args:
-            text_unit: TextUnit 对象。
+            chunk: Chunk 对象。
             embedding: 向量。为 None 时不写入向量。
         """
         session = await self._get_session()
         vec_str = json.dumps(embedding) if embedding else None
-        entity_ids = json.dumps(text_unit.entities, ensure_ascii=False)
         await session.execute(
             text(
                 """
@@ -117,12 +101,12 @@ class PGVectorStore:
             """
             ),
             {
-                "id": text_unit.id,
-                "text": text_unit.text,
+                "id": chunk.id,
+                "text": chunk.text,
                 "embedding": vec_str,
-                "section_path": text_unit.section_path,
-                "entity_ids": entity_ids,
-                "workspace_id": text_unit.workspace_id,
+                "section_path": chunk.section_path or "",
+                "entity_ids": "[]",
+                "workspace_id": chunk.metadata.get("workspace_id", "") if chunk.metadata else "",
             },
         )
         await session.commit()
@@ -171,41 +155,6 @@ class PGVectorStore:
         )
         await session.commit()
 
-    async def upsert_claim_embedding(
-        self,
-        claim: Claim,
-        embedding: list[float],
-    ) -> None:
-        """写入 Claim 向量。
-
-        Args:
-            claim: Claim 对象。
-            embedding: 向量。
-        """
-        session = await self._get_session()
-        vec_str = json.dumps(embedding)
-        await session.execute(
-            text(
-                """
-            INSERT INTO claim_embeddings (id, claim_type, content, subject_entity_id, embedding, workspace_id)
-            VALUES (:id, :claim_type, :content, :subject_entity_id, :embedding::vector, :workspace_id)
-            ON CONFLICT (id) DO UPDATE SET
-                claim_type = EXCLUDED.claim_type,
-                content = EXCLUDED.content,
-                embedding = EXCLUDED.embedding
-            """
-            ),
-            {
-                "id": claim.id,
-                "claim_type": claim.claim_type,
-                "content": claim.content,
-                "subject_entity_id": claim.subject_entity_id,
-                "embedding": vec_str,
-                "workspace_id": claim.workspace_id,
-            },
-        )
-        await session.commit()
-
     async def similarity_search(
         self,
         embedding: list[float],
@@ -217,7 +166,7 @@ class PGVectorStore:
 
         Args:
             embedding: 查询向量。
-            table: 表名（text_unit_embeddings / entity_embeddings / claim_embeddings）。
+            table: 表名（text_unit_embeddings / entity_embeddings）。
             top_k: 返回数量。
             workspace_id: 工作空间 ID。
 

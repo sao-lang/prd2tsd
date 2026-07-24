@@ -21,7 +21,7 @@ async def test_local_search_returns_entities() -> None:
             KGEntity(id="e2", name="JWT 认证", type="TechStack", description="JWT 身份认证"),
         ]
     )
-    mock_graph.get_neighbors = AsyncMock(return_value=([], []))
+    mock_graph.get_neighbors = AsyncMock(return_value=[])
 
     searcher = LocalSearch(graph_store=mock_graph)
     result = await searcher.search("用户服务")
@@ -44,7 +44,7 @@ async def test_local_search_returns_evidence() -> None:
             ),
         ]
     )
-    mock_graph.get_neighbors = AsyncMock(return_value=([], []))
+    mock_graph.get_neighbors = AsyncMock(return_value=[])
 
     searcher = LocalSearch(graph_store=mock_graph)
     result = await searcher.search("JWT 认证")
