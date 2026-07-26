@@ -76,6 +76,13 @@
 - LLM 生成搜索关键词
 - 结果实时索引并返回
 
+**E12 — ⭐⭐ SSE 流式推送**
+- EventBus 内存 Pub/Sub（asyncio.Queue 实现）
+- SSE 端点：任务事件流 / 一键提交+流式 / 流式 Q&A / 审核+流式恢复
+- LLM Gateway `stream_complete()` 流式调用
+- Generation Layer 流式文档片段推送
+- 流式 Q&A：知识检索 + LLM 流式回答
+
 ---
 
 ## 2. 目标
@@ -92,6 +99,7 @@
 | 协作文档可用 | 评论/建议修改/变更历史全流程 |
 | 定时任务生效 | Celery Beat 定时刷新知识图谱 |
 | 搜索引擎回退 | 本地无结果时自动触发网络搜索 |
+| SSE 流式推送 | EventBus 可用，SSE 端点就绪，流式 Q&A / 流式文档 / 实时审核通知全部可用 |
 | 端到端仍然通 | 块 D 的 test_full_flow.py 仍然 PASS |
 
 ---
@@ -672,8 +680,272 @@ pytest tests/integration/test_search_fallback.py -v
 ✅ Celery Beat 定时任务就绪
 ✅ 本地无结果时自动触发网络搜索
 ✅ Webhook 可配置
+✅ EventBus 内存 Pub/Sub 就绪
+✅ SSE 端点可用（任务事件流 / 流式生成 / 流式 Q&A / 审核流式恢复）
+✅ LLM Gateway 流式调用就绪
+✅ Generation Layer 流式文档片段推送
+✅ 流式 Q&A：知识检索 + LLM 流式回答
 ✅ 块 A/B/C/D 全部回归测试仍然全绿
 🎉 系统完整可用
+```
+
+---
+
+## 11. E12 — SSE 流式推送
+
+> 为系统添加 SSE (Server-Sent Events) 支持，解决长时间任务等待、Human-in-the-Loop 实时交互、流式文档生成和流式 Q&A 问题。
+
+### 11.1 需求场景
+
+| 场景 | 当前问题 | SSE 方案 |
+|------|---------|---------|
+| PRD→TSD 长任务 | 轮询 `GET /tasks/{id}`，无法实时获知进度 | SSE 推送 progress/log/status |
+| 人工审核 (HITL) | 需主动刷新 `GET /review/pending` | SSE 实时推送 `review_required` |
+| 文档生成阶段 | LLM 生成慢，用户干等 | SSE 逐 chunk 推送文档片段 |
+| 知识图谱 Q&A | 一次性返回，无法展示 LLM 思考过程 | SSE 流式推送回答片段 |
+
+### 11.2 架构
+
+```
+客户端 (EventSource / fetch ReadableStream)
+       ↕ SSE (text/event-stream)
+┌──────────────────────────────────┐
+│    FastAPI SSE 路由层             │
+│  /tasks/{id}/events               │
+│  /generate/stream                 │
+│  /qna/stream                      │
+│  /tasks/{id}/stream-review        │
+└──────────┬───────────────────────┘
+           ↕ publish / subscribe (asyncio.Queue)
+┌──────────────────────────────────┐
+│    EventBus (内存 Pub/Sub)        │
+│  channel: "task:{task_id}"       │
+│  channel: "qna:{session_id}"     │
+└──────────┬───────────────────────┘
+           ↕ emit
+┌──────────────────────────────────┐
+│  TaskManager (+流式埋点)          │
+│  LLM Gateway.stream_complete()    │
+│  Generation Layer (流式 Section)  │
+│  Knowledge Pipeline (流式 Q&A)    │
+└──────────────────────────────────┘
+```
+
+### 11.3 新增文件
+
+```
+app/streaming/
+├── __init__.py
+├── event_bus.py                  # EventBus (asyncio.Queue Pub/Sub)
+└── models.py                     # SseEvent, 事件类型常量
+
+app/api/routes/
+├── stream_generate.py            # POST /generate/stream (SSE)
+└── stream_qna.py                 # POST /qna/stream (SSE)
+
+app/api/schemas/
+└── streaming.py                  # 流式请求体模型
+
+app/llm_gateway/providers/
+├── base.py                       # 修改: 添加 stream_complete() 抽象方法
+├── openai.py                     # 修改: 实现 stream_complete()
+├── deepseek.py                   # 修改: 实现 stream_complete()
+└── ollama.py                     # 修改: 实现 stream_complete()
+
+修改文件:
+- app/llm_gateway/__init__.py     # 添加 stream_complete() 方法
+- app/task_manager.py             # 注入 EventBus，执行过程 emit 事件
+- app/generation_layer/nodes/     # SectionWriter 流式调用 + EventBus 推送
+```
+
+### 11.4 SSE 事件协议
+
+```python
+@dataclass
+class SseEvent:
+    type: str          # 事件类型
+    payload: dict      # 事件数据
+    timestamp: str     # ISO 时间戳
+
+# 事件类型一览
+EVENT_TYPES = {
+    "task.created":          "任务创建成功",
+    "task.progress":         "进度更新 (0.0~1.0) + 当前阶段",
+    "task.log":              "日志消息",
+    "task.status":           "状态变更 (running/paused/complete/failed)",
+    "task.review_required":  "需要人工审核 — 推送审核上下文",
+    "task.review_resolved":  "审核已处理",
+    "generation.chunk":      "流式文档片段 — 逐 chunk 推送",
+    "generation.section":    "Section 级别状态 (generating/done)",
+    "qna.chunk":             "流式 Q&A 回答片段",
+    "qna.status":            "Q&A 阶段状态 (retrieving/generating)",
+    "keepalive":             "30s 心跳保活",
+    "done":                  "任务完成",
+    "error":                 "错误事件",
+}
+```
+
+### 11.5 EventBus
+
+```python
+class EventBus:
+    """内存事件总线 — 基于 asyncio.Queue 的 Pub/Sub。"""
+
+    _channels: dict[str, set[asyncio.Queue]]
+    _lock: asyncio.Lock
+
+    async def publish(self, channel: str, event: SseEvent) -> None:
+        """向 channel 发布事件。"""
+
+    async def subscribe(self, channel: str) -> asyncio.Queue:
+        """订阅 channel，返回 Queue。"""
+
+    def unsubscribe(self, channel: str, queue: asyncio.Queue) -> None:
+        """取消订阅。"""
+
+
+# 全局单例
+event_bus = EventBus()
+```
+
+### 11.6 SSE 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/tasks/{task_id}/events` | GET | 订阅任务事件流（核心端点） |
+| `/api/v1/generate/stream` | POST | 一键提交 + 全程 SSE 推送 |
+| `/api/v1/qna/stream` | POST | 流式 Q&A（检索 + LLM 回答） |
+| `/api/v1/tasks/{task_id}/stream-review` | POST | 审核 + 流式恢复 |
+
+SSE 端点使用 `StreamingResponse(text/event-stream)`，配合 `X-Accel-Buffering: no` 头禁用 nginx 缓冲。
+
+### 11.7 LLM Gateway 流式
+
+```python
+class LLMGateway:
+    async def stream_complete(
+        self,
+        prompt: str,
+        task_type: str = "default",
+        workspace_id: str = "",
+        layer: str = "",
+        node: str = "",
+        **kwargs: Any,
+    ) -> AsyncGenerator[str, None]:
+        """流式调用 LLM，yield 文本块。
+
+        保留完整链路: 速率限制 → 模型路由 → 预算检查
+        → 语义缓存(跳过) → 追踪 → Provider.stream_complete() → 成本记录
+        """
+```
+
+Provider 层:
+
+```python
+class BaseProvider(ABC):
+    @abstractmethod
+    async def stream_complete(
+        self, prompt: str, model: str, **kwargs: Any,
+    ) -> AsyncGenerator[str, None]:
+        ...
+
+class OpenAIProvider(BaseProvider):
+    async def stream_complete(self, prompt, model, **kwargs):
+        response = await self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+            **kwargs,
+        )
+        async for chunk in response:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                yield delta
+```
+
+### 11.8 TaskManager 埋点
+
+执行链路中的事件点:
+
+```
+_execute_task():
+  1. 任务创建       → emit("task.created", {task_id})
+  2. 知识检索开始    → emit("task.log", {level:"info", message:"..."})
+                     → emit("task.progress", {progress:0.05, stage:"knowledge_retrieval"})
+  3. 分析完成        → emit("task.progress", {progress:0.35, stage:"analysis"})
+  4. 需人工审核      → emit("task.review_required", {stage, data})
+                     → emit("task.status", {status:"paused"})
+  5. 审核通过        → emit("task.review_resolved", {stage, decision})
+                     → emit("task.status", {status:"running"})
+  6. 生成阶段        → emit("task.progress", {progress:0.60, stage:"generation"})
+                     → emit("generation.section", {section_name, status:"generating"})
+                     → emit("generation.chunk", {section, content})
+                     → emit("generation.section", {section_name, status:"done"})
+  7. 完成            → emit("task.progress", {progress:1.0})
+                     → emit("done", {task_id, result_summary})
+```
+
+### 11.9 流式 Q&A 流程
+
+```
+POST /qna/stream
+  → SSE: qna.status({phase:"retrieving", message:"正在检索知识图谱..."})
+  → RetrievalPipeline.retrieve(query, workspace_id)
+  → SSE: qna.status({phase:"retrieved", message:"检索到 N 条结果", sources:[...]})
+  → 构建 Prompt(query + context)
+  → SSE: qna.status({phase:"generating", message:"正在生成回答..."})
+  → gateway.stream_complete(prompt)
+    → SSE: qna.chunk({content:"..."})  ← 逐 chunk
+    → SSE: qna.chunk({content:"..."})
+    → ...
+  → SSE: done({})
+```
+
+### 11.10 错误处理与健壮性
+
+| 场景 | 处理 |
+|------|------|
+| 客户端断连 | EventBus 检测 Queue 满则静默丢弃；重连后发 `task.snapshot` 恢复状态 |
+| 超时保活 | 30s 无事件 → 发 `keepalive` 防止代理断开 |
+| 服务重启 | 内存 EventBus 丢失（后续可迁移到 Redis Pub/Sub） |
+| 浏览器限制 | 可使用 `fetch` + `ReadableStream` 替代 `EventSource`（支持自定义 header） |
+
+### 11.11 客户端示例
+
+```javascript
+// 流式 Q&A
+const resp = await fetch('/api/v1/qna/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ query: "有微服务相关的文档吗？", workspace_id: "ws-1" }),
+});
+
+const reader = resp.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  // 解析 SSE data: 行并渲染
+  for (const line of decoder.decode(value).split('\n')) {
+    if (line.startsWith('data: ')) {
+      renderChunk(JSON.parse(line.slice(6)));
+    }
+  }
+}
+```
+
+```python
+# Python CLI
+import httpx, sse_client
+
+for event in sse_client.get(f"http://localhost:8000/api/v1/tasks/{task_id}/events"):
+    if event.event == "generation.chunk":
+        print(event.data["content"], end="", flush=True)
+    elif event.event == "task.review_required":
+        decision = input(f"\n审核: {event.data['stage']} - 通过? (y/n): ")
+        httpx.post(f"/api/v1/tasks/{task_id}/stream-review",
+                   json={"decision": "approved" if decision == "y" else "needs_changes"})
 ```
 
 ---

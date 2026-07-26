@@ -1,5 +1,26 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-07-26
+
+#### 15. E12 — SSE 流式推送设计
+
+- **时间：** 2026-07-26
+- **发起人：** 用户需求
+- **新增于：** `docs/block-E-enterprise.md` §11
+- **设计内容：**
+  - **EventBus** — 基于 `asyncio.Queue` 的内存 Pub/Sub，按 channel 发布/订阅
+  - **SSE 端点** — 4 个：
+    - `GET /api/v1/tasks/{task_id}/events` — 任务事件流
+    - `POST /api/v1/generate/stream` — 一键提交 + 全程 SSE
+    - `POST /api/v1/qna/stream` — 流式 Q&A
+    - `POST /api/v1/tasks/{task_id}/stream-review` — 审核 + 流式恢复
+  - **LLM Gateway** — `stream_complete()` 流式调用，Provider 层 yield token chunks
+  - **Generation Layer** — SectionWriter 逐 chunk 推送文档片段
+  - **TaskManager** — 执行过程 10+ 埋点 emit 事件
+  - **流式 Q&A** — 检索 → LLM 流式回答 → done
+  - **14 种 SSE 事件类型** + 重连恢复 + 心跳保活
+  - 详见 `docs/block-E-enterprise.md` §11
+
 ### 2026-07-24
 
 #### 14. 多轮自省修复：Gateway 加固 / 线程安全 / 配置补全 / Alembic 修正 / Auth 安全
@@ -418,7 +439,7 @@
 - **修改文件：**
   - `requirements.txt` — 新增 llama-index-core, llama-index-graph-stores-neo4j, llama-index-vector-stores-postgres, llama-index-embeddings-huggingface, sentence-transformers, pgvector
   - 新增 `app/knowledge_layer/` (24 个文件)
-- **修改内容：** 构建知识图谱完整生命周期：模型定义 → 文档加载 → 多粒度分块 → LLM 实体/关系提取 → 实体融合/消歧 → Claims 提取 → 多源融合 Embedding → TextUnit 构建 → Neo4j/PGVector 双写 → 版本控制/快照 → 知识老化策略 → 检索管线（意图路由/重写/丰富/Local Search/Global Search/RRF 融合/重排/压缩）
+- **修改内容：** 构建知识图谱完整生命周期：模型定义 → 文档加载 → 多粒度分块 → LLM 实体提取 → 实体融合/消歧 → 实体 Embedding → Neo4j 实体 + PGVector 向量双写 → 检索管线（意图路由/重写/丰富/Local Search/Global Search/RRF 融合/重排/压缩）
 - **复盘结果：** 79 个单元测试通过（含块 A 回归测试全绿），7 个集成测试通过（Mock 模式）
 - **潜在风险：** BGE Embedding 模型首次加载较慢（~3min）；Neo4j/PGVector 集成测试需真实容器运行
 
