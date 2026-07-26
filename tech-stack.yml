@@ -4,7 +4,7 @@
 
 framework:
   agent_orchestration: langgraph    # LangGraph StateGraph
-  rag: llamaindex                   # PropertyGraphIndex（禁用 langchain）
+  rag: none                         # 自实现（实体增强双路检索 + ReflectionJudge）
   llm_client: openai                # OpenAI SDK（兼容 DeepSeek API）
 
 embedding:
@@ -26,7 +26,7 @@ test:
   type_checker: mypy
 
 # === 黑名单（禁止引入） ===
-# langchain 生态（已指定 LlamaIndex）
+# langchain 生态
 forbidden:
   - langchain
   - langchain-core

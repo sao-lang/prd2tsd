@@ -43,8 +43,6 @@
 ```yaml
 # === 强制使用 ===
 rag_framework: 无                        # 核心链路自实现，不依赖 RAG 框架
-  # 注：requirements.txt 中保留 llama-index-* 作为可选补充层（index_builder.py）
-  #     但核心构建和检索链路不依赖 LlamaIndex
 
 embedding:
   model: BAAI/bge-large-zh-v1.5               # 中文 Embedding（1024维）
@@ -117,7 +115,7 @@ llm = get_llm()  # 返回 OpenAI 客户端（兼容 DeepSeek API）
 集合名: text_unit_embeddings
   向量维度: 1024  # BAAI/bge-large-zh-v1.5
   索引类型: IVFFlat
-  存储内容: TextUnit 原文 + metadata (section_path, entity_ids)
+  存储内容: Chunk 原文 + metadata (section_path, entity_ids)
 
 集合名: entity_embeddings
   向量维度: 1024
@@ -139,23 +137,6 @@ class KGEntity(BaseModel):
     embedding: list[float] = []
     confidence: float = 0.9
 
-class KGRelation(BaseModel):
-    """知识图谱关系"""
-    id: str
-    source: str          # 源实体 ID
-    target: str          # 目标实体 ID
-    type: str            # depends_on / implements / ...
-    reason: str = ""     # 提取理由
-
-class TextUnit(BaseModel):
-    """文本单元"""
-    id: str
-    text: str
-    entities: list[str]         # 关联实体 ID
-    relations: list[str]        # 关联关系 ID
-    section_path: str = ""
-    embedding: list[float] = []
-
 class ScoredDoc(BaseModel):
     """检索结果"""
     id: str
@@ -173,7 +154,7 @@ class ScoredDoc(BaseModel):
 app/knowledge_layer/
 ├── __init__.py
 ├── config.py                              # Neo4j / PGVector / LLM 配置
-├── models.py                              # KGEntity, KGRelation, TextUnit, ScoredDoc
+├── models.py                              # KGEntity, ScoredDoc, Chunk, Claim
 ├── pipeline.py                            # RetrievalPipeline 主入口
 │
 ├── ingestion/

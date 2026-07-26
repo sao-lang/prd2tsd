@@ -8,7 +8,7 @@
 
 ## 铁律零：技术栈锁定
 
-**LlamaIndex 是唯一允许的 RAG 框架，禁止引入 LangChain 任何包。**
+**禁用 LangChain 全家桶。RAG 框架：自实现（实体增强双路检索 + ReflectionJudge）。**
 
 详细禁止/必须清单见 [VIBE_CODING_RULES.md 第一章](VIBE_CODING_RULES.md#一技术栈强制约束)。
 
@@ -130,7 +130,7 @@ pytest tests/ -v
 
 ## 铁律七：技术栈由测试强制，不靠 AI 自觉
 
-AI 倾向于用自己熟悉的库（LangChain）替代文档指定的库（LlamaIndex）。
+AI 倾向于用自己熟悉的库（LangChain）替代技术栈指定的方案。
 用测试卡死，不依赖 AI 的"自觉"。
 
 ### 7.1 `tech-stack.yml` 是唯一真相来源

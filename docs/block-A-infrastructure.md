@@ -943,7 +943,7 @@ def test_no_langchain_import():
     ...
 
 def test_required_packages_installed():
-    """检测必须的包（llama-index, fastapi, sqlalchemy 等）是否在 requirements.txt。"""
+    """检测必须的包（fastapi, sqlalchemy 等）是否在 requirements.txt。"""
     ...
 
 def test_forbidden_packages_not_installed():

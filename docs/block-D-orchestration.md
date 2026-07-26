@@ -355,8 +355,8 @@ orchestrator.add_edge("final_assembly", END)
                               │
   ┌───────────────────────────┼──────────────────────────────┐
   │  Layer 1: Knowledge Layer (块 B)                        │
-  │  文档→分块→实体/关系提取→TextUnit→Neo4j+PGVector       │
-  │  → Local/Global/Multimodal Search                       │
+  │  文档→分块→实体提取→Neo4j实体+PGVector向量             │
+  │  → Local/Global/Hybrid Search                           │
   └───────────────────────────┬──────────────────────────────┘
                               │
   ┌───────────────────────────┼──────────────────────────────┐

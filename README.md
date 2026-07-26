@@ -48,7 +48,7 @@
 | **缓存** | Redis 7.x | 会话/缓存/队列 |
 | **对象存储** | MinIO | 文档/图片存储 |
 | **LLM SDK** | OpenAI SDK | 兼容 DeepSeek API |
-| **RAG 框架** | LlamaIndex 0.11+ | PropertyGraphIndex |
+| **RAG 框架** | 自实现 | 实体增强双路检索 + ReflectionJudge |
 | **Embedding** | BAAI/bge-large-zh-v1.5 | 中文 Embedding |
 | **Agent 编排** | LangGraph | StateGraph 工作流 |
 | **配置** | pydantic-settings | 三级优先级配置 |
@@ -226,7 +226,7 @@ curl -X POST "http://localhost:8012/api/v1/knowledge/search?query=用户服务�
 - **pytest** 测试覆盖正常/边界/异常路径
 - 每个函数 ≤ 50 行，每个文件 ≤ 300 行
 - 禁止 `TODO` / `FIXME` / `pass` / `raise NotImplementedError`
-- 禁止使用 LangChain 生态（使用 LlamaIndex）
+- 禁止使用 LangChain 生态（RAG 自实现）
 
 ## 许可证
 

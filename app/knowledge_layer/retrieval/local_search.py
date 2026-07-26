@@ -1,11 +1,11 @@
-"""Local Search 引擎 — 实体匹配 → 子图遍历 → TextUnit 原文证据 → 上下文组装。"""
+"""Local Search 引擎 — 实体匹配 → 子图遍历 → 上下文组装。"""
 
 from __future__ import annotations
 
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
 from app.knowledge_layer.graph_store import Neo4jGraphStore
-from app.knowledge_layer.models import KGEntity, ScoredDoc, TextUnit
+from app.knowledge_layer.models import KGEntity, ScoredDoc
 
 logger = get_logger("prd2tsd.knowledge.local_search")
 
@@ -16,18 +16,18 @@ class LocalSearchResult:
     def __init__(
         self,
         matched_entities: list[KGEntity],
-        text_unit_evidence: list[TextUnit],
+        source_entity_ids: list[str],
         context: str,
     ) -> None:
         """初始化搜索结果。
 
         Args:
             matched_entities: 匹配的实体列表。
-            text_unit_evidence: 原文证据列表。
+            source_entity_ids: 有原文来源的实体 ID 列表。
             context: 组装后的上下文文本。
         """
         self.matched_entities = matched_entities
-        self.text_unit_evidence = text_unit_evidence
+        self.source_entity_ids = source_entity_ids
         self.context = context
 
 
@@ -97,37 +97,30 @@ class LocalSearch:
                     seen_ids.add(n.id)
                     neighbor_entities.append(n)
 
-        # 3. 构建 TextUnit 证据
-        text_unit_evidence: list[TextUnit] = []
+        # 3. 收集有原文来源的实体 ID
+        source_entity_ids: list[str] = []
         for entity in matched_entities + neighbor_entities:
-            if entity.source_text_unit_id:
-                text_unit_evidence.append(
-                    TextUnit(
-                        id=entity.source_text_unit_id,
-                        text="",
-                        entities=[entity.id],
-                        section_path="",
-                    )
-                )
+            if entity.source_text_unit_id and entity.id not in source_entity_ids:
+                source_entity_ids.append(entity.id)
 
         # 4. 组装上下文
         context = self._assemble_context(
             query=query,
             matched_entities=matched_entities,
             neighbor_entities=neighbor_entities,
-            text_unit_evidence=text_unit_evidence[:k],
+            source_entity_ids=source_entity_ids[:k],
         )
 
         logger.info(
-            "Local Search 完成: %d entities, %d neighbors, %d text_units",
+            "Local Search 完成: %d entities, %d neighbors, %d sources",
             len(matched_entities),
             len(neighbor_entities),
-            len(text_unit_evidence),
+            len(source_entity_ids),
         )
 
         return LocalSearchResult(
             matched_entities=matched_entities + neighbor_entities,
-            text_unit_evidence=text_unit_evidence[:k],
+            source_entity_ids=source_entity_ids[:k],
             context=context,
         )
 
@@ -136,7 +129,7 @@ class LocalSearch:
         query: str,
         matched_entities: list[KGEntity],
         neighbor_entities: list[KGEntity],
-        text_unit_evidence: list[TextUnit],
+        source_entity_ids: list[str],
     ) -> str:
         """将检索结果组装成结构化上下文。
 
@@ -144,7 +137,7 @@ class LocalSearch:
             query: 原始查询。
             matched_entities: 匹配的实体。
             neighbor_entities: 邻接实体。
-            text_unit_evidence: TextUnit 证据。
+            source_entity_ids: 有原文来源的实体 ID 列表。
 
         Returns:
             组装后的上下文文本。
@@ -163,10 +156,10 @@ class LocalSearch:
                 parts.append(f"- {e.name} ({e.type})")
             parts.append("")
 
-        if text_unit_evidence:
-            parts.append("### 原文证据\n")
-            for tu in text_unit_evidence[:5]:
-                parts.append(f"- [{tu.id}] {tu.text[:200]}")
+        if source_entity_ids:
+            parts.append("### 原文来源\n")
+            for eid in source_entity_ids[:5]:
+                parts.append(f"- 实体 {eid}")
             parts.append("")
 
         return "\n".join(parts)

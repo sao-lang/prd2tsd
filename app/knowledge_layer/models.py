@@ -24,28 +24,6 @@ VALID_ENTITY_TYPES: list[str] = [
     "Concept",
 ]
 
-# ── 关系类型常量 ──
-
-RelationType = Literal[
-    "depends_on",
-    "implements",
-    "recommends",
-    "conflicts_with",
-    "alternative_to",
-    "part_of",
-    "extracted_from",
-]
-
-VALID_RELATION_TYPES: list[str] = [
-    "depends_on",
-    "implements",
-    "recommends",
-    "conflicts_with",
-    "alternative_to",
-    "part_of",
-    "extracted_from",
-]
-
 # ── Claims 类型常量 ──
 
 ClaimType = Literal[
@@ -84,36 +62,10 @@ class KGEntity(BaseModel):
     workspace_id: str = ""
 
 
-class KGRelation(BaseModel):
-    """知识图谱关系。"""
-
-    id: str = ""
-    source: str  # 源实体 ID
-    target: str  # 目标实体 ID
-    type: RelationType = "depends_on"
-    reason: str = ""
-    confidence: float = 0.9
-    source_text_unit_id: str = ""
-    workspace_id: str = ""
-
-
-class TextUnit(BaseModel):
-    """文本单元 — Chunk 与 Entity 之间的桥梁层。"""
-
-    id: str = ""
-    text: str
-    entities: list[str] = Field(default_factory=list)  # 关联实体 ID
-    relations: list[str] = Field(default_factory=list)  # 关联关系 ID
-    section_path: str = ""
-    embedding: list[float] = Field(default_factory=list)
-    chunk_index: int = 0
-    workspace_id: str = ""
-
-
 class Claim(BaseModel):
     """声明性断言（Claims / Covariates）。
 
-    从 TextUnit 中提取的对比/决策/规格/约束/预测类断言。
+    从 Chunk 中提取的对比/决策/规格/约束/预测类断言。
     """
 
     id: str = ""
@@ -145,7 +97,7 @@ class RetrievalContext(BaseModel):
     mode: str = "hybrid"
     results: list[ScoredDoc] = Field(default_factory=list)
     matched_entities: list[KGEntity] = Field(default_factory=list)
-    text_unit_evidence: list[TextUnit] = Field(default_factory=list)
+    text_unit_evidence: list[str] = Field(default_factory=list)
     community_summary: str = ""
     total_tokens: int = 0
 

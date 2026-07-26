@@ -1,11 +1,3 @@
-﻿# Copilot Instructions
-
-Skills 集中目录：E:\vsc-workspace\lania-zip\skills\
-
-> 所有 lania-zip 子项目共享同一套 Skill 集，无需在每个项目中重复定义。
-
----
-
 # Skills 使用指南
 
 > Skills 重构完成。`ai-coding-rules` 精简为纯编码规范入口，`workflow` 作为闭环统筹者调度所有 skill。

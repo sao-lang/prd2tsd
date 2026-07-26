@@ -10,10 +10,8 @@
 ### 1.1 必须使用（严格锁定）
 
 ```yaml
-llm_framework:
-  - "llama-index>=0.11.0"           # 知识图谱索引、检索、RAG 全部基于 LlamaIndex
-  - "llama-index-graph-stores-neo4j"
-  - "llama-index-vector-stores-postgres"
+rag:
+  - "自实现"                        # 实体增强双路检索 + ReflectionJudge（禁用 LangChain）
 
 agent_framework:
   - "langgraph>=0.2.0"              # Agent 编排
@@ -165,8 +163,7 @@ async def test_analysis_extracts_requirements():
 grep -c "langchain" requirements.txt
 # 输出必须为 0
 
-grep "llama-index" requirements.txt
-# 输出必须非空
+# RAG 框架自实现（不再依赖 LlamaIndex）
 
 # 第 2 关：类型检查
 mypy app/ --strict --ignore-missing-imports
@@ -209,7 +206,7 @@ grep -rn "TODO\|FIXME\|NotImplementedError" app/ --include="*.py" || echo "CLEAN
 技术约束见 VIBE_CODING_RULES.md，详细范围见 docs/phase-prompts.md，必须严格遵守。
 
 关键约束：
-1. 禁止引入 langchain 任何包，必须使用 llama-index
+1. 禁止引入 langchain 任何包，RAG 框架自实现
 2. 所有函数必须有 type hint 和 docstring
 3. 不允许 # TODO / pass / raise NotImplementedError
 4. 测试不允许空函数或 assert True
