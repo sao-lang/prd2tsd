@@ -20,6 +20,8 @@ class FormatAssemblerNode:
         """
         outline = state.get("outline", [])
         contents = state.get("section_contents", {})
+        mermaid = state.get("mermaid_diagrams", {})
+        code_scaffold = state.get("code_scaffold", "")
 
         # 按大纲顺序组装
         lines: list[str] = []
@@ -30,10 +32,14 @@ class FormatAssemblerNode:
 
         content = "\n".join(lines) if lines else "# 技术方案文档\n\n（内容待生成）"
 
+        # 附加代码框架
+        if code_scaffold:
+            content += "\n\n---\n\n## 代码框架\n\n" + code_scaffold
+
         result = GenerationResultDetail(
             content=content,
             sections=contents,
-            mermaid_diagrams={},
+            mermaid_diagrams=mermaid,
         )
 
         return {

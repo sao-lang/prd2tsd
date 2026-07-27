@@ -1,8 +1,9 @@
-"""PGVector 向量存储封装 — Chunk / Entity Embedding 的向量读写。"""
+"""PGVector 向量存储封装 — Chunk / Entity / Claim Embedding 的向量读写。"""
 
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,6 +67,24 @@ class PGVectorStore:
                 entity_type VARCHAR(64) DEFAULT '',
                 description TEXT DEFAULT '',
                 embedding vector({self._dimension}),
+                workspace_id VARCHAR(64) DEFAULT '',
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+            )
+        )
+        # Block F: Claims Embedding 表
+        await session.execute(
+            text(
+                f"""
+            CREATE TABLE IF NOT EXISTS claim_embeddings (
+                id VARCHAR(64) PRIMARY KEY,
+                subject VARCHAR(256) NOT NULL,
+                claim_type VARCHAR(32) NOT NULL,
+                content TEXT NOT NULL,
+                object TEXT DEFAULT '',
+                embedding vector({self._dimension}),
+                source_text_unit_id VARCHAR(64) DEFAULT '',
                 workspace_id VARCHAR(64) DEFAULT '',
                 created_at TIMESTAMP DEFAULT NOW()
             )
@@ -173,21 +192,29 @@ class PGVectorStore:
         Returns:
             排序后的检索结果列表。
         """
+        _allowed_tables = {"text_unit_embeddings", "entity_embeddings", "claim_embeddings"}
+        if table not in _allowed_tables:
+            raise ValueError(f"不允许查询表: {table}")
+
         session = await self._get_session()
         vec_str = json.dumps(embedding)
-        where_clause = ""
-        if workspace_id:
-            where_clause = f"WHERE workspace_id = '{workspace_id}'"
         query = text(
             f"""
             SELECT id, text, content, name, description,
-                   1 - (embedding <=> '{vec_str}'::vector) AS similarity
+                   1 - (embedding <=> :vec::vector) AS similarity
             FROM {table}
-            {where_clause}
+            WHERE (:workspace_id = '' OR workspace_id = :workspace_id)
             ORDER BY similarity DESC
-            LIMIT {top_k}
+            LIMIT :top_k
             """
         )
+        params: dict[str, Any] = {
+            "vec": vec_str,
+            "workspace_id": workspace_id,
+            "top_k": top_k,
+        }
+        query = text(query.text)
+        result = await session.execute(query, params)
         result = await session.execute(query)
         rows = result.fetchall()
 
@@ -221,6 +248,10 @@ class PGVectorStore:
         Returns:
             是否成功删除。
         """
+        _allowed_tables = {"text_unit_embeddings", "entity_embeddings", "claim_embeddings"}
+        if table not in _allowed_tables:
+            raise ValueError(f"不允许删除表: {table}")
+
         session = await self._get_session()
         result = await session.execute(
             text(f"DELETE FROM {table} WHERE id = :id"),
@@ -240,10 +271,109 @@ class PGVectorStore:
         Returns:
             记录数量。
         """
+        _allowed_tables = {"text_unit_embeddings", "entity_embeddings", "claim_embeddings"}
+        if table not in _allowed_tables:
+            raise ValueError(f"不允许统计表: {table}")
+
         session = await self._get_session()
-        where = f"WHERE workspace_id = '{workspace_id}'" if workspace_id else ""
         result = await session.execute(
-            text(f"SELECT COUNT(*) AS cnt FROM {table} {where}")
+            text(f"SELECT COUNT(*) AS cnt FROM {table} WHERE (:workspace_id = '' OR workspace_id = :workspace_id)"),
+            {"workspace_id": workspace_id},
         )
         row = result.one()
         return int(row[0])
+
+    # ════════════════════════════════════════════
+    # Block F: Claims 操作
+    # ════════════════════════════════════════════
+
+    async def upsert_claim(
+        self,
+        claim: Any,
+        embedding: list[float] | None = None,
+    ) -> None:
+        """写入 Claim Embedding。
+
+        Args:
+            claim: Claim 模型实例。
+            embedding: 向量。
+        """
+        session = await self._get_session()
+        vec_str = json.dumps(embedding) if embedding else None
+        await session.execute(
+            text(
+                """
+            INSERT INTO claim_embeddings
+            (id, subject, claim_type, content, object, embedding, source_text_unit_id, workspace_id)
+            VALUES
+            (:id, :subject, :claim_type, :content, :object, :embedding::vector, :source_text_unit_id, :workspace_id)
+            ON CONFLICT (id) DO UPDATE SET
+                subject = EXCLUDED.subject,
+                claim_type = EXCLUDED.claim_type,
+                content = EXCLUDED.content,
+                object = EXCLUDED.object,
+                embedding = EXCLUDED.embedding
+            """
+            ),
+            {
+                "id": claim.id,
+                "subject": claim.subject,
+                "claim_type": claim.claim_type,
+                "content": claim.content,
+                "object": claim.object or "",
+                "embedding": vec_str,
+                "source_text_unit_id": claim.source_text_unit_id or "",
+                "workspace_id": claim.workspace_id or "",
+            },
+        )
+        await session.commit()
+
+    async def search_claims(
+        self,
+        query: str,
+        top_k: int = 5,
+        workspace_id: str = "",
+    ) -> list[Any]:
+        """语义搜索 Claims。
+
+        Args:
+            query: 查询文本。
+            top_k: 返回数量。
+            workspace_id: 工作空间 ID。
+
+        Returns:
+            Claim 对象列表。
+        """
+        from app.knowledge_layer.models import Claim
+
+        session = await self._get_session()
+        where_clause = ""
+        if workspace_id:
+            where_clause = f"WHERE workspace_id = '{workspace_id}'"
+        query_sql = text(
+            f"""
+            SELECT id, subject, claim_type, content, object, source_text_unit_id, workspace_id
+            FROM claim_embeddings
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT {top_k}
+            """
+        )
+        result = await session.execute(query_sql)
+        rows = result.fetchall()
+
+        claims: list[Claim] = []
+        for row in rows:
+            row_dict = dict(row._mapping)
+            claims.append(
+                Claim(
+                    id=row_dict.get("id", ""),
+                    subject=row_dict.get("subject", ""),
+                    claim_type=row_dict.get("claim_type", "specification"),
+                    content=row_dict.get("content", ""),
+                    object=row_dict.get("object", ""),
+                    source_text_unit_id=row_dict.get("source_text_unit_id", ""),
+                    workspace_id=row_dict.get("workspace_id", ""),
+                )
+            )
+        return claims

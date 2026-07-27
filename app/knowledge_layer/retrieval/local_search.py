@@ -182,17 +182,20 @@ class LocalSearch:
         """
         result = await self.search(query, workspace_id, top_k)
         docs: list[ScoredDoc] = []
-        for i, tu in enumerate(result.text_unit_evidence):
+        for i, ent in enumerate(result.matched_entities):
             docs.append(
                 ScoredDoc(
-                    id=tu.id,
-                    text=tu.text,
+                    id=ent.id,
+                    text=ent.name,
                     score=1.0 - (i * 0.1),
                     source="local",
-                    metadata={"entity_count": len(result.matched_entities)},
+                    metadata={
+                        "entity_count": len(result.matched_entities),
+                        "entity_type": getattr(ent, "entity_type", getattr(ent, "type", "")),
+                    },
                 )
             )
-        if not docs:
+        if not docs and result.context:
             docs.append(
                 ScoredDoc(
                     id="local_context",

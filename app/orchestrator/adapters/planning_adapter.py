@@ -32,10 +32,26 @@ class PlanningAdapter:
             更新后的 OrchestratorState。
         """
         # 1. 提取 Planning Layer 需要的输入
-        planning_input = {
+        planning_input: dict = {
             "analysis_result": state.get("analysis_result"),
             "knowledge_context": state.get("knowledge_context"),
         }
+
+        # P0.1: 注入评测反馈（迭代循环时）
+        eval_report = state.get("evaluation_report")
+        if eval_report is not None:
+            if hasattr(eval_report, "critical_issues"):
+                planning_input["evaluation_feedback"] = {
+                    "issues": list(eval_report.critical_issues),
+                    "recommendations": list(eval_report.recommendations),
+                    "overall_score": float(eval_report.overall_score),
+                }
+            else:
+                planning_input["evaluation_feedback"] = {
+                    "issues": eval_report.get("critical_issues", []),
+                    "recommendations": eval_report.get("recommendations", []),
+                    "overall_score": float(eval_report.get("overall_score", 0.0)),
+                }
 
         # 2. 调用 Planning Layer
         result = await self.graph.ainvoke(planning_input)

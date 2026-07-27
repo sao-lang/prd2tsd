@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,18 +166,34 @@ class TestSessionExporter:
 class TestSessionSummarizer:
     """摘要生成器单元测试。"""
 
+    @pytest.fixture
+    def mock_gateway(self) -> MagicMock:
+        """创建 Mock LLM Gateway。"""
+        gw = MagicMock()
+        gw.complete = AsyncMock(
+            return_value=MagicMock(
+                content="订单系统设计",
+                model="mock",
+                cached=False,
+                cost=0.0,
+                input_tokens=0,
+                output_tokens=0,
+            )
+        )
+        return gw
+
     @pytest.mark.asyncio
-    async def test_generate_title_from_message(self) -> None:
+    async def test_generate_title_from_message(self, mock_gateway: MagicMock) -> None:
         """验证从首条消息生成标题。"""
-        summarizer = SessionSummarizer()
+        summarizer = SessionSummarizer(llm_gateway=mock_gateway)
         title = await summarizer.generate_title("请问订单系统如何设计？")
         assert len(title) > 0
         assert "订单" in title
 
     @pytest.mark.asyncio
-    async def test_generate_title_empty(self) -> None:
+    async def test_generate_title_empty(self, mock_gateway: MagicMock) -> None:
         """验证空消息返回默认标题。"""
-        summarizer = SessionSummarizer()
+        summarizer = SessionSummarizer(llm_gateway=mock_gateway)
         title = await summarizer.generate_title("")
         assert title == "新会话"
 

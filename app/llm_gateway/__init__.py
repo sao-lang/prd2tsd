@@ -1,13 +1,24 @@
 """LLM Gateway — 统一模型调用门面。
 
-所有 Agent Layer 通过此模块调用 LLM/Embedding/Rerank/ImageEncode 等模型。
-集成预算控制、速率限制、可观测性追踪和 本地模型兜底（Capabilities 层）。
+Block F 增强链路：
+1. 前置护栏（Prompt 注入检测 / PII 检测）
+2. 速率限制检查
+3. 模型路由
+4. 预算检查（自动降级）
+5. 语义缓存
+6. Circuit Breaker + Failover 链
+7. 追踪 + LLM 调用
+8. 后置护栏（内容安全 / 输出校验）
+9. 设置缓存 / 成本 / 预算 / 速率记录
 """
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
+from app.core.circuit_breaker import CircuitBreaker, CircuitBreakerManager
+from app.core.logger import get_logger
 from app.llm_gateway.budget_controller import BudgetController, budget_controller
 from app.llm_gateway.cache import SemanticCache
 from app.llm_gateway.capabilities.embedding import UnifiedEmbedding
@@ -15,6 +26,12 @@ from app.llm_gateway.capabilities.image_encoder import UnifiedImageEncoder
 from app.llm_gateway.capabilities.reranking import UnifiedReranking
 from app.llm_gateway.config_manager import ModelConfigManager
 from app.llm_gateway.cost_tracker import CostRecord, CostTracker
+from app.llm_gateway.failover import AllProvidersUnavailableError, FailoverManager, FailoverTarget
+from app.llm_gateway.guardrails import GuardrailManager
+from app.llm_gateway.guardrails.content_safety import ContentSafetyGuardrail
+from app.llm_gateway.guardrails.output_validator import OutputValidatorGuardrail
+from app.llm_gateway.guardrails.pii_detector import PIIDetectorGuardrail
+from app.llm_gateway.guardrails.prompt_injection import PromptInjectionGuardrail
 from app.llm_gateway.models import (
     ChatMessage,
     CompletionUsage,
@@ -24,8 +41,9 @@ from app.llm_gateway.models import (
 )
 from app.llm_gateway.providers import ProviderFactory
 from app.llm_gateway.rate_limiter import RateLimiter, rate_limiter
-from app.observability.metrics import track_llm_call
 from app.observability.tracing import tracer
+
+logger = get_logger("prd2tsd.gateway")
 
 # 全局单例
 config_manager = ModelConfigManager()
@@ -34,13 +52,10 @@ config_manager = ModelConfigManager()
 class LLMGateway:
     """LLM Gateway 门面类 — 统一对外接口。
 
-    组装 Provider + Router + CostTracker + Cache + BudgetController + RateLimiter，
-    提供 complete/embed/rerank/encode_image 等方法。
-
-    Capabilities 层实现"API 优先，本地模型兜底"策略：
-      - embed       → UnifiedEmbedding: OpenAI API → SentenceTransformer
-      - rerank      → UnifiedReranking: Cohere API → BGE Cross-encoder
-      - encode_image → UnifiedImageEncoder: (预留) → CLIP
+    Block F 增强：
+    - Circuit Breaker：每个 Provider 独立熔断
+    - Failover 链：Primary → Fallback → Ultimate
+    - Guardrails：前置（注入/PII）+ 后置（安全/输出校验）
     """
 
     def __init__(
@@ -58,15 +73,15 @@ class LLMGateway:
         """初始化 LLM Gateway。
 
         Args:
-            config_manager: 模型配置管理器。为 None 时使用全局单例。
-            provider_factory: Provider 工厂。为 None 时自动创建。
-            cost_tracker: 成本追踪器。为 None 时自动创建。
-            cache: 语义缓存。为 None 时自动创建。
-            budget_controller: 预算控制器。为 None 时使用全局单例。
-            rate_limiter: 速率限制器。为 None 时使用全局单例。
-            embedding: UnifiedEmbedding 实例。为 None 时自动创建。
-            reranking: UnifiedReranking 实例。为 None 时自动创建。
-            image_encoder: UnifiedImageEncoder 实例。为 None 时自动创建。
+            config_manager: 模型配置管理器。
+            provider_factory: Provider 工厂。
+            cost_tracker: 成本追踪器。
+            cache: 语义缓存。
+            budget_controller: 预算控制器。
+            rate_limiter: 速率限制器。
+            embedding: UnifiedEmbedding 实例。
+            reranking: UnifiedReranking 实例。
+            image_encoder: UnifiedImageEncoder 实例。
         """
         self.config_manager = config_manager or ModelConfigManager()
         self.provider_factory = provider_factory or ProviderFactory()
@@ -74,6 +89,18 @@ class LLMGateway:
         self.cache = cache or SemanticCache()
         self.budget_controller = budget_controller or BudgetController()
         self.rate_limiter = rate_limiter or RateLimiter()
+
+        # ── Block F: Failover 管理器 ──
+        self.failover = FailoverManager()
+        self._init_failover_chains()
+
+        # ── Block F: 护栏管理器 ──
+        self.guardrails = GuardrailManager()
+        self._init_guardrails()
+
+        # ── Block F: Provider Circuit Breakers ──
+        self._init_circuit_breakers()
+
         # Capabilities（API 优先，本地模型兜底）
         self.embedding_cap = embedding or UnifiedEmbedding(
             config_manager=self.config_manager,
@@ -84,6 +111,38 @@ class LLMGateway:
             provider_factory=self.provider_factory,
         )
         self.image_encoder_cap = image_encoder or UnifiedImageEncoder()
+
+    def _init_failover_chains(self) -> None:
+        """初始化 Failover 链（配置驱动）。"""
+        # LLM 链：deepseek-chat → gpt-4o-mini → 本地 llama
+        self.failover.configure("llm", [
+            FailoverTarget(provider="deepseek", model="deepseek-chat", priority=0),
+            FailoverTarget(provider="openai", model="gpt-4o-mini", priority=1),
+        ])
+        # Embedding 链
+        self.failover.configure("embedding", [
+            FailoverTarget(provider="openai", model="text-embedding-3-small", priority=0),
+        ])
+        logger.info("Failover 链初始化完成")
+
+    def _init_guardrails(self) -> None:
+        """注册默认护栏。"""
+        self.guardrails.register(PromptInjectionGuardrail())
+        self.guardrails.register(PIIDetectorGuardrail())
+        self.guardrails.register(ContentSafetyGuardrail())
+        self.guardrails.register(OutputValidatorGuardrail())
+        logger.info("护栏初始化完成: 4 个护栏已注册")
+
+    def _init_circuit_breakers(self) -> None:
+        """初始化 Provider Circuit Breakers。"""
+        for provider_name in ["deepseek", "openai", "anthropic", "cohere"]:
+            cb = CircuitBreaker(
+                name=f"provider:{provider_name}",
+                failure_threshold=3,
+                recovery_timeout=30.0,
+            )
+            CircuitBreakerManager.register(cb)
+        logger.info("Circuit Breaker 初始化完成")
 
     async def complete(
         self,
@@ -96,22 +155,22 @@ class LLMGateway:
     ) -> LLMResponse:
         """调用 LLM 生成文本。
 
-        Block E 增强链路：
+        Block F 增强链路：
+        0. 前置护栏（Prompt 注入 / PII 检测）
         1. 速率限制检查
         2. 模型路由
-        3. 预算检查（超限告警/自动降级）
-        4. 语义缓存检查（命中直接返回）
-        5. 追踪 + Prometheus 指标 + 实际 LLM 调用
-        6. 设置缓存
-        7. 成本记录
-        8. 预算记录
-        9. 速率限制记录
+        3. 预算检查（自动降级）
+        4. 语义缓存
+        5. Circuit Breaker + Failover 链（自动切换 Provider）
+        6. 追踪 + Prometheus 指标 + LLM 调用
+        7. 后置护栏（内容安全 / 输出校验）
+        8. 设置缓存 / 成本 / 预算 / 速率记录
 
         Args:
             prompt: 输入提示词。
             task_type: 任务类型，用于模型路由。
             workspace_id: 工作空间 ID。
-            layer: 所属层名（analysis/planning/generation/evaluation）。
+            layer: 所属层名。
             node: 所属节点名。
             **kwargs: 额外参数传递给 Provider。
 
@@ -126,16 +185,37 @@ class LLMGateway:
                 "layer": layer,
                 "node": node,
             },
-            kind=1,  # SpanKind.CLIENT
+            kind=1,
         ) as span:
-            # 1. 速率限制检查
+            # ── 步骤 0: 前置护栏 ──
+            guard_context = {
+                "task_type": task_type,
+                "workspace_id": workspace_id,
+                "layer": layer,
+            }
+            input_results = await self.guardrails.check_input(prompt, guard_context)
+            for r in input_results:
+                if r.blocked:
+                    span.set_attribute("guardrail_blocked", r.name)
+                    logger.warning("输入被护栏拦截: %s — %s", r.name, r.reason)
+                    return LLMResponse(
+                        content=f"[输入被护栏拦截: {r.reason}]",
+                        model="",
+                        cached=False,
+                        cost=0.0,
+                        input_tokens=0,
+                        output_tokens=0,
+                        metadata={"guardrail": r.name, "blocked": True, "reason": r.reason},
+                    )
+
+            # ── 步骤 1: 速率限制检查 ──
             rate_result = await self.rate_limiter.check(workspace_id)
             if not rate_result["allowed"]:
                 span.set_attribute("rate_limited", True)
                 span.set_attribute("retry_after", rate_result["retry_after"])
                 return LLMResponse(
                     content="",
-                    model=model_name,
+                    model="",
                     cached=False,
                     cost=0.0,
                     input_tokens=0,
@@ -143,10 +223,10 @@ class LLMGateway:
                     metadata={"error": "rate_limited", "retry_after": rate_result["retry_after"]},
                 )
 
-            # 2. 路由解析
+            # ── 步骤 2: 路由解析 ──
             model_config, model_name = self.config_manager.resolve_model(task_type)
 
-            # 3. 预算检查 — 如需降级切换模型和 Provider 配置
+            # ── 步骤 3: 预算检查 — 自动降级 ──
             budget_check = await self.budget_controller.check_and_record(
                 workspace_id, 0.0, model_name,
             )
@@ -155,41 +235,72 @@ class LLMGateway:
                 span.set_attribute("budget_downgrade", True)
                 span.set_attribute("original_model", model_name)
                 span.set_attribute("downgraded_model", low_cost_model)
-                # 降级时同时切换 Provider 配置（如 deepseek-chat→gpt-4o-mini 需换到 OpenAI）
                 _provider_map = {"gpt-4o-mini": "openai", "deepseek-chat": "deepseek"}
                 downgrade_provider = _provider_map.get(low_cost_model, "openai")
                 model_config = self.config_manager.get_config("llm", downgrade_provider)
                 model_name = low_cost_model
 
-            # 4. 检查缓存
+            # ── 步骤 4: 语义缓存 ──
             cache_key = self.cache.make_key(prompt, task_type)
             cached = self.cache.get(cache_key)
             if cached is not None:
                 span.set_attribute("cache_hit", True)
                 return LLMResponse(
                     content=cached,
-                model=model_name,
+                    model=model_name,
                     cached=True,
                     cost=0.0,
                     input_tokens=0,
                     output_tokens=0,
                 )
 
-            # 5. 追踪 LLM 调用
-            with track_llm_call(model=model_name, layer=layer, node=node) as token_info:
-                provider = self.provider_factory.create(model_config.provider, model_config)
-                response = await provider.complete(
-                    prompt=prompt,
-                    model=kwargs.pop("model", model_name) or model_name,
-                    **kwargs,
-                )
-                token_info["input_tokens"] = response.input_tokens
-                token_info["output_tokens"] = response.output_tokens
+            # ── 步骤 5: Circuit Breaker + Failover 链 ──
+            pv = model_config.provider
+            provider_name = pv.value if hasattr(pv, "value") else str(pv)
+            cb = CircuitBreakerManager.get(f"provider:{provider_name}")
 
-            # 6. 设置缓存
+            # 如果当前 Provider 已熔断，走 Failover
+            if cb and not cb.is_available:
+                logger.warning("Provider %s 已熔断，走 Failover 链", provider_name)
+                span.set_attribute("circuit_broken", True)
+                span.set_attribute("broken_provider", provider_name)
+
+            response, model_name = await self._failover_call(
+                prompt=prompt,
+                kwargs=kwargs,
+            )
+
+            if response is None:
+                span.set_attribute("all_calls_failed", True)
+                return LLMResponse(
+                    content="[服务暂不可用，请稍后重试]",
+                    model="",
+                    cached=False,
+                    cost=0.0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    metadata={"error": "all_calls_failed"},
+                )
+
+            # ── 步骤 7: 后置护栏 ──
+            expected_json = kwargs.get("response_format") is not None
+            output_results = await self.guardrails.check_output(
+                response.content,
+                {"task_type": task_type, "model": model_name, "expected_json": expected_json},
+            )
+            for r in output_results:
+                if r.blocked:
+                    if r.masked_text:
+                        response.content = r.masked_text
+                        span.set_attribute("guardrail_masked", True)
+                    else:
+                        response.content = f"[输出被护栏拦截: {r.reason}]"
+                        span.set_attribute("guardrail_blocked", r.name)
+                        break
+
+            # ── 步骤 8: 设置缓存 / 成本 / 预算 / 速率 ──
             self.cache.set(cache_key, response.content)
 
-            # 7. 记录成本
             self.cost_tracker.record(
                 model=model_name,
                 input_tokens=response.input_tokens,
@@ -202,12 +313,10 @@ class LLMGateway:
                 },
             )
 
-            # 8. 预算记录实际成本
             await self.budget_controller.check_and_record(
                 workspace_id, response.cost, model_name,
             )
 
-            # 9. 记录速率限制
             await self.rate_limiter.record(
                 workspace_id, response.input_tokens + response.output_tokens,
             )
@@ -218,6 +327,67 @@ class LLMGateway:
             span.set_attribute("cost", response.cost)
 
             return response
+
+    async def _failover_call(
+        self,
+        prompt: str,
+        kwargs: dict[str, Any],
+    ) -> tuple[LLMResponse | None, str]:
+        """执行 Circuit Breaker + Failover 链调用。
+
+        Args:
+            prompt: 输入提示词。
+            kwargs: 调用参数。
+
+        Returns:
+            (LLMResponse, model_name) 或 (None, "") 全部失败。
+        """
+        for attempt in range(3):
+            target_provider = ""
+            try:
+                target = await self.failover.get_target("llm")
+                target_provider = target.provider
+                target_model = target.model
+
+                target_config = self.config_manager.get_config("llm", target_provider)
+                target_cb = CircuitBreakerManager.get(f"provider:{target_provider}")
+
+                if target_cb and not target_cb.is_available:
+                    continue
+
+                # 构建调用闭包 — 通过参数默认值捕获循环变量
+                _cfg_ref = target_config
+                _mdl_ref = target_model
+                _kw_ref = dict(kwargs)
+                _pr_ref = prompt
+
+                async def _call(
+                    _c=_cfg_ref,
+                    _m=_mdl_ref,
+                    _p=_pr_ref,
+                    _k=_kw_ref,
+                ) -> LLMResponse:
+                    kw = dict(_k)
+                    provider = self.provider_factory.create(_c.provider, _c)
+                    mdl = kw.pop("model", _m) or _m
+                    return await provider.complete(prompt=_p, model=mdl, **kw)
+
+                if target_cb:
+                    resp = await target_cb.call(_call)
+                else:
+                    resp = await _call()
+
+                return resp, target_model
+
+            except AllProvidersUnavailableError:
+                logger.error("所有 LLM Provider 均不可用")
+                return (None, "")
+            except Exception as e:
+                logger.warning("Provider 调用失败 (attempt=%d): %s", attempt, e)
+                with suppress(Exception):
+                    await self.failover.record_failure("llm", target_provider)
+
+        return (None, "")
 
     async def embed(
         self,

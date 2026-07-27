@@ -6,7 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logger import get_logger
 from app.session_history.cleanup import SessionCleanupPolicy
+from app.session_history.compressor import ContextCompressor
 from app.session_history.exporter import SessionExporter
+from app.session_history.memory_retriever import MemoryRetriever
 from app.session_history.models import (
     MessageCreate,
     PageResult,
@@ -39,6 +41,8 @@ class SessionHistoryService:
     ) -> None:
         """初始化会话历史服务。
 
+        Block F 新增: compressor + memory_retriever。
+
         Args:
             repository: 会话仓库。
             search_service: 搜索服务。
@@ -51,6 +55,9 @@ class SessionHistoryService:
         self.exporter = exporter or SessionExporter()
         self.summarizer = summarizer or SessionSummarizer()
         self.cleanup_policy = cleanup_policy or SessionCleanupPolicy(self.repository)
+        # Block F: 记忆增强
+        self.compressor = ContextCompressor()
+        self.memory_retriever = MemoryRetriever()
 
     async def create_session(
         self,

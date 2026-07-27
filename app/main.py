@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import auth as auth_routes
 from app.api.routes import batch as batch_routes
+from app.api.routes import chat as chat_routes
 from app.api.routes import collaboration as collaboration_routes
 from app.api.routes import documents as documents_routes
 from app.api.routes import evaluate as evaluate_routes
@@ -54,7 +55,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 初始化 LLM Gateway
     logger.info("LLM Gateway 就绪")
 
-    # 初始化观测性（块 E）
+    # Block F: 注册 Agent 工具
+    from app.agents.registry import ToolRegistry
+    from app.agents.tools.code import GenerateCodeTool, ReadCodeTool
+    from app.agents.tools.document import ReadFileTool, SearchDocTool
+    from app.agents.tools.knowledge import GetEntityTool, SearchKnowledgeTool
+    from app.agents.tools.llm_tool import CallLLMTool
+    from app.agents.tools.system_tools import ListFilesTool, ReadTimeTool
+
+    for tool_cls in [
+        SearchKnowledgeTool, GetEntityTool,
+        ReadFileTool, SearchDocTool,
+        CallLLMTool,
+        GenerateCodeTool, ReadCodeTool,
+        ReadTimeTool, ListFilesTool,
+    ]:
+        ToolRegistry.register(tool_cls())
+    logger.info("Agent 工具注册完成: %d tools", len(ToolRegistry.get_tool_names()))
+
+    # Block F: 初始化观测性
     from app.observability import tracer  # noqa: F401
     logger.info("OpenTelemetry 追踪已初始化: %s", settings.OTEL_SERVICE_NAME)
 
@@ -173,6 +192,7 @@ app.include_router(integrations_routes.router)
 app.include_router(multimodal_routes.router)
 app.include_router(collaboration_routes.router)
 app.include_router(batch_routes.router)
+app.include_router(chat_routes.router)  # Block F: 统一 Chat 入口（意图路由）
 
 
 @app.get("/")

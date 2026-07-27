@@ -10,6 +10,9 @@ from langgraph.graph import END, StateGraph
 
 from app.core.logger import get_logger
 from app.knowledge_layer.pipeline import RetrievalPipeline
+
+# Block F: Agent 行为回放
+from app.observability.replay.recorder import DecisionRecorder
 from app.orchestrator.adapters import (
     AnalysisAdapter,
     EvaluationAdapter,
@@ -34,9 +37,13 @@ class KnowledgeRetrievalNode:
             pipeline: RetrievalPipeline 实例。
         """
         self.pipeline = pipeline
+        # Block F: 决策记录器
+        self.recorder = DecisionRecorder()
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """执行知识检索。
+
+        Block F: 集成 DecisionRecorder 记录决策。
 
         Args:
             state: 当前 OrchestratorState。
@@ -44,9 +51,13 @@ class KnowledgeRetrievalNode:
         Returns:
             更新后的 OrchestratorState。
         """
-        logger.info("知识检索开始: task=%s", state.get("task_id"))
+        task_id = state.get("task_id", "")
+        logger.info("知识检索开始: task=%s", task_id)
         prd_raw = state.get("prd_raw", "")
         workspace_id = state.get("workspace_id", "")
+
+        # Block F: 开始决策追踪
+        await self.recorder.start_trace(task_id)
 
         if not prd_raw.strip():
             logger.warning("PRD 内容为空，跳过知识检索")
@@ -56,7 +67,7 @@ class KnowledgeRetrievalNode:
 
         try:
             ctx = await self.pipeline.retrieve(
-                query=prd_raw[:500],  # 用 PRD 前 500 字做检索
+                query=prd_raw[:500],
                 mode="hybrid",
                 top_k=10,
                 workspace_id=workspace_id,
@@ -75,10 +86,16 @@ class FinalAssemblyNode:
     """最终组装节点 — 汇总所有层输出为最终结果。
 
     E5 增强：任务完成后自动触发 Webhook 通知。
+    Block F 增强：结束决策追踪。
     """
+
+    def __init__(self) -> None:
+        self.recorder = DecisionRecorder()
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """组装最终结果。
+
+        Block F: 结束 DecisionRecorder 追踪。
 
         Args:
             state: 当前 OrchestratorState。
@@ -86,9 +103,13 @@ class FinalAssemblyNode:
         Returns:
             完成状态的 OrchestratorState。
         """
-        logger.info("最终组装: task=%s", state.get("task_id"))
+        task_id = state.get("task_id", "")
+        logger.info("最终组装: task=%s", task_id)
         state["status"] = "complete"
         state["progress"] = 1.0
+
+        # Block F: 结束决策追踪
+        await self.recorder.end_trace(task_id)
 
         # E5 增强：任务完成后触发 Webhook 通知
         try:

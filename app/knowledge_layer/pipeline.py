@@ -55,6 +55,9 @@ class KnowledgeGraphBuilder:
         self.entity_extractor = EntityExtractor(model=entity_extractor_model)
         self.entity_resolver = EntityResolver()
         self.entity_embedder = EntityEmbedder()
+        # Block F: Claims 提取
+        from app.knowledge_layer.ingestion.claims_extractor import ClaimsExtractor
+        self.claims_extractor = ClaimsExtractor()
 
     async def build_from_document(
         self,
@@ -95,7 +98,19 @@ class KnowledgeGraphBuilder:
         # 6. 写入 Neo4j（仅实体）
         await self.graph_store.upsert_entities(resolved_entities)
 
-        # 7. 写入 PGVector
+        # 7. Block F: Claims 提取
+        claims = await self.claims_extractor.extract(chunks)
+        for claim in claims:
+            claim.workspace_id = workspace_id
+
+        # 8. Block F: Claims Embedding + 存储
+        for claim in claims:
+            claim_emb = await self.entity_embedder.embed_text(
+                f"{claim.subject}: {claim.content}"
+            )
+            await self.vector_store.upsert_claim(claim, claim_emb)
+
+        # 9. 写入 PGVector
         await self.vector_store.ensure_extensions()
         for chunk in chunks:
             chunk_emb = await self.entity_embedder.embed_text(chunk.text)
@@ -114,6 +129,7 @@ class KnowledgeGraphBuilder:
         stats = BuildStats(
             entities=len(resolved_entities),
             chunks=len(chunks),
+            claims=len(claims),
             file_path=file_path,
             workspace_id=workspace_id,
         )

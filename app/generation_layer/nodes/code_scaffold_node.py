@@ -53,5 +53,8 @@ class CodeScaffoldGeneratorNode:
             components=comp_text,
             stack=stack_text,
         )
-        await call_llm_async(prompt, model="deepseek-v3")
-        return state
+        code = await call_llm_async(prompt, model="deepseek-v3")
+        return {
+            **state,
+            "code_scaffold": code,
+        }

@@ -1,47 +1,21 @@
-﻿# Copilot Instructions
+﻿# Copilot 指令
 
-Skills 集中目录：E:\vsc-workspace\lania-zip\skills\
+##  Skill 加载要求
 
-> 所有 lania-zip 子项目共享同一套 Skill 集，无需在每个项目中重复定义。
-
----
-
-# Skills 使用指南
-
-> Skills 重构完成。`ai-coding-rules` 精简为纯编码规范入口，`workflow` 作为闭环统筹者调度所有 skill。
-
-## Skill 一览
-
-| Skill | 路径 | 触发关键词 | 加载时机 |
-|-------|------|-----------|---------|
-| **`workflow`** 🌀 | `workflow/SKILL.md` | `workflow`, `开发`, `需求`, `任务`, `帮我做` | **任何开发任务的首选入口**。自动判断任务类型，调度对应 skill |
-| **`ai-coding-rules`** 🧠 | `ai-coding-rules/SKILL.md` | `编码`, `写代码`, `修 bug`, `implement`, `coding` | 编码实现（语言规范 + 通用约束）。被 `workflow` 调度 |
-| **`debug-tools`** 🛠️ | `testing/debug-tools/README.md` | （非独立 skill，由 `testing` 加载） | 调试工具包（非独立 skill），由 `testing` 加载。含调试脚本和排查流程 |
-| **`testing`** 🧪 | `testing/SKILL.md` | `test`, `testing`, `测试`, `unit test`, `integration test`, `e2e`, `smoke test`, `写测试` | 编写测试、补充测试覆盖、测试验证 |
-| **`refactor`** 🔧 | `refactor/SKILL.md` | `refactor`, `重构`, `架构变更`, `跨模块修改`, `改造` | 代码重构、架构变更、跨模块修改 |
-| **`api-design`** 🌐 | `api-design/SKILL.md` | `API`, `接口`, `端点`, `REST`, `endpoint`, `MCP 工具` | API 设计、端点定义、REST 接口评审 |
-| **`database`** 🗄️ | `database/SKILL.md` | `数据库`, `ORM`, `SQL`, `查询`, `迁移`, `model`, `database` | 数据库设计、ORM 模型、查询优化、迁移 |
-| **`performance`** ⚡ | `performance/SKILL.md` | `性能`, `优化`, `profiling`, `延迟`, `渲染`, `bundle`, `performance` | 性能优化、Profiling、前端渲染优化 |
-| **`security`** 🛡️ | `security/SKILL.md` | `安全`, `认证`, `密钥`, `XSS`, `SQL注入`, `加密`, `security` | 安全编码、密钥管理、漏洞防护 |
-| **`error-handling`** ⚠️ | `error-handling/SKILL.md` | `错误处理`, `异常`, `降级`, `fallback`, `error handling`, `容错` | 错误处理架构、优雅降级、生产日志 |
-| **`prototype`** ⚡ | `prototype/SKILL.md` | `原型`, `prototype`, `MVP`, `PoC`, `Hackathon`, `demo`, `快速验证` | 快速原型、MVP、PoC、Hackathon |
-| **`doc`** 📖 | `doc/SKILL.md` | `文档`, `README`, `ADR`, `文档规范`, `doc`, `documentation` | 文档体系设计、技术文档编写、ADR |
-| **`product-design`** 🎨 | `product-design/SKILL.md` | `产品`, `需求`, `功能优先级`, `用户研究`, `产品设计` | 产品设计讨论、需求分析、功能优先级 |
-| **`architecture`** 🏗️ | `architecture/SKILL.md` | `架构`, `技术选型`, `系统设计`, `ADR`, `architecture` | 系统架构设计、技术选型、ADR |
-| **`code-review`** 🔍 | `code-review/SKILL.md` | `review`, `code review`, `审查`, `评审`, `CR`, `审计`, `帮我看看代码` | 代码审查/评审/审计 |
-| **`simplify`** ✂️ | `simplify/SKILL.md` | `simplify`, `简化`, `精简`, `去重`, `代码瘦身`, `简化代码`, `reduce complexity` | 代码简化、去重、降复杂度 |
-| **`grill-me`** 🔥 | `grill-me/SKILL.md` | `grill me`, `拷问`, `盘问`, `面试`, `拷打`, `自省`, `self-grill`, `challenge me` | 任务自省/拷问。复杂任务完成后自动触发 |
-| **`git`** 📝 | `git/SKILL.md` | `git`, `commit`, `提交`, `push`, `推送`, `rebase`, `merge`, `git 操作` | git 操作（提交/推送/rebase/merge 等） |
-| **`release`** 🚀 | `release/SKILL.md` | `release`, `发布`, `版本号`, `changelog`, `发版`, `publish` | 发布管理、版本号变更、Changelog |
-| **`graphify`** 🔗 | `graphify/SKILL.md` | `graphify`, `知识图谱`, `架构分析`, `代码关系`, `graph query` | 架构关系分析、知识图谱查询 |
-| **`prompt`** 🤖 | `prompt/SKILL.md` | `prompt`, `提示词`, `vibe coding`, `生成代码`, `prompt 模板` | AI 提示词编写、Prompt 模板 |
-
-## 工作流
-
-```
-用户需求 → workflow(调度) → 对应 skill(执行) → 验证 → grill-me(自省) → git(提交)
-```
+| Skill | 路径 | 加载时机 |
+|-------|------|---------|
+| **`ai-coding-rules`** 🧠 | `.github/skills/ai-coding-rules/SKILL.md` | **任何开发任务必载**（编码/重构/修复/测试/文档/调试），自动按任务类型选规则文件。调试任务额外加载 `debug-tools` |
+| **`grill-me`** 🔥 | `.github/skills/grill-me/SKILL.md` | **始终加载**。触发："拷问我/grill me/自省/self-review/拷问自己"等；复杂任务完成自动触发自省 |
+| **`git`** 📝 | `.github/skills/git/SKILL.md` | git 操作（提交/推送/rebase/merge 等） |
+| **`code-review`** 🔍 | `.github/skills/code-review/SKILL.md` | 用户要求代码审查/评审/审计时加载。自动关联 `ai-coding-rules` 作为审查标准 |
+| **`simplify`** ✂️ | `.github/skills/simplify/SKILL.md` | 用户要求简化代码/去重/降复杂度时加载。自动关联 `ai-coding-rules/rules/06-refactor.instructions.md` |
 
 ## 文档约束
 
 设计文档 → `docs/` | 开发记录 → `overview.md` | 自省记录 → `grill-self-review.md`
+
+## 🚨 铁的纪律（违反将导致严重后果）
+
+**纪律一（修改授权）：** 在修改任何文件之前，必须按照`.github\skills\ai-coding-rules\rules\00-base.instructions.md`中的**R8**、**R8b**两条处理，用户的问题描述不算授权。
+
+**纪律二（审查质量）：** 执行 `code-review` 时，必须按照 `code-review/SKILL.md` 第二步「逐层审查」中**「审查操作（必须执行）」列的每一条操作指令**逐条执行，不得跳过任何维度。审查报告末尾必须附「历史漏检覆盖」表格。违反此纪律的审查报告视为无效。

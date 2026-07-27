@@ -23,4 +23,7 @@ class DiagramGeneratorNode:
         if pr.component_diagram:
             mermaid["architecture"] = pr.component_diagram
 
-        return state
+        return {
+            **state,
+            "mermaid_diagrams": mermaid,
+        }

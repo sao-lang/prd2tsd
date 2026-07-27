@@ -1,7 +1,7 @@
 """异步任务管理器（in-memory 队列）。
 
 使用 asyncio.create_task + in-memory dict 管理任务生命周期，
-通过 LangGraph MemorySaver 实现 interrupt/resume 支持。
+通过 LangGraph MemorySaver + Command(resume=...) 实现 interrupt/resume 支持。
 块 E 将替换为 Celery/Redis 实现。
 """
 
@@ -11,6 +11,8 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+
+from langgraph.types import Command
 
 from app.core.logger import get_logger
 from app.orchestrator.state import TaskInfo, make_initial_state
@@ -157,6 +159,7 @@ class TaskManager:
                 orchestrator=orchestrator,
                 thread_id=thread_id,
                 resume_value={"decision": decision, "comment": comment},
+                stage=stage,
             )
         )
 
@@ -231,19 +234,24 @@ class TaskManager:
         orchestrator: Any,
         thread_id: str,
         resume_value: dict[str, str],
+        stage: str = "",
     ) -> None:
         """恢复被 interrupt 暂停的任务。
+
+        使用 LangGraph Command(resume=...) 正确传递恢复值给 interrupt() 调用。
 
         Args:
             task_id: 任务 ID。
             orchestrator: 编译后的主编排 StateGraph。
             thread_id: LangGraph 线程 ID。
             resume_value: 恢复值（审核决策）。
+            stage: 审核阶段。
         """
         try:
             config = {"configurable": {"thread_id": thread_id}}
-            # 向被 interrupt 的节点传递恢复值
-            final_state = await orchestrator.ainvoke(resume_value, config)
+            # ✅ 正确方式：使用 Command(resume=...) 向被 interrupt 的节点传递恢复值
+            # 避免将 resume_value 作为新的图输入（会因缺少必填字段而崩溃）
+            final_state = await orchestrator.ainvoke(Command(resume=resume_value), config)
 
             if final_state is not None:
                 await self._update_result(task_id, final_state)

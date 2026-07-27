@@ -41,9 +41,9 @@ user-invocable: true
 - 确认简化目标——是**全面简化**还是**只关注特定方面**（如去重、降复杂度）
 - 明确**行为不变性约束**：简化后不得改变外部可观测行为
 
-### 第二步：加载 refactor + ai-coding-rules
+### 第二步：加载 ai-coding-rules
 
-进行代码简化时，**必须先加载 `refactor` skill**，确保行为不变原则。根据待简化代码的语言，同时加载 `ai-coding-rules` 对应的语言规则文件。
+进行代码简化时，**必须先加载 `ai-coding-rules` skill** 的 `rules/06-refactor.instructions.md` 规则文件，确保行为不变原则。根据待简化代码的语言，加载对应的语言规则文件。
 
 ### 第三步：逐层扫描简化机会
 
@@ -83,14 +83,22 @@ user-invocable: true
 
 **行为不变** → **先删后简** → **一次一事** → **可逆** → **测试护航** → **不过度（可读性 > 最短）** → **尊重上下文**
 
-## 常见简化模式
+## 常见简化模式速查
 
-卫语句 · 列表解析 · 字典查找表 · any/all · 短路赋值 · Walrus · 上下文管理器 · match-case · 解包 · defaultdict · chain比较 · str.join · 多重赋值 · dataclass
-
-## 链路 (Chain)
-
-```
-simplify → workflow(简化结果)
-```
-
-完成后将简化结果交给 `workflow`，由 workflow 调度行为验证、自省和提交。
+| 模式 | 简化前 | 简化后 |
+|------|--------|--------|
+| **卫语句** | `if cond: ... else: return` | `if not cond: return; ...` |
+| **列表解析** | `result = []; for x in items: result.append(f(x))` | `result = [f(x) for x in items]` |
+| **字典查找表** | `if x==1: a elif x==2: b ...` | `{1:a, 2:b, ...}.get(x)` |
+| **集合去重** | 遍历列表手动去重 | `list(set(items))` |
+| **any/all** | 手动遍历检查 | `all(cond(x) for x in items)` |
+| **短路赋值** | `if not x: x = default` | `x = x or default` |
+| **Walrus 运算符** | `x = f(); if x: ...` | `if (x := f()): ...` |
+| **上下文管理器** | `f = open(f); ...; f.close()` | `with open(f) as f: ...` |
+| **match-case** | 长串 if/elif 判断类型/结构 | `match x: case Pattern(): ...` |
+| **解包** | `a = pair[0]; b = pair[1]` | `a, b = pair` |
+| **默认 dict** | `if k not in d: d[k]=[]; d[k].append(v)` | `d = defaultdict(list); d[k].append(v)` |
+| **chain 比较** | `x > 0 and x < 10` | `0 < x < 10` |
+| **str.join** | `s = ""; for x in items: s += x + ","` | `",".join(items)` |
+| **多重赋值** | 逐行交换变量 | `a, b = b, a` |
+| **dataclass 化简** | 手写 `__init__`/`__repr__`/`__eq__` | `@dataclass class X: ...` |
