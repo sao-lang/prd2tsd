@@ -34,6 +34,14 @@ class ClarityCheckerNode:
             return state
 
         prompt = CLARITY_PROMPT.format(reqs=reqs_text)
-        await call_llm_async(prompt, model="deepseek-v3")
+        response = await call_llm_async(prompt, model="deepseek-v3")
 
-        return state
+        # 将 LLM 输出切分为问题列表
+        issues: list[str] = []
+        if response and "通过" not in response.strip():
+            for line in response.strip().splitlines():
+                line = line.strip()
+                if line and not line.startswith("通过"):
+                    issues.append(line)
+
+        return {**state, "clarity_issues": issues}

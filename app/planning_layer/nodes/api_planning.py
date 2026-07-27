@@ -30,5 +30,9 @@ class APIPlanningNode:
         comp_names = ", ".join(c.name for c in comps[:5])
         ar = state["analysis_result"]
         prompt = API_PROMPT.format(project=ar.project_name, components=comp_names or "待定")
-        await call_llm_async(prompt, model="deepseek-v3")
-        return state
+        response = await call_llm_async(prompt, model="deepseek-v3")
+
+        node_outputs = dict(state.get("node_outputs", {}))
+        node_outputs["api_plan"] = response
+
+        return {**state, "node_outputs": node_outputs}

@@ -59,8 +59,8 @@ services:
     environment:
       NEO4J_AUTH: neo4j/neo4jpassword
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "7700:7474"
+      - "7701:7687"
     volumes:
       - neo4j_data:/data
     healthcheck:

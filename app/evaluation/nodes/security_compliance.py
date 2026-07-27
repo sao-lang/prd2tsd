@@ -36,6 +36,4 @@ class SecurityComplianceNode:
         resp = await call_llm(prompt, model="deepseek-v3")
         score = parse_score(resp, "score")
 
-        scores = dict(state.get("dimension_scores", {}))
-        scores["security"] = score
-        return {**state, "dimension_scores": scores}
+        return {"dimension_scores": {"security": score}}

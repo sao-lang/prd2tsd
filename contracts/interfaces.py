@@ -231,6 +231,7 @@ class PlanningResultDetail(BaseModel):
     tech_stack: list[TechChoiceDetail] = Field(default_factory=list)
     components: list[ComponentDetail] = Field(default_factory=list)
     component_diagram: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)  # 各节点补充输出（成本/时间线/风险等）
 
 
 # ── C3: 生成层增强 ──

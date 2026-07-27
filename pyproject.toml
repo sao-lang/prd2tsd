@@ -4,26 +4,53 @@ version = "0.1.0"
 description = "PRD to Technical Specification Document Agent System"
 requires-python = ">=3.12"
 dependencies = [
+    # Web Framework
     "fastapi>=0.110",
     "uvicorn[standard]",
+    "python-multipart>=0.0.9",
+    "jinja2>=3.1",
+    # AI Agent Framework
+    "langgraph>=1.2.0",
+    # ORM & Database
     "sqlalchemy>=2.0",
     "asyncpg",
     "alembic",
+    # Config
     "pydantic-settings>=2.0",
+    # Auth
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "bcrypt>=4.0",
+    # LLM Gateway
     "openai>=1.0",
+    # Infrastructure Clients
     "redis[hiredis]>=5.0",
     "minio>=7.0",
     "neo4j>=5.0",
+    # Knowledge Layer
     "sentence-transformers>=3.0",
     "pgvector>=0.3.0",
+    "torch>=2.0",
+    # Data Security
     "httpx",
+    # Observability
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
     "prometheus-client>=0.19.0",
+    # Task Queue
     "celery>=5.3.0",
+    # Multimodal
     "transformers>=4.40.0",
     "cohere>=5.0",
     "Pillow>=10.0",
+    # Document Export
+    "markdown>=3.5",
+    "weasyprint>=60.0",
+    "fpdf2>=2.7",
+    "python-docx>=1.1",
+    # YAML Config
+    "PyYAML>=6.0",
 ]
 
 [tool.ruff]

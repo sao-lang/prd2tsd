@@ -36,6 +36,4 @@ class CostEvalNode:
         resp = await call_llm(prompt, model="gpt-4o-mini")
         score = parse_score(resp, "score")
 
-        scores = dict(state.get("dimension_scores", {}))
-        scores["cost"] = score
-        return {**state, "dimension_scores": scores}
+        return {"dimension_scores": {"cost": score}}

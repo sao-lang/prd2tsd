@@ -125,8 +125,8 @@ class WebCrawler:
                             path = line.split(":", 1)[1].strip()
                             if path:
                                 disallowed.append(path)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("robots.txt 获取失败: domain=%s, err=%s", base_domain, exc)
         return disallowed
 
     @staticmethod

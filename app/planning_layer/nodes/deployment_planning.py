@@ -31,5 +31,9 @@ class DeploymentPlanningNode:
             project=ar.project_name,
             pattern=state.get("selected_pattern", "分层架构"),
         )
-        await call_llm_async(prompt, model="deepseek-v3")
-        return state
+        response = await call_llm_async(prompt, model="deepseek-v3")
+
+        node_outputs = dict(state.get("node_outputs", {}))
+        node_outputs["deployment_plan"] = response
+
+        return {**state, "node_outputs": node_outputs}

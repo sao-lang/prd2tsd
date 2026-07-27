@@ -31,5 +31,9 @@ class SkillGapAnalyzerNode:
             return state
 
         prompt = SKILL_GAP_PROMPT.format(stack=stack_names)
-        await call_llm_async(prompt, model="deepseek-v3")
-        return state
+        response = await call_llm_async(prompt, model="deepseek-v3")
+
+        node_outputs = dict(state.get("node_outputs", {}))
+        node_outputs["skill_gaps"] = response
+
+        return {**state, "node_outputs": node_outputs}

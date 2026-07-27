@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     MINIO_SECURE: bool = False
 
     # ── Neo4j ──
-    NEO4J_URI: str = "bolt://localhost:7687"
+    NEO4J_URI: str = "bolt://localhost:7701"
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = "neo4jpassword"
     NEO4J_DATABASE: str = "neo4j"

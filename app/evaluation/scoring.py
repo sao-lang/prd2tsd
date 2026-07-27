@@ -117,6 +117,5 @@ class ScoringNode:
             report = EvaluationReportDetail()
 
         return {
-            **state,
             "evaluation_report": report,
         }

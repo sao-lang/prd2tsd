@@ -6,6 +6,10 @@ import json
 import re
 from typing import Any
 
+from app.core.logger import get_logger
+
+logger = get_logger("prd2tsd.evaluation")
+
 
 async def call_llm(prompt: str, model: str | None = None, **kwargs: Any) -> str:
     """异步调用 LLM，失败时返回空字符串。
@@ -18,7 +22,6 @@ async def call_llm(prompt: str, model: str | None = None, **kwargs: Any) -> str:
     Returns:
         LLM 返回文本。不可用时返回空字符串。
     """
-    from app.core.logger import get_logger
     from app.llm_gateway import gateway
 
     try:
@@ -32,7 +35,7 @@ async def call_llm(prompt: str, model: str | None = None, **kwargs: Any) -> str:
         )
         return resp.content
     except Exception as exc:
-        get_logger("prd2tsd.evaluation").warning("LLM 调用失败（evaluation）: %s", exc)
+        logger.warning("LLM 调用失败（evaluation）: %s", exc)
         return ""
 
 
@@ -54,6 +57,6 @@ def parse_score(response: str, field: str = "score") -> float:
             data: dict[str, Any] = json.loads(json_match.group())
             val = data.get(field, 5.0)
             return float(val)
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.debug("评分 JSON 解析失败: %s", exc)
     return 5.0

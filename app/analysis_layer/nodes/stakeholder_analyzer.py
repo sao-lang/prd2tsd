@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from app.analysis_layer.models import AnalysisState
-from app.analysis_layer.tools import call_llm_async
+from app.analysis_layer.tools import call_llm_async, extract_json_from_llm
 
 STAKEHOLDER_PROMPT = """你是一个项目经理。从以下 PRD 内容中提取干系人及其关注点。
 
@@ -36,7 +39,14 @@ class StakeholderAnalyzerNode:
         """
         prd_text = state["prd_raw"][:4000]
         prompt = STAKEHOLDER_PROMPT.format(text=prd_text)
-        await call_llm_async(prompt, model="deepseek-v3")
+        response = await call_llm_async(prompt, model="deepseek-v3")
 
-        # 干系人信息存储到 state 中供 ResultAssembler 使用
-        return state
+        try:
+            raw = extract_json_from_llm(response)
+            stakeholders: list[dict[str, Any]] = json.loads(raw)
+            if not isinstance(stakeholders, list):
+                stakeholders = [stakeholders]
+        except (json.JSONDecodeError, Exception):
+            stakeholders = []
+
+        return {**state, "stakeholders": stakeholders}

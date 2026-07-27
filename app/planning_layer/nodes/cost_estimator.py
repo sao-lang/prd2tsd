@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from app.planning_layer.models import PlanningState
 from app.planning_layer.tools import call_llm_async
 
@@ -39,5 +42,12 @@ class CostEstimatorNode:
             comp_count=len(state.get("component_decomposition", [])),
             stack=stack_names or "待确定",
         )
-        await call_llm_async(prompt, model="deepseek-v3")
-        return state
+        response = await call_llm_async(prompt, model="deepseek-v3")
+
+        node_outputs = dict(state.get("node_outputs", {}))
+        try:
+            node_outputs["cost_estimates"] = json.loads(response)
+        except (json.JSONDecodeError, Exception):
+            node_outputs["cost_estimates"] = {}
+
+        return {**state, "node_outputs": node_outputs}

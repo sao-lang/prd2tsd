@@ -33,5 +33,11 @@ class PlanSelfCheckNode:
             stack=stack_names or "未选择",
             comp_count=len(state.get("component_decomposition", [])),
         )
-        await call_llm_async(prompt, model="gpt-4o-mini")
-        return state
+        response = await call_llm_async(prompt, model="gpt-4o-mini")
+
+        node_outputs = dict(state.get("node_outputs", {}))
+        node_outputs["self_check_result"] = response
+        # 自检不通过时标记回退
+        node_outputs["self_check_passed"] = ("通过" in response and "不通过" not in response)
+
+        return {**state, "node_outputs": node_outputs}

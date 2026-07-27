@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.logger import get_logger
+
+logger = get_logger("prd2tsd.planning")
+
 
 async def retrieve_knowledge(query: str, top_k: int = 5) -> Any:
     """调用块 B 的 RetrievalPipeline 检索相关知识。
@@ -24,8 +28,9 @@ async def retrieve_knowledge(query: str, top_k: int = 5) -> Any:
 
         pipeline = RetrievalPipeline()
         return await pipeline.retrieve(query, mode="hybrid", top_k=top_k)
-    except Exception:
+    except Exception as exc:
         # 当 Neo4j/PGVector 不可用时返回空结果
+        logger.debug("知识检索失败（降级）: %s", exc)
         from app.knowledge_layer.models import RetrievalContext
 
         return RetrievalContext(query=query)
@@ -42,7 +47,6 @@ async def call_llm_async(prompt: str, model: str | None = None, **kwargs: Any) -
     Returns:
         LLM 返回文本。LLM 不可用时返回空字符串。
     """
-    from app.core.logger import get_logger
     from app.llm_gateway import gateway
 
     try:
@@ -56,5 +60,5 @@ async def call_llm_async(prompt: str, model: str | None = None, **kwargs: Any) -
         )
         return resp.content
     except Exception as exc:
-        get_logger("prd2tsd.planning").warning("LLM 调用失败（planning）: %s", exc)
+        logger.warning("LLM 调用失败（planning）: %s", exc)
         return ""

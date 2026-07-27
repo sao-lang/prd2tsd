@@ -32,5 +32,9 @@ class TimelinePlannerNode:
             project=ar.project_name,
             comp_count=len(state.get("component_decomposition", [])),
         )
-        await call_llm_async(prompt, model="deepseek-v3")
-        return state
+        response = await call_llm_async(prompt, model="deepseek-v3")
+
+        node_outputs = dict(state.get("node_outputs", {}))
+        node_outputs["timeline"] = response
+
+        return {**state, "node_outputs": node_outputs}

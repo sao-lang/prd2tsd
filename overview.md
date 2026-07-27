@@ -1,5 +1,33 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-07-27
+
+#### 16. Block F — 生产级加固（12 项功能）
+
+- **时间：** 2026-07-27
+- **发起人：** 设计文档 `docs/block-F-production-hardening.md`
+- **新增文件：** 40+ 文件
+  - `app/core/circuit_breaker.py` — 装饰器式熔断器（CLOSED→OPEN→HALF_OPEN 状态机）
+  - `app/llm_gateway/output_parser.py` — Pydantic 输出解析器（response_format→Prompt 降级）
+  - `app/llm_gateway/prompt_builder.py` — 统一 Prompt 构建器
+  - `app/knowledge_layer/ingestion/claims_extractor.py` — Claims 决策断言提取
+  - `app/llm_gateway/failover.py` — Provider Failover 链管理
+  - `app/llm_gateway/guardrails/` — 可插拔护栏（注入检测/内容安全/PII/输出校验）
+  - `app/core/task_queue.py` — 优先级任务队列（heapq + 取消 + 持久化）
+  - `app/core/task_executor.py` — 任务执行器注册器（Generate/Reindex/Evaluate/WebSync）
+  - `app/auth/prompts/` — 多租户 Prompt 隔离（三级回退 + Jinja2 渲染）
+  - `app/session_history/compressor.py` — 上下文压缩器（summarize/rolling/truncate）
+  - `app/session_history/memory_retriever.py` — 多策略记忆检索（recency/relevance/importance/hybrid）
+  - `app/session_history/summarizer.py` — ⬆️ 重写为 LLM 驱动
+  - `app/agents/` — Tool Registry 工具系统（8 个具体工具）
+  - `app/orchestrator/intent_classifier.py` — 意图分类器（规则+LLM 双保险）
+  - `app/core/prompt_registry/` — Prompt 版本管理（版本化/回滚/diff/A-B 测试）
+  - `app/observability/replay/` — Agent 行为回放（录制/回放/分析）
+  - `contracts/models.py` — ⬆️ 新增 8 个模型（Task/MemoryItem/DecisionRecord 等）
+- **测试：** `tests/unit/block_f/` — 46 个单元测试全部通过
+- **Lint：** ruff check 全部通过
+- **潜在风险：** FailoverManager 和 GuardrailManager 集成到 LLMGateway 需在后续迭代完成
+
 ### 2026-07-26
 
 #### 15. E12 — SSE 流式推送设计

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from app.planning_layer.models import PlanningState
 from app.planning_layer.tools import call_llm_async
 
@@ -43,5 +46,12 @@ class RiskQuantifierNode:
             stack=stack_names or "待确定",
             comp_count=len(state.get("component_decomposition", [])),
         )
-        await call_llm_async(prompt, model="deepseek-v3")
-        return state
+        response = await call_llm_async(prompt, model="deepseek-v3")
+
+        node_outputs = dict(state.get("node_outputs", {}))
+        try:
+            node_outputs["risks"] = json.loads(response)
+        except (json.JSONDecodeError, Exception):
+            node_outputs["risks"] = []
+
+        return {**state, "node_outputs": node_outputs}

@@ -23,6 +23,7 @@ class PlanAssemblerNode:
             tech_stack=state.get("tech_stack_choices", []),
             components=state.get("component_decomposition", []),
             component_diagram=self._build_mermaid(state),
+            metadata=state.get("node_outputs", {}),
         )
 
         return {

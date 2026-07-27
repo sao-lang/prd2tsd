@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from typing_extensions import TypedDict
 
 from contracts.interfaces import (
@@ -24,3 +26,8 @@ class AnalysisState(TypedDict):
     domain_tags: list[str]
     analysis_result: AnalysisResultDetail
     confidence: float
+    stakeholders: list[dict[str, Any]]  # StakeholderAnalyzerNode 写入
+    clarity_issues: list[str]  # ClarityCheckerNode 写入
+    # 以下字段由 Orchestrator Adapter 注入
+    knowledge_context: Any  # knowledge_layer.models.RetrievalContext | None
+    system_prompt: str  # 租户自定义 System Prompt

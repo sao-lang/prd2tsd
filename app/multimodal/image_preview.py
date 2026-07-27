@@ -100,7 +100,7 @@ class ImagePreviewGenerator:
                 info["width"] = img.width
                 info["height"] = img.height
                 info["format"] = (img.format or "UNKNOWN").lower()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("图片信息提取失败: %s", exc)
 
         return info
