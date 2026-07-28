@@ -1,47 +1,41 @@
-"""ClarityCheckerNode — 检查 PRD 清晰度，确保需求描述无歧义。"""
+"""ClarityCheckerNode — 检查 PRD 清晰度。"""
 
 from __future__ import annotations
 
-from app.analysis_layer.models import AnalysisState
-from app.analysis_layer.tools import call_llm_async
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
-CLARITY_PROMPT = """检查以下需求描述是否清晰、无歧义、有明确的验收标准。
-对有问题的需求给出改进建议。
+from app.analysis_layer.models import AnalysisState, ClarityResult
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-只输出 "通过" 或列出问题，不要其他内容。
+_PARSER = PydanticOutputParser(pydantic_object=ClarityResult)
 
-需求列表：
-{reqs}
-"""
+CLARITY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "检查需求描述是否清晰、无歧义。列出有问题的需求。"),
+    ("system", "{format_instructions}"),
+    ("human", "{reqs_text}"),
+])
 
 
 class ClarityCheckerNode:
-    """清晰度检查节点：检查需求是否清晰。"""
+    """清晰度检查节点。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="analysis", layer="analysis", node="clarity")
+        self.chain = CLARITY_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
-        """执行清晰度检查。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态。
-        """
         reqs_text = "\n".join(
             f"{r.id}: {r.description[:150]}" for r in state["extracted_requirements"]
         )
         if not reqs_text:
             return state
-
-        prompt = CLARITY_PROMPT.format(reqs=reqs_text)
-        response = await call_llm_async(prompt, model="deepseek-v3")
-
-        # 将 LLM 输出切分为问题列表
-        issues: list[str] = []
-        if response and "通过" not in response.strip():
-            for line in response.strip().splitlines():
-                line = line.strip()
-                if line and not line.startswith("通过"):
-                    issues.append(line)
-
-        return {**state, "clarity_issues": issues}
+        try:
+            result: ClarityResult = await self.chain.ainvoke({
+                "reqs_text": reqs_text,
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            return {**state, "clarity_issues": result.issues}
+        except Exception:
+            return state

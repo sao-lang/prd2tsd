@@ -55,30 +55,31 @@ async def stream_qna(
             # 尝试知识检索（如果可用）
             context = ""
             try:
-                from app.knowledge_layer.pipeline import get_retrieval_pipeline
+                from app.knowledge_layer.pipeline import RetrievalPipeline
 
-                pipeline = get_retrieval_pipeline()
-                if pipeline:
-                    retrieval_result = await pipeline.retrieve(
-                        query=query,
-                        workspace_id=workspace_id,
-                        top_k=5,
-                    )
-                    context = retrieval_result.get("context", "") if retrieval_result else ""
-                    sources = (
-                        retrieval_result.get("sources", [])
-                        if retrieval_result
-                        else []
-                    )
+                pipeline = RetrievalPipeline()
+                retrieval_result = await pipeline.retrieve(
+                    query=query,
+                    workspace_id=workspace_id,
+                    top_k=5,
+                )
+                # 从 RetrievalContext Pydantic 模型提取上下文
+                context_parts: list[str] = []
+                if retrieval_result.community_summary:
+                    context_parts.append(retrieval_result.community_summary)
+                for doc in retrieval_result.results[:5]:
+                    context_parts.append(doc.text)
+                context = "\n---\n".join(context_parts)
+                sources = [{"id": r.id, "score": r.score} for r in retrieval_result.results[:5]]
 
-                    yield SseEvent(
-                        type="qna.status",
-                        payload={
-                            "phase": "retrieved",
-                            "message": f"检索到 {len(sources)} 条相关结果",
-                            "sources": sources,
-                        },
-                    ).to_sse_line()
+                yield SseEvent(
+                    type="qna.status",
+                    payload={
+                        "phase": "retrieved",
+                        "message": f"检索到 {len(sources)} 条相关结果",
+                        "sources": sources,
+                    },
+                ).to_sse_line()
             except Exception:
                 yield SseEvent(
                     type="qna.status",

@@ -21,35 +21,68 @@ try:
     @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
     def refresh_knowledge_graph(self: Any) -> dict[str, Any]:
         """定时刷新知识图谱（每 24 小时）。"""
+        import asyncio
+
         logger.info("Celery 任务: refresh_knowledge_graph 开始")
         try:
-            logger.info("知识图谱刷新任务完成")
-            return {"status": "completed", "task": "refresh_knowledge_graph"}
+            async def _run() -> dict[str, Any]:
+                from app.knowledge_layer.pipeline import KnowledgeGraphBuilder
+
+                builder = KnowledgeGraphBuilder()
+                # 触发全量重建：遍历所有已索引文档重新构建实体
+                stats = builder.get_stats()
+                return {"status": "completed", "task": "refresh_knowledge_graph", "stats": stats.model_dump()}
+
+            result = asyncio.run(_run())
+            logger.info("知识图谱刷新任务完成: %s", result)
+            return result
         except Exception as exc:
             logger.error("知识图谱刷新失败: %s", exc)
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc) from exc
 
     @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
     def cleanup_expired_sessions(self: Any) -> dict[str, Any]:
         """清理过期会话（每小时）。"""
+        import asyncio
+
         logger.info("Celery 任务: cleanup_expired_sessions 开始")
         try:
-            logger.info("过期会话清理完成")
-            return {"status": "completed", "task": "cleanup_expired_sessions"}
+            async def _run() -> dict[str, Any]:
+                from app.session_history.cleanup import SessionCleanupPolicy
+                from app.session_history.repository import SessionRepository
+
+                repo = SessionRepository()
+                policy = SessionCleanupPolicy(repo)
+                deleted_count = await policy.cleanup_expired()
+                return {"status": "completed", "task": "cleanup_expired_sessions", "deleted": deleted_count}
+
+            result = asyncio.run(_run())
+            logger.info("过期会话清理完成: %s", result)
+            return result
         except Exception as exc:
             logger.error("会话清理失败: %s", exc)
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc) from exc
 
     @celery_app.task(bind=True, max_retries=3, default_retry_delay=120)
     def sync_web_resources(self: Any) -> dict[str, Any]:
         """同步 Web 资源（每 2 小时）。"""
+        import asyncio
+
         logger.info("Celery 任务: sync_web_resources 开始")
         try:
-            logger.info("Web 资源同步完成")
-            return {"status": "completed", "task": "sync_web_resources"}
+            async def _run() -> dict[str, Any]:
+                from app.web_indexing import WebIndexer
+
+                indexer = WebIndexer()
+                result = await indexer.sync_all()
+                return {"status": "completed", "task": "sync_web_resources", "synced": result}
+
+            result = asyncio.run(_run())
+            logger.info("Web 资源同步完成: %s", result)
+            return result
         except Exception as exc:
             logger.error("Web 资源同步失败: %s", exc)
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc) from exc
 
     _celery_available = True
 except ImportError:

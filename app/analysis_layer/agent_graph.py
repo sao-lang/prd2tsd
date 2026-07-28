@@ -18,18 +18,22 @@ from app.analysis_layer.nodes import (
     RequirementQualityNode,
     StakeholderAnalyzerNode,
 )
+from app.llm_gateway.langchain_adapter import GatewayChatModel
+
+# Phase 6: 创建共享的 GatewayChatModel，传入所有 LLM 节点
+_analysis_llm = GatewayChatModel(task_type="analysis", layer="analysis")
 
 # 实例化所有 Node
 parse_node = DocumentParserNode()
-lang_detector = LanguageDetectorNode()
-req_extractor = RequirementExtractorNode()
-constraint_analyzer = ConstraintAnalyzerNode()
-dep_analyzer = DependencyAnalyzerNode()
-domain_classifier = DomainClassifierNode()
-quality_scorer = RequirementQualityNode()
-effort_estimator = EffortEstimatorNode()
-stakeholder_analyzer = StakeholderAnalyzerNode()
-clarity_checker = ClarityCheckerNode()
+lang_detector = LanguageDetectorNode(llm=_analysis_llm)
+req_extractor = RequirementExtractorNode(llm=_analysis_llm)
+constraint_analyzer = ConstraintAnalyzerNode(llm=_analysis_llm)
+dep_analyzer = DependencyAnalyzerNode(llm=_analysis_llm)
+domain_classifier = DomainClassifierNode(llm=_analysis_llm)
+quality_scorer = RequirementQualityNode(llm=_analysis_llm)
+effort_estimator = EffortEstimatorNode(llm=_analysis_llm)
+stakeholder_analyzer = StakeholderAnalyzerNode(llm=_analysis_llm)
+clarity_checker = ClarityCheckerNode(llm=_analysis_llm)
 result_assembler = AnalysisResultAssemblerNode()
 
 

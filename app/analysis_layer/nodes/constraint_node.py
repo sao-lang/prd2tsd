@@ -1,52 +1,37 @@
-"""ConstraintAnalyzerNode — LLM 从 PRD 中提取约束条件。"""
+"""ConstraintAnalyzerNode — LangChain 从 PRD 中提取约束条件。"""
 
 from __future__ import annotations
 
-import json
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
-from app.analysis_layer.models import AnalysisState
-from app.analysis_layer.tools import call_llm_async, extract_json_from_llm
-from contracts.interfaces import ConstraintDetail
+from app.analysis_layer.models import AnalysisState, ConstraintList
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-CONSTRAINT_PROMPT = """你是一个需求分析师。从以下 PRD 内容中提取技术/性能/时间/预算/合规/团队等方面的约束条件。
+_PARSER = PydanticOutputParser(pydantic_object=ConstraintList)
 
-每个约束必须包含：
-- type: "technical"/"performance"/"time"/"budget"/"compliance"/"team"
-- description: 约束描述
-- severity: "must"/"should"/"could"
-- source_section: 来源章节
-
-请以 JSON 数组格式返回。
-
-PRD 内容：
-{text}
-"""
+CONSTRAINT_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "你是一个需求分析师。从 PRD 中提取技术/性能/时间/预算/合规/团队约束。"),
+    ("system", "{format_instructions}"),
+    ("human", "{prd_text}"),
+])
 
 
 class ConstraintAnalyzerNode:
-    """约束提取节点：LLM 提取约束条件。"""
+    """约束提取节点。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="analysis", layer="analysis", node="constraint")
+        self.chain = CONSTRAINT_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
-        """执行约束提取。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态，含 extracted_constraints。
-        """
         prd_text = state["prd_raw"][:6000]
-        prompt = CONSTRAINT_PROMPT.format(text=prd_text)
-        response = await call_llm_async(prompt, model="deepseek-v3")
-
         try:
-            raw = extract_json_from_llm(response)
-            data = json.loads(raw)
-            constraints = [ConstraintDetail(**item) for item in (data if isinstance(data, list) else [data])]
-        except (json.JSONDecodeError, Exception):
-            constraints = []
-
-        return {
-            **state,
-            "extracted_constraints": constraints,
-        }
+            result: ConstraintList = await self.chain.ainvoke({
+                "prd_text": prd_text,
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            return {**state, "extracted_constraints": result.constraints}
+        except Exception:
+            return {**state, "extracted_constraints": []}

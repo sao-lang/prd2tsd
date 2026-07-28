@@ -1,52 +1,37 @@
-"""StakeholderAnalyzerNode — ⭐ 干系人分析。"""
+"""StakeholderAnalyzerNode — 干系人分析。"""
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
-from app.analysis_layer.models import AnalysisState
-from app.analysis_layer.tools import call_llm_async, extract_json_from_llm
+from app.analysis_layer.models import AnalysisState, StakeholderList
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-STAKEHOLDER_PROMPT = """你是一个项目经理。从以下 PRD 内容中提取干系人及其关注点。
+_PARSER = PydanticOutputParser(pydantic_object=StakeholderList)
 
-返回 JSON 数组：
-[
-  {{
-    "name": "系统管理员",
-    "role": "运维",
-    "concerns": ["系统可维护性", "日志监控"],
-    "influence": "high"
-  }}
-]
-
-PRD 内容：
-{text}
-"""
+STAKEHOLDER_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "你是一个项目经理。从 PRD 中提取干系人及其关注点。"),
+    ("system", "{format_instructions}"),
+    ("human", "{prd_text}"),
+])
 
 
 class StakeholderAnalyzerNode:
-    """干系人分析节点：提取干系人及其关注点。"""
+    """干系人分析节点。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="analysis", layer="analysis", node="stakeholder")
+        self.chain = STAKEHOLDER_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
-        """执行干系人分析。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态。
-        """
         prd_text = state["prd_raw"][:4000]
-        prompt = STAKEHOLDER_PROMPT.format(text=prd_text)
-        response = await call_llm_async(prompt, model="deepseek-v3")
-
         try:
-            raw = extract_json_from_llm(response)
-            stakeholders: list[dict[str, Any]] = json.loads(raw)
-            if not isinstance(stakeholders, list):
-                stakeholders = [stakeholders]
-        except (json.JSONDecodeError, Exception):
-            stakeholders = []
-
-        return {**state, "stakeholders": stakeholders}
+            result: StakeholderList = await self.chain.ainvoke({
+                "prd_text": prd_text,
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            return {**state, "stakeholders": result.stakeholders}
+        except Exception:
+            return {**state, "stakeholders": []}

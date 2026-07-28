@@ -81,10 +81,33 @@ def build_planning_graph() -> StateGraph:
     graph.add_edge("data_arch_design", "api_planning")
     graph.add_edge("api_planning", "deployment_planning")
     graph.add_edge("deployment_planning", "self_check")
-    graph.add_edge("self_check", "assemble")
+    # Phase 4: 基于自检结果的条件路由 — 不通过则回退到 pattern_recommend
+    graph.add_conditional_edges(
+        "self_check",
+        _route_after_self_check,
+        {
+            "assemble": "assemble",
+            "pattern_recommend": "pattern_recommend",
+        },
+    )
     graph.add_edge("assemble", END)
 
     return graph
+
+
+def _route_after_self_check(state: PlanningState) -> str:
+    """根据 PlanSelfCheckNode 的自检结果决定路由。
+
+    Args:
+        state: 当前 PlanningState。
+
+    Returns:
+        "assemble"（通过）或 "pattern_recommend"（不通过，回退重规划）。
+    """
+    node_outputs = state.get("node_outputs", {})
+    if node_outputs.get("self_check_passed", True):
+        return "assemble"
+    return "pattern_recommend"
 
 
 planning_graph = build_planning_graph().compile()

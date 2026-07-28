@@ -39,7 +39,7 @@ class GatewayChatModel(BaseChatModel):
         node: 所属节点名。
     """
 
-    gateway: Any
+    gateway: Any = None
     default_model: str = "deepseek-chat"
     task_type: str = "default"
     layer: str = ""
@@ -48,6 +48,14 @@ class GatewayChatModel(BaseChatModel):
     class Config:
         """Pydantic 配置 — 允许任意类型。"""
         arbitrary_types_allowed = True
+
+    def __init__(self, **data: Any) -> None:
+        """初始化 GatewayChatModel，未提供 gateway 时自动从全局获取。"""
+        super().__init__(**data)
+        if self.gateway is None:
+            from app.llm_gateway import gateway as _gw
+
+            self.gateway = _gw
 
     @property
     def _llm_type(self) -> str:

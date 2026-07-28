@@ -1,60 +1,41 @@
-"""DependencyAnalyzerNode — LLM 分析需求之间的依赖关系。"""
+"""DependencyAnalyzerNode — LangChain 分析需求间依赖关系。"""
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
-from app.analysis_layer.models import AnalysisState
-from app.analysis_layer.tools import call_llm_async, extract_json_from_llm
-from contracts.interfaces import DependencyGraph
+from app.analysis_layer.models import AnalysisState, DependencyResult
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-DEPENDENCY_PROMPT = """你是一个架构师。分析以下需求之间的依赖关系。
-用 JSON 格式返回依赖图：
-{{
-  "nodes": ["FR-001", "FR-002", ...],
-  "edges": [["FR-001", "FR-002", "depends_on"], ...]
-}}
+_PARSER = PydanticOutputParser(pydantic_object=DependencyResult)
 
-relation 可以是: "depends_on" / "conflicts_with" / "refines" / "contains"
-
-需求列表：
-{reqs}
-"""
+DEPENDENCY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "你是一个架构师。分析需求间依赖关系。"),
+    ("system", "{format_instructions}"),
+    ("human", "{reqs_text}"),
+])
 
 
 class DependencyAnalyzerNode:
-    """依赖分析节点：LLM 分析需求间的依赖关系。"""
+    """依赖分析节点。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="analysis", layer="analysis", node="dependency")
+        self.chain = DEPENDENCY_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
-        """执行依赖分析。
-
-        Args:
-            state: 当前状态，含 extracted_requirements。
-
-        Returns:
-            更新后的状态，含 dependency_graph。
-        """
         req_summary = "\n".join(
             f"{r.id}: {r.description[:100]}" for r in state["extracted_requirements"]
         )
         if not req_summary:
-            return {**state, "dependency_graph": DependencyGraph()}
-
-        prompt = DEPENDENCY_PROMPT.format(reqs=req_summary)
-        response = await call_llm_async(prompt, model="deepseek-v3")
-
+            return {**state, "dependency_graph": DependencyResult().dependency_graph}
         try:
-            raw = extract_json_from_llm(response)
-            data: dict[str, Any] = json.loads(raw)
-            graph = DependencyGraph(
-                nodes=data.get("nodes", []),
-                edges=[tuple(e) for e in data.get("edges", [])],
-            )
-        except (json.JSONDecodeError, Exception):
-            graph = DependencyGraph()
-
-        return {
-            **state,
-            "dependency_graph": graph,
-        }
+            result: DependencyResult = await self.chain.ainvoke({
+                "reqs_text": req_summary,
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            return {**state, "dependency_graph": result.dependency_graph}
+        except Exception:
+            return {**state, "dependency_graph": DependencyResult().dependency_graph}
