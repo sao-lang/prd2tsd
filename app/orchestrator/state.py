@@ -146,6 +146,7 @@ def make_initial_state(
     permissions: list[str] | None = None,
     max_iterations: int = 3,
     tenant_context: TenantContext | None = None,
+    history_messages: list[dict[str, str]] | None = None,
 ) -> OrchestratorState:
     """构造初始 OrchestratorState。
 
@@ -159,6 +160,7 @@ def make_initial_state(
         permissions: 用户权限列表。
         max_iterations: 最大迭代次数。
         tenant_context: 多租户上下文。
+        history_messages: 历史会话消息列表（Phase 3: 记忆增强输入）。
 
     Returns:
         初始化的 OrchestratorState。
@@ -187,4 +189,6 @@ def make_initial_state(
         "status": "running",
         "error_message": "",
         "progress": 0.0,
+        # Phase 3: 记忆增强 — 供 retrieve_memory / compress_memory 节点消费
+        "_history_messages": history_messages or [],
     }

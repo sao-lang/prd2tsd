@@ -12,11 +12,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from app.core.logger import get_logger
@@ -60,8 +61,37 @@ class GatewayChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """同步生成 — 不支持，请使用 _agenerate。"""
-        raise NotImplementedError("GatewayChatModel 仅支持异步接口，请使用 ainvoke")
+        """同步生成 — 委托给 _agenerate。
+
+        使用 asyncio 在当前事件循环中运行异步方法。
+        如果当前无事件循环，创建新的事件循环执行。
+
+        Args:
+            messages: LangChain 消息列表。
+            stop: 停止词列表。
+            run_manager: 回调管理器。
+            **kwargs: 额外参数。
+
+        Returns:
+            ChatResult 包含生成的 AIMessage。
+        """
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._agenerate(messages, stop, run_manager, **kwargs))
+
+        # 如果已经在事件循环中运行（通常是被 LangChain 回调管理器调用），
+        # 通过新线程执行以避免嵌套事件循环冲突
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(
+                asyncio.run,
+                self._agenerate(messages, stop, run_manager, **kwargs),
+            )
+            return future.result()
 
     async def _agenerate(
         self,

@@ -52,8 +52,6 @@ class SaveSessionNode:
             未修改的 OrchestratorState（副作用仅写入数据库）。
         """
         task_id = state.get("task_id", "")
-        user_id = state.get("user_id", "")
-        workspace_id = state.get("workspace_id", "")
         status = state.get("status", "complete")
 
         logger.info("保存会话: task=%s, status=%s", task_id, status)
@@ -102,6 +100,7 @@ class SaveSessionNode:
                             "task_id": task_id,
                             "status": status,
                             "score": overall_score,
+                            "summary": result_summary,
                         },
                     ),
                 )

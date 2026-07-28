@@ -93,6 +93,13 @@ def get_orchestrator():
     from app.evaluation.agent_graph import evaluation_graph
     from app.generation_layer.agent_graph import generation_graph
     from app.planning_layer.agent_graph import planning_graph
+    from app.session_history.compressor import ContextCompressor
+    from app.session_history.memory_retriever import MemoryRetriever
+
+    # Phase 2-3: 注入记忆管理 Service
+    _session_service = get_session_service()
+    _context_compressor = ContextCompressor()
+    _memory_retriever = MemoryRetriever()
 
     _orchestrator_instance = build_and_compile(
         analysis_graph=analysis_graph,
@@ -101,5 +108,19 @@ def get_orchestrator():
         evaluation_graph=evaluation_graph,
         retrieval_pipeline=None,
         checkpointer=_checkpointer_instance,
+        session_service=_session_service,
+        context_compressor=_context_compressor,
+        memory_retriever=_memory_retriever,
     )
     return _orchestrator_instance
+
+
+def get_session_service():
+    """获取 SessionHistoryService 实例（懒加载）。
+
+    Returns:
+        SessionHistoryService 实例。
+    """
+    from app.session_history.service import SessionHistoryService
+
+    return SessionHistoryService()

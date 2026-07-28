@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any
 
 from app.core.logger import get_logger
-from app.orchestrator.intent_classifier import IntentClassifier, IntentResult, IntentType
+from app.orchestrator.intent_classifier import IntentClassifier, IntentResult
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.intent_classify")
