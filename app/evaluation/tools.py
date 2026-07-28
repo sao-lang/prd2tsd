@@ -1,4 +1,8 @@
-"""C4 — Evaluation Layer 工具函数。"""
+"""C4 — Evaluation Layer 工具函数。
+
+Phase 6 清理：parse_score 已删除，节点直接使用 PydanticOutputParser(ScoreResult)。
+call_llm 保留用于 scoring.py 的批量评分调用。
+"""
 
 from __future__ import annotations
 
@@ -49,23 +53,3 @@ async def call_llm(prompt: str, model: str | None = None, **kwargs: Any) -> str:
     except Exception as exc:
         logger.warning("LLM 调用失败（evaluation）: %s", exc)
         return ""
-
-
-def parse_score(response: str, field: str = "score") -> float:
-    """从 LLM 返回的文本中提取评分 — 使用 PydanticOutputParser。
-
-    Args:
-        response: LLM 返回文本。
-        field: 要提取的字段名（保留兼容性，实际使用 ScoreResult.score）。
-
-    Returns:
-        提取的分数（0-10），失败时返回 5.0 默认值。
-    """
-    if not response:
-        return 5.0
-    try:
-        result: ScoreResult = _score_parser.parse(response)
-        val = result.score
-        return float(val)
-    except Exception:
-        return 5.0

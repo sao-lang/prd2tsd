@@ -365,6 +365,8 @@ class TaskManager:
                 record["interrupt_stage"] = ""
                 record["result"] = final_state.get("generation_result")
                 record["evaluation"] = final_state.get("evaluation_report")
+                # Phase 2: 支持简单对话/知识查询路径的 chat_response
+                record["chat_response"] = final_state.get("chat_response", "")
                 record["updated_at"] = datetime.now(UTC).isoformat()
 
         # 发布完成事件
@@ -379,7 +381,10 @@ class TaskManager:
         })
 
         result_summary = ""
-        if final_state.get("generation_result"):
+        chat_response = final_state.get("chat_response", "")
+        if chat_response:
+            result_summary = chat_response[:200]
+        elif final_state.get("generation_result"):
             result_summary = "方案生成完成"
         await self._emit("done", {
             "task_id": task_id,

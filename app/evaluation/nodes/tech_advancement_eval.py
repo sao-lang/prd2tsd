@@ -1,41 +1,45 @@
-"""TechAdvancementEvalNode — ⭐ 技术先进性评估。"""
+"""TechAdvancementEvalNode — LangChain 技术先进性评估。"""
 
 from __future__ import annotations
 
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.evaluation.models import EvaluationState
-from app.evaluation.tools import call_llm, parse_score
+from app.evaluation.tools import ScoreResult
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-TECH_ADV_PROMPT = """评估以下技术方案的技术先进性：
+_PARSER = PydanticOutputParser(pydantic_object=ScoreResult)
 
-技术栈：{stack}
-架构模式：{pattern}
-
-评估：技术成熟度、社区活跃度、生态完善度、创新性
-
-返回 JSON：{{"score": 7, "detail": "使用了主流成熟技术"}}
-"""
+TECH_ADV_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "评估以下技术方案的技术先进性。维度：技术成熟度、社区活跃度、生态完善度、创新性。"),
+    ("system", "{format_instructions}"),
+    ("human", "技术栈：{stack}\n架构模式：{pattern}"),
+])
 
 
 class TechAdvancementEvalNode:
-    """技术先进性评估节点。"""
+    """技术先进性评估节点：LangChain 链评分。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="evaluation", layer="evaluation", node="tech_advancement")
+        self.chain = TECH_ADV_PROMPT | llm | _PARSER
 
     async def run(self, state: EvaluationState) -> EvaluationState:
-        """执行技术先进性评估。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态，含 dimension_scores.tech_advancement。
-        """
         pr = state["planning_result"]
         stack_text = ", ".join(t.recommendation for t in pr.tech_stack)
 
-        prompt = TECH_ADV_PROMPT.format(
-            stack=stack_text,
-            pattern=pr.architecture_pattern,
-        )
-        resp = await call_llm(prompt, model="gpt-4o-mini")
-        score = parse_score(resp, "score")
+        try:
+            result: ScoreResult = await self.chain.ainvoke({
+                "stack": stack_text,
+                "pattern": pr.architecture_pattern,
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            score = float(result.score)
+        except Exception:
+            score = 5.0
 
-        return {"dimension_scores": {"tech_advancement": score}}
+        dim_scores = dict(state.get("dimension_scores", {}))
+        dim_scores["tech_advancement"] = score
+        return {**state, "dimension_scores": dim_scores}

@@ -1,43 +1,49 @@
-"""PlanSelfCheckNode — 自检，不通过则回退。"""
+"""PlanSelfCheckNode — LangChain 自检节点。"""
 
 from __future__ import annotations
 
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 from app.planning_layer.models import PlanningState
-from app.planning_layer.tools import call_llm_async
+from app.planning_layer.output_models import SelfCheckResult
 
-SELF_CHECK_PROMPT = """检查以下规划结果是否完整可用。
+_PARSER = PydanticOutputParser(pydantic_object=SelfCheckResult)
 
-架构模式：{pattern}
-技术栈：{stack}
-组件数：{comp_count}
-
-如果一切合理，回复"通过"；如有问题，说明具体问题。
-"""
+SELF_CHECK_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "检查以下规划结果是否完整可用。"),
+    ("system", "{format_instructions}"),
+    ("human", "架构模式：{pattern}\n技术栈：{stack}\n组件数：{comp_count}"),
+])
 
 
 class PlanSelfCheckNode:
-    """自检节点：检查规划完整性。"""
+    """自检节点：LangChain 链检查规划完整性。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="planning", layer="planning", node="plan_self_check")
+        self.chain = SELF_CHECK_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
-        """执行自检。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态。
-        """
         stack_names = ", ".join(t.recommendation for t in state.get("tech_stack_choices", []))
-        prompt = SELF_CHECK_PROMPT.format(
-            pattern=state.get("selected_pattern", "未确定"),
-            stack=stack_names or "未选择",
-            comp_count=len(state.get("component_decomposition", [])),
-        )
-        response = await call_llm_async(prompt, model="gpt-4o-mini")
+
+        try:
+            result: SelfCheckResult = await self.chain.ainvoke({
+                "pattern": state.get("selected_pattern", "未确定"),
+                "stack": stack_names or "未选择",
+                "comp_count": len(state.get("component_decomposition", [])),
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            passed = result.passed
+            issues = result.issues
+        except Exception:
+            passed = False
+            issues = ["自检执行失败"]
 
         node_outputs = dict(state.get("node_outputs", {}))
-        node_outputs["self_check_result"] = response
-        # 自检不通过时标记回退
-        node_outputs["self_check_passed"] = ("通过" in response and "不通过" not in response)
+        node_outputs["self_check_passed"] = passed
+        node_outputs["self_check_result"] = {"passed": passed, "issues": issues}
 
         return {**state, "node_outputs": node_outputs}

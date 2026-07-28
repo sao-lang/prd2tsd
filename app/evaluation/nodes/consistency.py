@@ -1,42 +1,47 @@
-"""ConsistencyEvalNode — 方案内部一致性评测。"""
+"""ConsistencyEvalNode — LangChain 方案一致性评估。"""
 
 from __future__ import annotations
 
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.evaluation.models import EvaluationState
-from app.evaluation.tools import call_llm, parse_score
+from app.evaluation.tools import ScoreResult
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-CONSISTENCY_PROMPT = """检查以下技术方案是否存在内部矛盾或不一致：
+_PARSER = PydanticOutputParser(pydantic_object=ScoreResult)
 
-架构模式：{pattern}
-技术栈：{stack}
-组件：{components}
-
-返回 JSON：{{"score": 8, "issues": [], "detail": "方案整体一致"}}
-"""
+CONSISTENCY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "检查以下技术方案是否存在内部矛盾或不一致。"),
+    ("system", "{format_instructions}"),
+    ("human", "架构模式：{pattern}\n技术栈：{stack}\n组件：{components}"),
+])
 
 
 class ConsistencyEvalNode:
-    """内部一致性评测节点。"""
+    """一致性评估节点：LangChain 链评分。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="evaluation", layer="evaluation", node="consistency")
+        self.chain = CONSISTENCY_PROMPT | llm | _PARSER
 
     async def run(self, state: EvaluationState) -> EvaluationState:
-        """执行一致性评测。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态，含 dimension_scores.consistency。
-        """
         pr = state["planning_result"]
         stack_text = ", ".join(t.recommendation for t in pr.tech_stack)
         comp_text = ", ".join(c.name for c in pr.components)
 
-        prompt = CONSISTENCY_PROMPT.format(
-            pattern=pr.architecture_pattern,
-            stack=stack_text,
-            components=comp_text,
-        )
-        resp = await call_llm(prompt, model="gpt-4o-mini")
-        score = parse_score(resp, "score")
+        try:
+            result: ScoreResult = await self.chain.ainvoke({
+                "pattern": pr.architecture_pattern,
+                "stack": stack_text,
+                "components": comp_text,
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            score = float(result.score)
+        except Exception:
+            score = 5.0
 
-        return {"dimension_scores": {"consistency": score}}
+        dim_scores = dict(state.get("dimension_scores", {}))
+        dim_scores["consistency"] = score
+        return {**state, "dimension_scores": dim_scores}

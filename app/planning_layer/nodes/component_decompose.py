@@ -1,65 +1,54 @@
-"""ComponentDecomposeNode — LLM 将需求映射为组件。"""
+"""ComponentDecomposeNode — LangChain 需求→组件分解。"""
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 from app.planning_layer.models import PlanningState
-from app.planning_layer.tools import call_llm_async
+from app.planning_layer.output_models import ComponentDecomposeResult
 from contracts.interfaces import ComponentDetail
 
-DECOMPOSE_PROMPT = """你是一个软件架构师。将以下需求分解为系统组件。
+_PARSER = PydanticOutputParser(pydantic_object=ComponentDecomposeResult)
 
-架构模式：{pattern}
-需求：
-{reqs}
-
-返回 JSON 数组：
-[
-  {{
-    "name": "用户服务",
-    "type": "service",
-    "responsibility": "处理用户注册、登录、权限管理",
-    "key_functions": ["用户注册", "JWT 签发"],
-    "dependencies": ["数据库"]
-  }}
-]
-"""
+DECOMPOSE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "你是一个软件架构师。将以下需求分解为系统组件。"),
+    ("system", "{format_instructions}"),
+    ("human", "架构模式：{pattern}\n需求：\n{reqs}"),
+])
 
 
 class ComponentDecomposeNode:
-    """组件分解节点：需求 → 组件映射。"""
+    """组件分解节点：LangChain 链需求→组件。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="planning", layer="planning", node="component_decompose")
+        self.chain = DECOMPOSE_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
-        """执行组件分解。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态，含 component_decomposition。
-        """
         ar = state["analysis_result"]
-        reqs_text = "\n".join(f"{r.id}: {r.description[:100]}" for r in ar.requirements[:10])
-        prompt = DECOMPOSE_PROMPT.format(
-            pattern=state.get("selected_pattern", "分层架构"),
-            reqs=reqs_text,
-        )
-        response = await call_llm_async(prompt, model="deepseek-v3")
+        reqs = ar.requirements[:10] if hasattr(ar, "requirements") else []
+        reqs_text = "\n".join(f"- {r.id}: {r.description[:100]}" for r in reqs)
 
         try:
-            import re
-            json_match = re.search(r"\[.*?\]", response, re.DOTALL)
-            if json_match:
-                data: list[dict[str, Any]] = json.loads(json_match.group())
-                components = [ComponentDetail(**item) for item in data]
-            else:
-                components = []
-        except (json.JSONDecodeError, Exception):
+            result: ComponentDecomposeResult = await self.chain.ainvoke({
+                "pattern": state.get("selected_pattern", "分层架构"),
+                "reqs": reqs_text or "无需求数据",
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            components = [
+                ComponentDetail(
+                    name=c.name,
+                    type=c.type,
+                    responsibility=c.responsibility,
+                    key_functions=c.key_functions,
+                    dependencies=c.dependencies,
+                )
+                for c in result.components
+            ]
+        except Exception:
             components = []
 
-        return {
-            **state,
-            "component_decomposition": components,
-        }
+        return {**state, "component_decomposition": components}

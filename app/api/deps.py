@@ -111,6 +111,7 @@ def get_orchestrator():
         session_service=_session_service,
         context_compressor=_context_compressor,
         memory_retriever=_memory_retriever,
+        llm_gateway=gateway,
     )
     return _orchestrator_instance
 

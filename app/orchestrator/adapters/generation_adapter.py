@@ -39,6 +39,8 @@ class GenerationAdapter:
             "analysis_result": state.get("analysis_result"),
             # P0.1: 保留已有章节内容（迭代续写时用）
             "section_contents": state.get("section_contents", {}),
+            # Phase 4: 传递导出格式配置（PDF/DOCX 等）
+            "export_formats": state.get("export_formats", {}),
             # Block E: SSE 流式推送需要 task_id
             "task_id": state.get("task_id", ""),
         }
@@ -114,6 +116,7 @@ class GenerationAdapter:
         # 3. 映射回 OrchestratorState
         state["generation_result"] = result.get("generation_result")
         state["section_contents"] = result.get("section_contents", {})
+        state["export_formats"] = result.get("export_formats", {})
         state["progress"] = 0.75
 
         return state

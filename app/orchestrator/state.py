@@ -109,14 +109,18 @@ class OrchestratorState(TypedDict):
     # ── 块 C3 Generation ──
     generation_result: GenerationResultDetail
     section_contents: dict[str, str]
+    export_formats: dict[str, str]
 
     # ── 块 C4 Evaluation ──
     evaluation_report: EvaluationReportDetail
 
+    # ── 简单对话/知识查询响应（chat / knowledge_qa 路径）──
+    chat_response: str
+
     # ── 控制字段 ──
     iteration_count: int
     max_iterations: int
-    status: Literal["running", "paused", "complete", "failed"]
+    status: Literal["running", "paused", "complete", "failed", "clarification_needed"]
     error_message: str
     progress: float  # 0.0 ~ 1.0
 
@@ -183,7 +187,9 @@ def make_initial_state(
         "tech_stack_choices": [],
         "generation_result": GenerationResultDetail(),
         "section_contents": {},
+        "export_formats": {},
         "evaluation_report": EvaluationReportDetail(),
+        "chat_response": "",
         "iteration_count": 0,
         "max_iterations": max_iterations,
         "status": "running",

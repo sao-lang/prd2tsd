@@ -147,10 +147,13 @@ def build_orchestrator_graph(
     session_service: Any = None,
     context_compressor: Any = None,
     memory_retriever: Any = None,
+    llm_gateway: Any = None,
 ) -> StateGraph:
     """构建主编排 StateGraph。
 
-    Phase 2 增强：接入 save_session / compress_memory / retrieve_memory 节点。
+    Phase 2 全链路：接入 classify / chat / knowledge_qa / clarify 节点，
+    实现意图驱动的路由分发。chat / knowledge_qa / complex_generation
+    三条路径全部在 LangGraph 图内运行。
 
     Args:
         analysis_graph: 编译后的 Analysis Layer StateGraph。
@@ -161,17 +164,28 @@ def build_orchestrator_graph(
         session_service: SessionHistoryService 实例（可选，用于持久化）。
         context_compressor: ContextCompressor 实例（可选，用于记忆压缩）。
         memory_retriever: MemoryRetriever 实例（可选，用于记忆检索）。
+        llm_gateway: LLM Gateway 实例（可选，用于 chat/qa 路径）。
 
     Returns:
         主编排 StateGraph（未编译）。
     """
+    from app.orchestrator.nodes.chat_node import ChatNode
+    from app.orchestrator.nodes.clarify_node import ClarifyNode
     from app.orchestrator.nodes.compress_memory import CompressMemoryNode
+    from app.orchestrator.nodes.intent_classify import IntentClassifyNode, route_by_intent
     from app.orchestrator.nodes.retrieve_memory import RetrieveMemoryNode
+    from app.orchestrator.nodes.retrieve_node import KnowledgeQANode
     from app.orchestrator.nodes.save_session import SaveSessionNode
 
     pipeline = retrieval_pipeline or RetrievalPipeline()
 
-    # 创建节点
+    # ── 意图路由节点 ──
+    classify_node = IntentClassifyNode(llm_gateway=llm_gateway)
+    chat_node = ChatNode()
+    retrieve_node = KnowledgeQANode(retrieval_pipeline=pipeline)
+    clarify_node = ClarifyNode()
+
+    # ── 复杂生成路径节点 ──
     kn_node = KnowledgeRetrievalNode(pipeline)
     analysis_adapter = AnalysisAdapter(analysis_graph)
     analysis_review = HumanReviewNode("analysis")
@@ -182,14 +196,21 @@ def build_orchestrator_graph(
     iteration_decider = IterationDecider()
     final_assembly = FinalAssemblyNode()
 
-    # Phase 2-3: 记忆管理节点
+    # ── 记忆管理节点 ──
     compress_memory_node = CompressMemoryNode(compressor=context_compressor)
     save_session_node = SaveSessionNode(session_service=session_service)
     retrieve_memory_node = RetrieveMemoryNode(memory_retriever=memory_retriever)
 
-    # 构建图
+    # ── 构建图 ──
     graph = StateGraph(OrchestratorState)
 
+    # 意图路由层
+    graph.add_node("classify", classify_node.run)
+    graph.add_node("chat_node", chat_node.run)
+    graph.add_node("retrieve_node", retrieve_node.run)
+    graph.add_node("clarify_node", clarify_node.run)
+
+    # 复杂生成路径
     graph.add_node("knowledge_retrieval", kn_node.run)
     graph.add_node("analysis", analysis_adapter.run)
     graph.add_node("analysis_human_review", analysis_review.run)
@@ -199,13 +220,31 @@ def build_orchestrator_graph(
     graph.add_node("evaluation", evaluation_adapter.run)
     graph.add_node("final_assembly", final_assembly.run)
 
-    # Phase 2-3: 记忆管理节点
+    # 记忆管理节点
     graph.add_node("retrieve_memory", retrieve_memory_node.run)
     graph.add_node("compress_memory", compress_memory_node.run)
     graph.add_node("save_session", save_session_node.run)
 
-    # 连线：入口 → 记忆检索 → 知识检索 → 分析
-    graph.set_entry_point("retrieve_memory")
+    # ── 入口：意图分类 → 条件路由 ──
+    graph.set_entry_point("classify")
+    graph.add_conditional_edges(
+        "classify",
+        route_by_intent,
+        {
+            "chat_node": "chat_node",
+            "retrieve_node": "retrieve_node",
+            "kg_retrieve": "retrieve_memory",
+            "clarify_node": "clarify_node",
+        },
+    )
+
+    # ── chat / knowledge_qa / clarify 路径 → save_session → END ──
+    graph.add_edge("chat_node", "save_session")
+    graph.add_edge("retrieve_node", "save_session")
+    graph.add_edge("clarify_node", END)
+
+    # ── 复杂生成路径 ──
+    # retrieve_memory → knowledge_retrieval → analysis
     graph.add_edge("retrieve_memory", "knowledge_retrieval")
     graph.add_edge("knowledge_retrieval", "analysis")
 
@@ -246,7 +285,7 @@ def build_orchestrator_graph(
         },
     )
 
-    # Phase 2-3: 最终组装 → 记忆压缩 → 会话保存 → 结束
+    # 最终组装 → 记忆压缩 → 会话保存 → 结束
     graph.add_edge("final_assembly", "compress_memory")
     graph.add_edge("compress_memory", "save_session")
     graph.add_edge("save_session", END)
@@ -269,6 +308,7 @@ def build_and_compile(
     session_service: Any = None,
     context_compressor: Any = None,
     memory_retriever: Any = None,
+    llm_gateway: Any = None,
 ) -> StateGraph:
     """构建并编译主编排 StateGraph。
 
@@ -286,6 +326,7 @@ def build_and_compile(
         session_service: SessionHistoryService 实例（可选）。
         context_compressor: ContextCompressor 实例（可选）。
         memory_retriever: MemoryRetriever 实例（可选）。
+        llm_gateway: LLM Gateway 实例（可选，用于 chat/qa 路径）。
 
     Returns:
         编译后的主编排 StateGraph。
@@ -299,6 +340,7 @@ def build_and_compile(
         session_service=session_service,
         context_compressor=context_compressor,
         memory_retriever=memory_retriever,
+        llm_gateway=llm_gateway,
     )
 
     effective_checkpointer: BaseCheckpointSaver | None = None

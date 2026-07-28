@@ -1,39 +1,45 @@
-"""CostEvalNode — ⭐ 成本合理性评估。"""
+"""CostEvalNode — LangChain 成本合理性评估。"""
 
 from __future__ import annotations
 
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.evaluation.models import EvaluationState
-from app.evaluation.tools import call_llm, parse_score
+from app.evaluation.tools import ScoreResult
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-COST_EVAL_PROMPT = """评估以下技术方案的成本合理性：
+_PARSER = PydanticOutputParser(pydantic_object=ScoreResult)
 
-技术栈：{stack}
-组件数：{comp_count}
-
-返回 JSON：{{"score": 7, "assessment": "成本合理", "suggestions": []}}
-"""
+COST_EVAL_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "评估以下技术方案的成本合理性。"),
+    ("system", "{format_instructions}"),
+    ("human", "技术栈：{stack}\n组件数：{comp_count}"),
+])
 
 
 class CostEvalNode:
-    """成本合理性评估节点。"""
+    """成本评估节点：LangChain 链评分。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="evaluation", layer="evaluation", node="cost_eval")
+        self.chain = COST_EVAL_PROMPT | llm | _PARSER
 
     async def run(self, state: EvaluationState) -> EvaluationState:
-        """执行成本评估。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态，含 dimension_scores.cost。
-        """
         pr = state["planning_result"]
         stack_text = ", ".join(t.recommendation for t in pr.tech_stack)
 
-        prompt = COST_EVAL_PROMPT.format(
-            stack=stack_text,
-            comp_count=len(pr.components),
-        )
-        resp = await call_llm(prompt, model="gpt-4o-mini")
-        score = parse_score(resp, "score")
+        try:
+            result: ScoreResult = await self.chain.ainvoke({
+                "stack": stack_text,
+                "comp_count": len(pr.components),
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            score = float(result.score)
+        except Exception:
+            score = 5.0
 
-        return {"dimension_scores": {"cost": score}}
+        dim_scores = dict(state.get("dimension_scores", {}))
+        dim_scores["cost"] = score
+        return {**state, "dimension_scores": dim_scores}

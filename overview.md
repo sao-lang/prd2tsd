@@ -2,6 +2,39 @@
 
 ### 2026-07-28
 
+#### 21. LangChain 全节点改造（23 节点 + tools.py 清理）
+
+- **时间：** 2026-07-28
+- **发起人：** user（"全部改造"）
+- **依据：** `docs/deep-review-fix-plan.md` Section 3（LangChain 节点内部重构）
+- **修改内容：**
+  - **Planning Layer (11/11)：** 全部节点从手动 `call_llm_async()` + `json.loads()` → `ChatPromptTemplate` + `GatewayChatModel` + `PydanticOutputParser`；新建 `planning_layer/output_models.py`（6 个 Pydantic 输出模型）
+  - **Generation Layer (3/3)：** `code_scaffold_node` / `consistency_checker` / `revision_node` 同上改造
+  - **Evaluation Layer (9/9)：** 全部节点从 `call_llm` + `parse_score` → `ChatPromptTemplate` + `PydanticOutputParser(ScoreResult)`；修复返回值从部分 dict → `{**state, ...}` 合并
+  - **tools.py 清理：** 删除 `planning_layer/tools.py` 的 `call_llm_async`（11 节点已不再调用）；删除 `generation_layer/tools.py` 的 `call_llm_async`（3 节点已不再调用）；删除 `evaluation/tools.py` 的 `parse_score`（9 节点已用 PydanticOutputParser）；删除 `analysis_layer/tools.py` 的 `call_llm_async` + `extract_json_from_llm`（死代码）
+- **新增文件：** 1 个（`planning_layer/output_models.py`）
+- **修改文件：** 23 个节点 + 4 个 tools.py
+- **Lint 验证：** ✅ `ruff check` All checks passed
+
+#### 20. deep-review-fix-plan 未完成项补充 (Phase 2-5 收尾)
+
+- **时间：** 2026-07-28
+- **发起人：** user（"补充完整"）
+- **依据：** `docs/deep-review-fix-plan.md` 完成度评估报告（总完成度约 70%）
+- **修改内容：**
+  - **意图路由接入（Phase 2.3/2.4）：** `build_orchestrator_graph()` 新增 `classify` 入口节点 → `route_by_intent` 条件路由；新建 `ChatNode` / `KnowledgeQANode` / `ClarifyNode` 三个节点；chat/knowledge_qa/clarification 路径全部在 LangGraph 图内运行
+  - **SSE 移入节点（Phase 2.1）：** `ChatNode` + `KnowledgeQANode` 内嵌 SSE 副作用（通过 `_runtime.event_bus.publish()`），替代 TaskManager `astream` 循环中的硬编码 SSE
+  - **TaskManager 适配（Phase 2.8）：** `_update_result()` 支持 `chat_response` 字段；简单对话/知识查询结果正确存储和推送
+  - **chat.py 走 LangGraph（Phase 2.4）：** `POST /chat` 改为 `orchestrator.ainvoke()` 统一入口，不再手动 `if/elif` 调用 `gateway.complete()`
+  - **GenerationAdapter export_formats（Phase 4.3）：** `OrchestratorState` 新增 `export_formats` 字段；`GenerationAdapter` 双向传递（输入→子图 / 子图结果→State）
+  - **Session thread_id 绑定（Phase 3.3）：** `SessionRepository.create_session()` 自动生成 `thread_id`（uuid4）；`_to_session_out()` 映射 `thread_id` / `checkpoint_ts` / `current_node` / `interrupt_stage`
+  - **死代码清理（Phase 5）：** 删除 3 个孤儿测试文件（`test_task_queue.py` / `test_task_executor.py` / `test_tool_registry.py`）；`ToolRegistry` 从 `__all__` 移除
+- **新增文件：** 3 个（`orchestrator/nodes/chat_node.py` / `retrieve_node.py` / `clarify_node.py`）
+- **修改文件：** 10 个（`main_graph.py` / `state.py` / `nodes/__init__.py` / `save_session.py` / `chat.py` / `task_manager.py` / `deps.py` / `generation_adapter.py` / `repository.py` / `agents/__init__.py`）
+- **删除文件：** 3 个（孤儿测试文件）
+- **Lint 验证：** ✅ `ruff check` All checks passed
+- **潜在风险：** `chat.py` 的 `orchestrator.ainvoke()` 对 complex_generation 意图走 `task_manager.create_task()` 异步路径，避免了同步阻塞；新增节点依赖 `_runtime.event_bus` 注入，需确保 `RuntimeInjector` 在生命周期中正确初始化
+
 #### 19. deep-review-fix-plan 全 Phase 实施
 
 - **时间：** 2026-07-28

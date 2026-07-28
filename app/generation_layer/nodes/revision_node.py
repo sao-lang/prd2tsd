@@ -1,37 +1,27 @@
-"""RevisionNode — 修复一致性问题。"""
+"""RevisionNode — LangChain 修复一致性问题。"""
 
 from __future__ import annotations
 
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.generation_layer.models import GenerationState
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 
-REVISION_PROMPT = """修复以下文档中的一致性问题。
-
-不一致问题：
-{issues}
-
-文档内容：
-{content}
-
-请返回修复后的完整内容。
-"""
+REVISION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "修复以下文档中的一致性问题。请返回修复后的完整内容。"),
+    ("human", "不一致问题：\n{issues}\n\n文档内容：\n{content}"),
+])
 
 
 class RevisionNode:
-    """修订节点：修复一致性问题。"""
+    """修订节点：LangChain 链修复一致性问题。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="generation", layer="generation", node="revision")
+        self.chain = REVISION_PROMPT | llm
 
     async def run(self, state: GenerationState) -> GenerationState:
-        """执行修订。
-
-        读取 ConsistencyCheckerNode 发现的问题，调用 LLM 修复受影响的章节。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态，含修复后的 section_contents。
-        """
-        from app.generation_layer.tools import call_llm_async
-
         issues = state.get("consistency_issues", [])
         if not issues:
             return state
@@ -40,24 +30,17 @@ class RevisionNode:
         if not contents:
             return state
 
-        # 组装涉及不一致的章节内容
-        affected_content = "\n\n---\n\n".join(
-            f"### {k}\n{v[:1000]}" for k, v in contents.items()
-        )
+        affected_content = "\n\n---\n\n".join(f"### {k}\n{v[:1000]}" for k, v in contents.items())
 
-        prompt = REVISION_PROMPT.format(
-            issues="\n".join(issues),
-            content=affected_content,
-        )
-        response = await call_llm_async(prompt, model="gpt-4o-mini")
+        result = await self.chain.ainvoke({
+            "issues": "\n".join(issues),
+            "content": affected_content,
+        })
+        response = result.content if hasattr(result, "content") else str(result)
 
         if response and response.strip():
-            # 将 LLM 修复后的内容合并到原有 section_contents，保留所有 key
             updated = dict(state.get("section_contents", {}))
             updated["_revision_fix"] = response
-            return {
-                **state,
-                "section_contents": updated,
-            }
+            return {**state, "section_contents": updated}
 
         return state

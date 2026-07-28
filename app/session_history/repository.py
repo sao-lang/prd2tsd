@@ -31,6 +31,8 @@ class SessionRepository:
     ) -> SessionOut:
         """创建新会话。
 
+        Phase 3: 自动生成 thread_id 用于 LangGraph checkpoint 绑定。
+
         Args:
             db: 数据库会话。
             workspace_id: 工作空间 ID。
@@ -40,12 +42,15 @@ class SessionRepository:
         Returns:
             创建的会话信息。
         """
+        import uuid as _uuid
+
         session = Session(
             workspace_id=workspace_id,
             user_id=user_id,
             title=data.title,
             session_type=data.session_type or "generate",
             tags=data.tags or [],
+            thread_id=str(_uuid.uuid4()),  # Phase 3: 自动生成 LangGraph thread_id
         )
         db.add(session)
         await db.flush()
@@ -356,6 +361,11 @@ class SessionRepository:
             created_at=session.created_at.isoformat() if session.created_at else None,
             updated_at=session.updated_at.isoformat() if session.updated_at else None,
             last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+            # Phase 3: LangGraph 断点恢复字段
+            thread_id=session.thread_id,
+            checkpoint_ts=session.checkpoint_ts.isoformat() if session.checkpoint_ts else None,
+            current_node=session.current_node,
+            interrupt_stage=session.interrupt_stage,
         )
 
     @staticmethod

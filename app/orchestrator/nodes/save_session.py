@@ -69,12 +69,16 @@ class SaveSessionNode:
             return state
 
         try:
-            # 提取结果摘要
+            # 提取结果摘要（支持复杂生成和简单对话两种路径）
+            chat_response = state.get("chat_response", "")  # type: ignore[typeddict-unknown-key]
             generation_result = state.get("generation_result")
             evaluation_report = state.get("evaluation_report")
 
             result_summary = ""
-            if generation_result is not None:
+            if chat_response:
+                # 简单对话/知识查询路径
+                result_summary = chat_response[:200]
+            elif generation_result is not None:
                 if hasattr(generation_result, "summary"):
                     result_summary = generation_result.summary or ""
                 elif isinstance(generation_result, dict):

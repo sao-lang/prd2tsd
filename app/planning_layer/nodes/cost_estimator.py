@@ -1,53 +1,45 @@
-"""CostEstimatorNode — ⭐ 3 种成本方案估算。"""
+"""CostEstimatorNode — LangChain 3 种成本方案估算。"""
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 from app.planning_layer.models import PlanningState
-from app.planning_layer.tools import call_llm_async
+from app.planning_layer.output_models import CostEstimateResult
 
-COST_PROMPT = """你是一个成本估算专家。为以下项目估算 3 种成本方案。
+_PARSER = PydanticOutputParser(pydantic_object=CostEstimateResult)
 
-项目：{project}
-组件数：{comp_count}
-技术栈：{stack}
-
-返回 JSON：
-{{
-  "low_cost": {{"monthly": 5000, "desc": "最低配置", "risks": ["性能瓶颈"]}},
-  "standard": {{"monthly": 15000, "desc": "标准配置", "risks": []}},
-  "high_availability": {{"monthly": 40000, "desc": "高可用配置", "risks": ["成本高"]}}
-}}
-"""
+COST_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "你是一个成本估算专家。为以下项目估算 3 种成本方案（低配/标准/高可用）。"),
+    ("system", "{format_instructions}"),
+    ("human", "项目：{project}\n组件数：{comp_count}\n技术栈：{stack}"),
+])
 
 
 class CostEstimatorNode:
-    """成本估算节点：3 种部署方案成本估算。"""
+    """成本估算节点：LangChain 链生成 3 种部署方案成本估算。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="planning", layer="planning", node="cost_estimator")
+        self.chain = COST_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
-        """执行成本估算。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态。
-        """
         ar = state["analysis_result"]
         stack_names = ", ".join(t.recommendation for t in state.get("tech_stack_choices", []))
-        prompt = COST_PROMPT.format(
-            project=ar.project_name,
-            comp_count=len(state.get("component_decomposition", [])),
-            stack=stack_names or "待确定",
-        )
-        response = await call_llm_async(prompt, model="deepseek-v3")
-
         node_outputs = dict(state.get("node_outputs", {}))
+
         try:
-            node_outputs["cost_estimates"] = json.loads(response)
-        except (json.JSONDecodeError, Exception):
+            result: CostEstimateResult = await self.chain.ainvoke({
+                "project": ar.project_name,
+                "comp_count": len(state.get("component_decomposition", [])),
+                "stack": stack_names or "待确定",
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            node_outputs["cost_estimates"] = result.model_dump()
+        except Exception:
             node_outputs["cost_estimates"] = {}
 
         return {**state, "node_outputs": node_outputs}

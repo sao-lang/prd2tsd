@@ -1,67 +1,53 @@
-"""PatternRecommendNode — LLM 推荐 2-3 种架构模式。"""
+"""PatternRecommendNode — LangChain 架构模式推荐。"""
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
+from app.llm_gateway.langchain_adapter import GatewayChatModel
 from app.planning_layer.models import PlanningState
-from app.planning_layer.tools import call_llm_async
+from app.planning_layer.output_models import PatternRecommendResult
 from contracts.interfaces import PatternEval
 
-PATTERN_PROMPT = """你是一个软件架构师。基于以下项目需求，推荐 2-3 种适合的架构模式。
+_PARSER = PydanticOutputParser(pydantic_object=PatternRecommendResult)
 
-项目：{project}
-领域：{domain}
-需求数量：{req_count}
-
-返回 JSON 数组：
-[
-  {{
-    "pattern_name": "微服务架构",
-    "match_score": 8.5,
-    "strengths": ["独立部署", "技术多样性"],
-    "weaknesses": ["分布式复杂性", "运维成本高"],
-    "complexity": "high"
-  }}
-]
-
-只返回 JSON，不要其他内容。
-"""
+PATTERN_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "你是一个软件架构师。基于以下项目需求，推荐 2-3 种适合的架构模式。"),
+    ("system", "{format_instructions}"),
+    ("human", "项目：{project}\n领域：{domain}\n需求数量：{req_count}"),
+])
 
 
 class PatternRecommendNode:
-    """架构模式推荐节点：LLM 推荐候选架构模式。"""
+    """架构模式推荐节点：LangChain 链推荐候选架构模式。"""
+
+    def __init__(self, llm: GatewayChatModel | None = None) -> None:
+        if llm is None:
+            llm = GatewayChatModel(task_type="planning", layer="planning", node="pattern_recommend")
+        self.chain = PATTERN_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
-        """执行架构模式推荐。
-
-        Args:
-            state: 当前状态。
-
-        Returns:
-            更新后的状态，含 architecture_patterns。
-        """
         ar = state["analysis_result"]
-        prompt = PATTERN_PROMPT.format(
-            project=ar.project_name,
-            domain=", ".join(ar.domain_tags),
-            req_count=len(ar.requirements),
-        )
-        response = await call_llm_async(prompt, model="deepseek-v3")
 
         try:
-            import re
-            json_match = re.search(r"\[.*?\]", response, re.DOTALL)
-            if json_match:
-                data: list[dict[str, Any]] = json.loads(json_match.group())
-                patterns = [PatternEval(**item) for item in data]
-            else:
-                patterns = []
-        except (json.JSONDecodeError, Exception):
+            result: PatternRecommendResult = await self.chain.ainvoke({
+                "project": ar.project_name,
+                "domain": ", ".join(ar.domain_tags),
+                "req_count": len(ar.requirements),
+                "format_instructions": _PARSER.get_format_instructions(),
+            })
+            patterns = [
+                PatternEval(
+                    pattern_name=p.pattern_name,
+                    match_score=p.match_score,
+                    strengths=p.strengths,
+                    weaknesses=p.weaknesses,
+                    complexity=p.complexity,
+                )
+                for p in result.patterns
+            ]
+        except Exception:
             patterns = []
 
-        return {
-            **state,
-            "architecture_patterns": patterns,
-        }
+        return {**state, "architecture_patterns": patterns}
