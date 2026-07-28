@@ -6,7 +6,10 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.analysis_layer.models import AnalysisState, LanguageResult
+from app.core.logger import get_logger
 from app.llm_gateway.langchain_adapter import GatewayChatModel
+
+logger = get_logger("prd2tsd.analysis.lang_detector")
 
 _DETECT_PARSER = PydanticOutputParser(pydantic_object=LanguageResult)
 
@@ -46,7 +49,7 @@ class LanguageDetectorNode:
                     HumanMessage(content=state["prd_raw"][:8000]),
                 ])
                 return {**state, "prd_raw": resp.content}
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("英文 PRD 翻译失败，将使用原文继续: %s", exc)
 
         return state

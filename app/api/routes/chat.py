@@ -67,14 +67,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
     if intent == IntentType.COMPLEX_GENERATION:
         from app.task_manager import task_manager
 
-        task_info = await task_manager.create_task(
+        task_id = await task_manager.create_task(
             prd_raw=req.message,
             workspace_id=req.workspace_id,
         )
         return ChatResponse(
             intent="complex_generation",
             confidence=intent_result.confidence,
-            message=f"已创建生成任务: {task_info.get('task_id', '')}",
+            message=f"已创建生成任务: {task_id}",
             session_id=req.session_id,
         )
 

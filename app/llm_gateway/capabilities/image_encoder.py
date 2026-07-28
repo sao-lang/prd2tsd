@@ -101,30 +101,32 @@ class UnifiedImageEncoder:
     async def _api_encode_image(self, image_bytes: bytes) -> list[float]:
         """预留：通过 API 编码图片。
 
+        2026-07-28 修复：不再直接抛 NotImplementedError，
+        而是自动降级到本地 CLIP 模式并记录日志。
+
         Args:
             image_bytes: 图片字节数据。
 
         Returns:
-            向量。
-
-        Raises:
-            NotImplementedError: API 图片编码尚未实现。
+            向量（降级为本地 CLIP 编码结果）。
         """
-        raise NotImplementedError("API 图片编码尚未实现，请使用 local 模式")
+        logger.warning("API 图片编码尚未实现，自动降级到本地 CLIP 模式")
+        return await self._local_encode_image(image_bytes)
 
     async def _api_encode_text(self, text: str) -> list[float]:
         """预留：通过 API 编码文本。
+
+        2026-07-28 修复：不再直接抛 NotImplementedError，
+        而是自动降级到本地 CLIP 模式并记录日志。
 
         Args:
             text: 输入文本。
 
         Returns:
-            向量。
-
-        Raises:
-            NotImplementedError: API 文本编码尚未实现。
+            向量（降级为本地 CLIP 编码结果）。
         """
-        raise NotImplementedError("API 文本编码尚未实现，请使用 local 模式")
+        logger.warning("API 文本编码尚未实现，自动降级到本地 CLIP 模式")
+        return await self._local_encode_text(text)
 
     async def _local_encode_image(self, image_bytes: bytes) -> list[float]:
         """通过本地 CLIP 模型编码图片。

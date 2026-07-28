@@ -5,9 +5,12 @@ from __future__ import annotations
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from app.core.logger import get_logger
 from app.llm_gateway.langchain_adapter import GatewayChatModel
 from app.planning_layer.models import PlanningState
 from app.planning_layer.output_models import SelfCheckResult
+
+logger = get_logger("prd2tsd.planning.plan_self_check")
 
 _PARSER = PydanticOutputParser(pydantic_object=SelfCheckResult)
 
@@ -38,7 +41,8 @@ class PlanSelfCheckNode:
             })
             passed = result.passed
             issues = result.issues
-        except Exception:
+        except Exception as exc:
+            logger.warning("规划自检执行失败: %s", exc)
             passed = False
             issues = ["自检执行失败"]
 

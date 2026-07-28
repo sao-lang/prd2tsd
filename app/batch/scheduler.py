@@ -42,6 +42,9 @@ class BatchScheduler:
     async def trigger_now(self, task_name: str) -> dict[str, Any]:
         """立即触发一个定时任务。
 
+        2026-07-28 修复：原来只返回 {"success": True} 但未实际触发任务，
+        现在通过 Celery send_task 真正触发。
+
         Args:
             task_name: 任务名称（如 refresh-knowledge-graph）。
 
@@ -52,12 +55,22 @@ class BatchScheduler:
             return {"success": False, "error": f"未知任务: {task_name}"}
 
         schedule = self.BEAT_SCHEDULE[task_name]
-        logger.info("定时任务已触发: %s", task_name)
-        return {
-            "success": True,
-            "task": task_name,
-            "schedule_seconds": schedule["schedule"],
-        }
+        celery_task_name = schedule["task"]
+
+        try:
+            from app.batch.tasks import celery_app
+            result = celery_app.send_task(celery_task_name)
+            logger.info("定时任务已触发: %s (celery_id=%s)", task_name, result.id)
+            return {
+                "success": True,
+                "task": task_name,
+                "celery_task": celery_task_name,
+                "celery_id": result.id,
+                "schedule_seconds": schedule["schedule"],
+            }
+        except Exception as exc:
+            logger.error("触发 Celery 任务失败: %s, error=%s", task_name, exc)
+            return {"success": False, "error": str(exc)}
 
     def get_schedule_config(self) -> dict[str, dict[str, Any]]:
         """获取 Celery Beat 配置。

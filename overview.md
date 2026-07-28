@@ -2,7 +2,19 @@
 
 ### 2026-07-28
 
-#### 21. LangChain 全节点改造（23 节点 + tools.py 清理）
+#### 22. 全量 Code Review 修复（7 项）
+
+- **时间：** 2026-07-28
+- **发起人：** user（"先全部修复"）
+- **依据：** 全量代码审查报告（功能断点 / 数据流断裂 / 空实现）
+- **修改文件：**
+  - `app/api/routes/chat.py:73-78` — 修复 `task_info.get('task_id')` → `task_id`（`create_task()` 返回 `str` 非 `dict`，complex_generation 路径必崩溃）
+  - `app/orchestrator/nodes/save_session.py` — 移除对 `state["_runtime"]` 的依赖（该字段从未注入），改为通过 `connection_manager.get("postgres")` 自行创建 DB 会话，确保会话结果写入 PostgreSQL
+  - `app/batch/scheduler.py:55-63` — `trigger_now()` 从空实现（仅返回 `{"success": True}`）改为通过 `celery_app.send_task()` 真正触发 Celery 任务
+  - `app/llm_gateway/capabilities/image_encoder.py:113,127` — `_api_encode_image()` / `_api_encode_text()` 从 `raise NotImplementedError` 改为自动降级到 `_local_encode_*()` + `logger.warning`
+  - `app/analysis_layer/nodes/lang_detector.py:50` — `except Exception: pass` → `except Exception as exc: logger.warning(...)`
+  - `app/planning_layer/nodes/plan_self_check.py:41` — `except Exception:` → `except Exception as exc: logger.warning(...)`
+- **Lint 验证：** ✅ `ruff check` All checks passed
 
 - **时间：** 2026-07-28
 - **发起人：** user（"全部改造"）
