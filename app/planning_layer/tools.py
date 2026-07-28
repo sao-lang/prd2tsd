@@ -37,28 +37,28 @@ async def retrieve_knowledge(query: str, top_k: int = 5) -> Any:
 
 
 async def call_llm_async(prompt: str, model: str | None = None, **kwargs: Any) -> str:
-    """异步调用 LLM。
+    """异步调用 LLM — 使用 GatewayChatModel（LangChain 适配器）。
 
     Args:
         prompt: 输入提示词。
         model: 模型名。
-        **kwargs: 额外参数。
+        **kwargs: 额外参数（node 等）。
 
     Returns:
-        LLM 返回文本。LLM 不可用时返回空字符串。
+        LLM 返回文本。不可用时返回空字符串。
     """
-    from app.llm_gateway import gateway
+    from app.llm_gateway.langchain_adapter import GatewayChatModel
 
     try:
         node = kwargs.pop("node", "")
-        resp = await gateway.complete(
-            prompt=prompt,
+        llm = GatewayChatModel(
             task_type="planning_architecture",
             layer="planning",
             node=node,
-            model=model,
+            default_model=model or "deepseek-chat",
         )
-        return resp.content
+        resp = await llm.ainvoke(prompt)
+        return resp.content if hasattr(resp, "content") else str(resp)
     except Exception as exc:
         logger.warning("LLM 调用失败（planning）: %s", exc)
         return ""

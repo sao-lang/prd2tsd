@@ -128,11 +128,18 @@ class LLMGateway:
 
     def _init_guardrails(self) -> None:
         """注册默认护栏。"""
+        from app.llm_gateway.guardrails.empty_response_guardrail import EmptyResponseGuardrail
+        from app.llm_gateway.guardrails.retry_decision_guardrail import RetryDecisionGuardrail
+        from app.llm_gateway.guardrails.timeout_guardrail import TimeoutGuardrail
+
         self.guardrails.register(PromptInjectionGuardrail())
         self.guardrails.register(PIIDetectorGuardrail())
+        self.guardrails.register(TimeoutGuardrail())
         self.guardrails.register(ContentSafetyGuardrail())
         self.guardrails.register(OutputValidatorGuardrail())
-        logger.info("护栏初始化完成: 4 个护栏已注册")
+        self.guardrails.register(EmptyResponseGuardrail())
+        self.guardrails.register(RetryDecisionGuardrail())
+        logger.info("护栏初始化完成: 7 个护栏已注册")
 
     def _init_circuit_breakers(self) -> None:
         """初始化 Provider Circuit Breakers。"""
