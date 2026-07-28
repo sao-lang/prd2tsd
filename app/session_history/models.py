@@ -45,6 +45,11 @@ class SessionOut(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     last_message_at: str | None = None
+    # Phase 3: LangGraph 断点恢复
+    thread_id: str | None = None
+    checkpoint_ts: str | None = None
+    current_node: str | None = None
+    interrupt_stage: str | None = None
 
 
 class MessageCreate(BaseModel):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
 from app.knowledge_layer.graph_store import Neo4jGraphStore
@@ -30,13 +32,20 @@ logger = get_logger("prd2tsd.knowledge.pipeline")
 
 
 class KnowledgeGraphBuilder:
-    """知识图谱构建器 — 文档→实体索引。"""
+    """知识图谱构建器 — 文档→实体索引。
+
+    Phase 8: 构造参数接受 Protocol 接口类型（DocumentReader / TextChunker / TextEmbedder），
+    默认回退到当前自实现，未来可无痛切换 LlamaIndex 实现。
+    """
 
     def __init__(
         self,
         graph_store: Neo4jGraphStore | None = None,
         vector_store: PGVectorStore | None = None,
         entity_extractor_model: str | None = None,
+        reader: Any = None,
+        chunker: Any = None,
+        embedder: Any = None,
     ) -> None:
         """初始化构建器。
 
@@ -44,10 +53,13 @@ class KnowledgeGraphBuilder:
             graph_store: Neo4j 图存储。
             vector_store: PGVector 向量存储。
             entity_extractor_model: 实体提取 LLM 模型名。
+            reader: DocumentReader Protocol 实现（可选，默认 LocalDocumentLoader）。
+            chunker: TextChunker Protocol 实现（可选，默认 MultiGranularityChunker）。
+            embedder: TextEmbedder Protocol 实现（可选，默认 EntityEmbedder）。
         """
         self.graph_store = graph_store or Neo4jGraphStore()
         self.vector_store = vector_store or PGVectorStore()
-        self.doc_loader = DocumentLoader()
+        self.doc_loader = reader or DocumentLoader()
         self.chunker = MultiGranularityChunker(
             sentence_max_words=kn_config.sentence_max_words,
             paragraph_max_words=kn_config.paragraph_max_words,

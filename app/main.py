@@ -66,8 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Phase 1: 初始化 PostgreSQL Checkpointer（断点持久化恢复）
     try:
-        from app.orchestrator.main_graph import create_postgres_checkpointer
         from app.api.deps import set_checkpointer
+        from app.orchestrator.main_graph import create_postgres_checkpointer
 
         checkpointer = await create_postgres_checkpointer()
         set_checkpointer(checkpointer)
@@ -81,24 +81,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         set_checkpointer(checkpointer)
         logger.info("MemorySaver Checkpointer 已初始化（开发模式）")
 
-    # Block F: 注册 Agent 工具（待迁移至 LangChain ToolNode）
-    # Phase 5: ToolRegistry 将在 Phase 6 被 @tool + ToolNode 替代
-    from app.agents.registry import ToolRegistry
-    from app.agents.tools.code import GenerateCodeTool, ReadCodeTool
-    from app.agents.tools.document import ReadFileTool, SearchDocTool
-    from app.agents.tools.knowledge import GetEntityTool, SearchKnowledgeTool
-    from app.agents.tools.llm_tool import CallLLMTool
-    from app.agents.tools.system_tools import ListFilesTool, ReadTimeTool
-
-    for tool_cls in [
-        SearchKnowledgeTool, GetEntityTool,
-        ReadFileTool, SearchDocTool,
-        CallLLMTool,
-        GenerateCodeTool, ReadCodeTool,
-        ReadTimeTool, ListFilesTool,
-    ]:
-        ToolRegistry.register(tool_cls())
-    logger.info("Agent 工具注册完成（待迁移至 LangChain ToolNode）: %d tools", len(ToolRegistry.get_tool_names()))
+    # Block F: Agent 工具已废弃 — ToolRegistry 零调用，待 LangChain @tool + ToolNode 替代
+    # 工具注册代码已注释，不再注册零调用工具
+    # 如需启用，请在 LangChain ToolNode 中重新注册
+    logger.info("Agent 工具已废弃，待迁移至 LangChain ToolNode")
 
     # Block F: 初始化观测性
     from app.observability import tracer  # noqa: F401

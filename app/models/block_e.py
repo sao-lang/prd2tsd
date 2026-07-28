@@ -69,7 +69,11 @@ class BudgetConfig(UUIDMixin, Base):
 
 
 class Session(UUIDMixin, TimestampMixin, Base):
-    """会话模型。"""
+    """会话模型。
+
+    Phase 3: 新增 thread_id / checkpoint_ts / current_node / interrupt_stage 字段，
+    实现 LangGraph State ↔ Session 双向绑定，支持历史会话断点续接。
+    """
 
     __tablename__ = "sessions"
 
@@ -97,6 +101,19 @@ class Session(UUIDMixin, TimestampMixin, Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
+    )
+    # Phase 3: LangGraph 断点恢复字段
+    thread_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, comment="LangGraph thread_id"
+    )
+    checkpoint_ts: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="最后一次 checkpoint 时间"
+    )
+    current_node: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="当前所在 LangGraph 节点名"
+    )
+    interrupt_stage: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, comment="被 interrupt 暂停的阶段"
     )
 
     __table_args__ = (
