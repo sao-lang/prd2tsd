@@ -189,6 +189,8 @@ class AnalysisResultDetail(BaseModel):
     constraints: list[ConstraintDetail] = Field(default_factory=list)
     dependency_graph: DependencyGraph = Field(default_factory=DependencyGraph)
     confidence: float = 0.0
+    stakeholders: list[dict[str, Any]] = Field(default_factory=list)  # Phase 4: 干系人分析结果
+    clarity_issues: list[str] = Field(default_factory=list)  # Phase 4: 清晰度检查问题
 
 
 # ── C2: 规划层增强 ──

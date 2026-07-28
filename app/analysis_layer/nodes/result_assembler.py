@@ -7,7 +7,11 @@ from contracts.interfaces import AnalysisResultDetail, DependencyGraph
 
 
 class AnalysisResultAssemblerNode:
-    """结果组装节点：将各节点输出组装为 AnalysisResultDetail。"""
+    """结果组装节点：将各节点输出组装为 AnalysisResultDetail。
+
+    Phase 4 修复：消费 stakeholders（StakeholderAnalyzerNode 产出）和
+    clarity_issues（ClarityCheckerNode 产出），避免 Token 浪费。
+    """
 
     def run(self, state: AnalysisState) -> AnalysisState:
         """组装分析结果。
@@ -30,6 +34,9 @@ class AnalysisResultAssemblerNode:
             constraints=state.get("extracted_constraints", []),
             dependency_graph=state.get("dependency_graph", DependencyGraph()),
             confidence=state.get("confidence", 0.0),
+            # Phase 4: 消费之前被丢弃的 LLM 产出
+            stakeholders=state.get("stakeholders", []),
+            clarity_issues=state.get("clarity_issues", []),
         )
 
         return {

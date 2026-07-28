@@ -8,7 +8,10 @@
 
 ## 铁律零：技术栈锁定
 
-**禁用 LangChain 全家桶。RAG 框架：自实现（实体增强双路检索 + ReflectionJudge）。**
+**编排层使用 LangGraph，Agent 节点内部使用 LangChain Core。RAG 框架：自实现（实体增强双路检索 + ReflectionJudge）。**
+
+> ⚠️ 2026-07-27 策略更新：`langchain-core` 和 `langchain-openai` 对 Agent 节点内部放行。仍禁止 `langchain` 全家桶（含 langchain-community/langchain.agents/langchain.chains 等）。
+> 详见 `docs/deep-review-fix-plan.md` 第三章。
 
 详细禁止/必须清单见 [VIBE_CODING_RULES.md 第一章](VIBE_CODING_RULES.md#一技术栈强制约束)。
 

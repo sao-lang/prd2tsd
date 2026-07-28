@@ -1,10 +1,17 @@
 """Orchestrator 全局状态定义。
 
-包含 OrchestratorState（TypedDict）、TenantContext、TaskInfo。
+包含 OrchestratorConfig（静态配置）、OrchestratorState（TypedDict）、
+OrchestratorRuntime（运行时上下文）、TenantContext、TaskInfo。
+
+三层数据模型：
+- Config: 启动时加载，只读
+- State: LangGraph checkpoint 自动持久化
+- Runtime: 每次请求从外部注入，不参与 checkpoint 序列化
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -20,6 +27,46 @@ from contracts.interfaces import (
     RequirementDetail,
     TechChoiceDetail,
 )
+
+
+class OrchestratorConfig(BaseModel):
+    """主编排器静态配置 — 从 pyproject.toml / env 加载后不变。"""
+
+    max_iterations: int = 3
+    evaluation_pass_threshold: float = 85.0
+    evaluation_replan_threshold: float = 70.0
+    max_llm_retries: int = 3
+    keepalive_interval: int = 30
+    session_ttl_days: dict[str, int] = Field(default_factory=lambda: {"free": 30, "pro": 180})
+
+
+class OrchestratorRuntime:
+    """运行时上下文 — 每次调用从外部注入，不参与 checkpoint 序列化。
+
+    Attributes:
+        db_session: 数据库会话（每个请求新建）。
+        event_bus: SSE 事件总线引用。
+        llm_gateway: LLM Gateway 实例。
+        current_user_id: 当前用户 ID。
+        current_workspace_id: 当前工作空间 ID。
+        started_at: 请求开始时间。
+    """
+
+    def __init__(
+        self,
+        db_session: Any = None,
+        event_bus: Any = None,
+        llm_gateway: Any = None,
+        current_user_id: str = "",
+        current_workspace_id: str = "",
+    ) -> None:
+        """初始化运行时上下文。"""
+        self.db_session = db_session
+        self.event_bus = event_bus
+        self.llm_gateway = llm_gateway
+        self.current_user_id = current_user_id
+        self.current_workspace_id = current_workspace_id
+        self.started_at = datetime.utcnow()
 
 
 class TenantContext(BaseModel):
@@ -80,6 +127,8 @@ class TaskInfo(BaseModel):
     task_id: str
     status: str
     progress: float = 0.0
+    stage: str = ""  # 当前阶段名称
+    interrupt_stage: str = ""  # 被 interrupt 暂停的阶段
     result: GenerationResultDetail | None = None
     evaluation: EvaluationReportDetail | None = None
     error: str | None = None

@@ -16,4 +16,6 @@ __all__ = [
     "multimodal_routes",
     "collaboration_routes",
     "batch_routes",
+    "stream_generate_routes",
+    "stream_qna_routes",
 ]

@@ -1,5 +1,96 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-07-28
+
+#### 19. deep-review-fix-plan 全 Phase 实施
+
+- **时间：** 2026-07-28
+- **发起人：** user
+- **依据：** `docs/deep-review-fix-plan.md`
+- **修改内容：**
+  - **Phase 1（Checkpoint 持久化）：** 新增 `langgraph-checkpoint-postgres` + `langchain-core` 依赖；`MemorySaver` → `PostgresSaver`（`build_and_compile` 支持注入 checkpointer）；新增 `OrchestratorConfig` / `OrchestratorRuntime`（Config/State/Runtime 三层分离）；`main.py` lifespan 中初始化 PostgresSaver
+  - **Phase 2-3（LangGraph 全链路 + 记忆增强）：** 新建 `orchestrator/nodes/` 目录，新增 `SaveSessionNode` / `CompressMemoryNode` / `RetrieveMemoryNode` / `IntentClassifyNode`；新建 `orchestrator/runtime.py`（RuntimeInjector）；主图入口改为 `retrieve_memory → knowledge_retrieval → ... → compress_memory → save_session → END`
+  - **Phase 4（数据流修复）：** `AnalysisResultDetail` 新增 `stakeholders` + `clarity_issues` 字段；`AnalysisResultAssemblerNode` 消费这两个字段（修复 Token 浪费）；`plan_assembler.py` 已正确将 `node_outputs` 放入 `metadata`
+  - **Phase 5（死代码清理）：** 删除 `app/core/llm.py`（死代码）；删除 `app/core/task_executor.py`（含不存在的 `EvaluationOrchestrator` 引用）；删除 `app/core/task_queue.py`（零接入）；修复 `main.py` CORS 配置（`allow_credentials=False`）
+  - **Phase 6（LangChain 适配器）：** 新建 `app/llm_gateway/langchain_adapter.py`（`GatewayChatModel` 包装 LLM Gateway 为 LangChain `BaseChatModel`）
+  - **Phase 7（护栏扩展）：** 新建 `TimeoutGuardrail` / `EmptyResponseGuardrail` / `RetryDecisionGuardrail`；更新 `guardrails/__init__.py` 导出
+  - **Phase 8（知识层接口）：** 新建 `app/knowledge_layer/interfaces.py`（6 个 Protocol 接口：DocumentReader / TextChunker / TextEmbedder / QueryRewriterInterface / ResultFuser / ResultReranker）
+- **新增文件：** 13 个
+- **删除文件：** 3 个（`core/llm.py` / `core/task_executor.py` / `core/task_queue.py`）
+- **修改文件：** 12 个
+- **潜在风险：** PostgresSaver 需要 PostgreSQL 运行和 `langgraph_checkpoints` 表自动创建；GatewayChatModel 的 `_messages_to_prompt` 可能丢失复杂消息结构（tool calls / multimodal）；新节点需在 `get_orchestrator()` 中正确注入 session_service / compressor / retriever
+
+### 2026-07-27
+
+#### 18. 全链路深挖 + 架构重构方案
+
+- **时间：** 2026-07-27
+- **发起人：** code-review 全链路深挖
+- **产物：** `docs/deep-review-fix-plan.md`
+- **审查范围：** 4 层 LangGraph 43 节点 + 18 API 路由模块 + 全部基础设施组件
+- **发现问题：**
+  - 🔴 5 个运行时严重问题（`get_retrieval_pipeline` 不存在、`EvaluationOrchestrator` 不存在、`ToolRegistry` 零使用、`PlanSelfCheck` 结果不路由、Celery 任务空壳）
+  - 🟡 7 个数据流断裂（stakeholders/clarity_issues 无消费者、Planning 7 节点产出沉入 metadata 等）
+  - 🟡 3 个架构缺陷（LangGraph 未全链路编排、无断点恢复、记忆组件零调用）
+  - 12 个文件/模块使用了自定义流程编排（`asyncio.create_task`、`if/elif` 分支、手动 `try/except` 降级）代替 LangGraph 图节点
+  - 43 个节点全部使用自定义 `call_llm_async()` + 手动 JSON 解析代替 LangChain 的 LCEL/Prompt/OutputParser
+- **重构方案核心：**
+  - LangGraph 全链路编排（SSE/会话/记忆/分类全部入图）
+  - LangChain 接管节点内部（`ChatPromptTemplate` / `with_structured_output` / `PydanticOutputParser` / `bind_tools`）
+  - LLM Gateway 包装为 `GatewayChatModel(BaseChatModel)`，保留成本追踪同时提供 LangChain 标准接口
+  - PostgreSQL Checkpointer 替换 MemorySaver（崩溃可恢复）
+  - Config / State / Runtime 三层分离
+  - Session ↔ Thread 双向绑定（历史会话可续接）
+- **架构原则（不变逻辑）：**
+  - LLM Gateway / Guardrails / ContextCompressor / MemoryRetriever / SessionHistoryService / EventBus **现有逻辑全部保持不变**，仅解决接线问题
+  - **错误处理进入护栏体系**：新增 `TimeoutGuardrail` / `EmptyResponseGuardrail` / `RetryDecisionGuardrail` 三个护栏插件，`GuardrailResult.metadata` 驱动 LangGraph 条件路由（retry/blocked/continue）
+- **删除清单：** 3 个 `tools.py` 的重复 `call_llm_async`、`extract_json_from_llm`、`parse_score`、`app/core/llm.py`（死代码）、`ToolRegistry`、6 处手动 `try/except` 错误处理
+- **Token 浪费统计：** 每次完整运行浪费约 6,000 tokens（25%）
+- **综合评分：** ⚠️ CONDITIONAL PASS (78% 通过率)
+
+---
+
+### 2026-07-27
+
+#### 17. Block E — SSE 流式推送（E12）
+
+- **时间：** 2026-07-27
+- **发起人：** 设计文档 `docs/block-E-enterprise.md` §11 E12
+- **新增文件：**
+  - `app/streaming/__init__.py` — SSE 模块入口
+  - `app/streaming/event_bus.py` — EventBus 内存 Pub/Sub（asyncio.Queue）
+  - `app/streaming/models.py` — SseEvent dataclass + EVENT_TYPES 常量
+  - `app/api/schemas/streaming.py` — 流式请求体模型
+  - `app/api/routes/stream_generate.py` — SSE 端点（任务事件流 + 流式生成 + 流式审核恢复）
+  - `app/api/routes/stream_qna.py` — SSE 流式 Q&A 端点
+  - `tests/unit/test_streaming.py` — 16 个单元测试
+- **修改文件：**
+  - `app/llm_gateway/providers/base.py` — 添加 `stream_complete()` 抽象方法
+  - `app/llm_gateway/providers/openai.py` — 实现 `stream_complete()`（stream=True 逐 token yield）
+  - `app/llm_gateway/providers/anthropic.py` — `stream_complete()` 预留实现
+  - `app/llm_gateway/providers/cohere.py` — `stream_complete()` 预留实现
+  - `app/llm_gateway/providers/custom.py` — 实现 `stream_complete()`（复用 OpenAI 兼容 API）
+  - `app/llm_gateway/__init__.py` — 添加 `LLMGateway.stream_complete()` 门面方法
+  - `app/task_manager.py` — 集成 EventBus（set_event_bus 注入 + _emit 事件发布）
+  - `app/main.py` — 注册 SSE 路由 + lifespan 初始化 EventBus
+  - `app/api/schemas/__init__.py` — 导出流式 Schema
+  - `app/api/routes/__init__.py` — 导出流式路由
+- **SSE 端点一览：**
+  - `GET /api/v1/tasks/{task_id}/events` — 订阅任务事件流
+  - `POST /api/v1/generate/stream` — 一键提交 + 全程 SSE 推送
+  - `POST /api/v1/tasks/{task_id}/stream-review` — 审核 + 流式恢复
+  - `POST /api/v1/qna/stream` — 流式 Q&A（检索 + LLM 流式回答）
+- **测试结果：** 16/16 PASS，回归 334/334 PASS，ruff lint 全部通过
+- **第二轮修复（code-review 后）：**
+  - `generation.chunk`/`section` 事件：SectionWriterNode 接入 EventBus，使用 `gateway.stream_complete()` 流式调用 + 每 200 字符推送 chunk
+  - `stream_complete()` Failover 链：for 循环重试 3 次，自动切换 Provider
+  - `task.progress` 中间进度：TaskManager 改用 `astream` 替代 `ainvoke`，每步节点执行后读取 progress 并推送
+  - 代码去重：提取 `_subscribe_task_events()` / `_sse_response()` 辅助函数，3 个端点复用
+  - `TaskInfo` 新增 `stage` / `interrupt_stage` 字段，消除 `getattr` 兜底
+  - `OpenAIProvider._complete_stream()` 移除未使用变量 `stream_params`
+  - 生成层 `GenerationState` 新增 `task_id` 字段，`GenerationAdapter` 透传
+- **潜在风险：** 无（所有 review 发现的问题已修复）
+
 ### 2026-07-27
 
 #### 16. Block F — 生产级加固（12 项功能）

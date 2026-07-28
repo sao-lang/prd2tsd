@@ -33,6 +33,11 @@ from app.api.schemas.session import (
     SessionResponse,
     SessionUpdateRequest,
 )
+from app.api.schemas.streaming import (
+    StreamGenerateRequest,
+    StreamQnARequest,
+    StreamReviewRequest,
+)
 
 from app.api.schemas.batch import (
     BatchReindexRequest,
@@ -117,4 +122,8 @@ __all__ = [
     "ImageSearchResult",
     "ImageIndexResponse",
     "SearchResultList",
+    # streaming
+    "StreamGenerateRequest",
+    "StreamQnARequest",
+    "StreamReviewRequest",
 ]

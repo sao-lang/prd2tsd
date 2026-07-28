@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+
 from app.core.connections import connection_manager
 from app.llm_gateway import config_manager, gateway
 from app.orchestrator.main_graph import build_and_compile
@@ -11,6 +13,17 @@ from app.security.data_masking import DataMaskingEngine
 # 缓存编译后的 Orchestrator 和 DataMaskingEngine（懒加载）
 _orchestrator_instance = None
 _masking_engine_instance = None
+_checkpointer_instance: BaseCheckpointSaver | None = None
+
+
+def set_checkpointer(checkpointer: BaseCheckpointSaver) -> None:
+    """注入 Checkpointer 实例（在 lifespan 中调用）。
+
+    Args:
+        checkpointer: LangGraph checkpointer 实例（PostgresSaver 或 MemorySaver）。
+    """
+    global _checkpointer_instance
+    _checkpointer_instance = checkpointer
 
 
 async def get_db_session():
@@ -67,6 +80,7 @@ def get_orchestrator():
     """获取编译后的主编排 StateGraph（懒加载）。
 
     组装块 C 的 4 个 Layer Graph 到 Orchestrator。
+    使用全局注入的 Checkpointer（PostgresSaver 或 MemorySaver）。
 
     Returns:
         编译后的主编排 StateGraph。
@@ -86,6 +100,6 @@ def get_orchestrator():
         generation_graph=generation_graph,
         evaluation_graph=evaluation_graph,
         retrieval_pipeline=None,
-        use_checkpointer=True,  # 启用 MemorySaver 以支持 interrupt/resume
+        checkpointer=_checkpointer_instance,
     )
     return _orchestrator_instance

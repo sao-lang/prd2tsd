@@ -30,6 +30,7 @@ class GenerationState(TypedDict):
     section_contents: Annotated[dict[str, str], merge_contents]  # reducer 自动合并各轮撰写的章节
     generation_result: GenerationResultDetail
     # 以下字段由 Orchestrator Adapter 注入
+    task_id: str  # 任务 ID，用于 SSE 事件推送
     evaluation_feedback: dict[str, Any]  # {issues, recommendations, overall_score}
     system_prompt: str  # 租户自定义 System Prompt
     claims_constraints: list[Any]  # Claims 检索注入的约束条件

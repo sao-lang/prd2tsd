@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -115,12 +116,6 @@ class OpenAIProvider(BaseProvider):
         event_queue: Any = None,
     ) -> LLMResponse:
         """流式调用 LLM，逐 token 推入 event_queue。"""
-        params["stream"] = True
-        params.pop("stream", None)  # 已在上面设置
-        stream_params = {**params, "stream": True}
-        # 移除 stream=False if present
-        stream_params.pop("stream", None)
-
         response = await self._client.chat.completions.create(**{**params, "stream": True})
 
         full_content = ""
@@ -148,6 +143,42 @@ class OpenAIProvider(BaseProvider):
             input_tokens=0,
             output_tokens=token_index,
         )
+
+    async def stream_complete(
+        self,
+        prompt: str,
+        model: str = "",
+        **kwargs: Any,
+    ) -> AsyncGenerator[str, None]:
+        """流式调用 LLM，逐 token 生成文本。
+
+        Args:
+            prompt: 输入提示词。
+            model: 模型名。为空时使用配置的默认模型。
+            **kwargs: 额外参数（temperature, max_tokens 等）。
+
+        Yields:
+            文本块（逐 token）。
+        """
+        model_name = model or self.config.default_model
+        temperature = kwargs.pop("temperature", 0.7)
+        max_tokens = kwargs.pop("max_tokens", 4096)
+
+        params: dict[str, Any] = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            **kwargs,
+        }
+
+        response = await self._client.chat.completions.create(**params)
+
+        async for chunk in response:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                yield delta
 
     async def embed(self, texts: list[str], model: str = "", **kwargs: Any) -> EmbeddingResponse:
         """调用 OpenAI 兼容的 Embedding API。

@@ -39,6 +39,8 @@ class GenerationAdapter:
             "analysis_result": state.get("analysis_result"),
             # P0.1: 保留已有章节内容（迭代续写时用）
             "section_contents": state.get("section_contents", {}),
+            # Block E: SSE 流式推送需要 task_id
+            "task_id": state.get("task_id", ""),
         }
 
         # P0.1: 注入评测反馈（迭代循环时）

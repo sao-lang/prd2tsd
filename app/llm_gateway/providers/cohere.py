@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.logger import get_logger
@@ -59,6 +60,25 @@ class CohereProvider(BaseProvider):
         """
         logger.warning("CohereProvider.complete 为预留实现")
         return LLMResponse(content="[Cohere 预留实现]", model=model or self.config.default_model)
+
+    async def stream_complete(
+        self,
+        prompt: str,
+        model: str = "",
+        **kwargs: Any,
+    ) -> AsyncGenerator[str, None]:
+        """流式调用（预留实现）。
+
+        Args:
+            prompt: 输入提示词。
+            model: 模型名。
+            **kwargs: 额外参数。
+
+        Yields:
+            文本块。
+        """
+        logger.warning("CohereProvider.stream_complete 为预留实现")
+        yield "[Cohere 预留流式实现]"
 
     async def embed(self, texts: list[str], model: str = "", **kwargs: Any) -> EmbeddingResponse:
         """Cohere Embedding（预留）。

@@ -3,6 +3,8 @@
 使用 asyncio.create_task + in-memory dict 管理任务生命周期，
 通过 LangGraph MemorySaver + Command(resume=...) 实现 interrupt/resume 支持。
 块 E 将替换为 Celery/Redis 实现。
+
+Block E 增强：集成 EventBus，执行过程 SSE 流式推送事件。
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from langgraph.types import Command
 
 from app.core.logger import get_logger
 from app.orchestrator.state import TaskInfo, make_initial_state
+from app.streaming.event_bus import EventBus
+from app.streaming.models import SseEvent
 
 logger = get_logger("prd2tsd.task_manager")
 
@@ -27,10 +31,15 @@ class TaskManager:
     支持 LangGraph interrupt/resume 机制用于人工审核。
     """
 
-    def __init__(self) -> None:
-        """初始化任务管理器。"""
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        """初始化任务管理器。
+
+        Args:
+            event_bus: 事件总线实例（可选），用于 SSE 流式推送。
+        """
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        self._event_bus = event_bus
 
     async def create_task(
         self,
@@ -63,6 +72,8 @@ class TaskManager:
             "task_id": task_id,
             "status": "running",
             "progress": 0.0,
+            "stage": "",
+            "interrupt_stage": "",
             "result": None,
             "evaluation": None,
             "error": None,
@@ -71,11 +82,17 @@ class TaskManager:
             # LangGraph 线程配置，用于 interrupt/resume
             "thread_id": str(uuid.uuid4()),
             "orchestrator": orchestrator,
-            "interrupt_stage": None,
         }
 
         async with self._lock:
             self._tasks[task_id] = task_record
+
+        # 发布任务创建事件
+        await self._emit("task.created", {
+            "task_id": task_id,
+            "status": "running",
+            "workspace_id": workspace_id,
+        })
 
         # 异步执行
         asyncio.create_task(
@@ -199,6 +216,18 @@ class TaskManager:
             return
 
         try:
+            # 日志：开始知识检索
+            await self._emit("task.log", {
+                "task_id": task_id,
+                "level": "info",
+                "message": "开始任务执行...",
+            })
+            await self._emit("task.progress", {
+                "task_id": task_id,
+                "progress": 0.0,
+                "stage": "initializing",
+            })
+
             initial_state = make_initial_state(
                 task_id=task_id,
                 prd_raw=prd_raw,
@@ -210,19 +239,44 @@ class TaskManager:
             )
 
             # 带线程配置执行（支持 interrupt/resume）
+            # Block E: 使用 astream 获取中间进度更新
             config = {"configurable": {"thread_id": thread_id}}
-            final_state = await orchestrator.ainvoke(initial_state, config)
+            final_state = None
+            async for step_state in orchestrator.astream(initial_state, config):
+                final_state = step_state
+                # 读取中间状态的进度，推送进度事件
+                progress = step_state.get("progress", 0.0) if isinstance(step_state, dict) else 0.0
+                if progress > 0.0:
+                    await self._emit("task.progress", {
+                        "task_id": task_id,
+                        "progress": progress,
+                        "stage": step_state.get("stage", "") if isinstance(step_state, dict) else "",
+                    })
 
             # 检查是否是 interrupt 暂停
             if final_state is not None and final_state.get("status") != "running":
                 await self._update_result(task_id, final_state)
             else:
                 # 图被 interrupt 暂停了（状态保持 running）
+                current_stage = final_state.get("current_stage", "") if final_state else ""
                 async with self._lock:
                     r = self._tasks.get(task_id)
                     if r:
                         r["status"] = "paused"
+                        r["stage"] = current_stage
+                        r["interrupt_stage"] = current_stage
                         r["updated_at"] = datetime.now(UTC).isoformat()
+
+                # 发布审核请求事件
+                await self._emit("task.review_required", {
+                    "task_id": task_id,
+                    "stage": current_stage,
+                    "status": "paused",
+                })
+                await self._emit("task.status", {
+                    "task_id": task_id,
+                    "status": "paused",
+                })
                 logger.info("任务已暂停等待人工审核: task_id=%s", task_id)
 
         except Exception as exc:
@@ -247,11 +301,32 @@ class TaskManager:
             resume_value: 恢复值（审核决策）。
             stage: 审核阶段。
         """
+        # 发布审核恢复事件
+        await self._emit("task.review_resolved", {
+            "task_id": task_id,
+            "stage": stage,
+            "decision": resume_value.get("decision", ""),
+        })
+        await self._emit("task.status", {
+            "task_id": task_id,
+            "status": "resuming",
+        })
+
         try:
             config = {"configurable": {"thread_id": thread_id}}
             # ✅ 正确方式：使用 Command(resume=...) 向被 interrupt 的节点传递恢复值
             # 避免将 resume_value 作为新的图输入（会因缺少必填字段而崩溃）
-            final_state = await orchestrator.ainvoke(Command(resume=resume_value), config)
+            # Block E: 使用 astream 获取中间进度更新
+            final_state = None
+            async for step_state in orchestrator.astream(Command(resume=resume_value), config):
+                final_state = step_state
+                progress = step_state.get("progress", 0.0) if isinstance(step_state, dict) else 0.0
+                if progress > 0.0:
+                    await self._emit("task.progress", {
+                        "task_id": task_id,
+                        "progress": progress,
+                        "stage": step_state.get("stage", "") if isinstance(step_state, dict) else "",
+                    })
 
             if final_state is not None:
                 await self._update_result(task_id, final_state)
@@ -261,7 +336,14 @@ class TaskManager:
                     r = self._tasks.get(task_id)
                     if r:
                         r["status"] = "paused"
+                        r["stage"] = ""
+                        r["interrupt_stage"] = ""
                         r["updated_at"] = datetime.now(UTC).isoformat()
+
+                await self._emit("task.status", {
+                    "task_id": task_id,
+                    "status": "paused",
+                })
 
         except Exception as exc:
             await self._mark_failed(task_id, str(exc))
@@ -273,16 +355,38 @@ class TaskManager:
             task_id: 任务 ID。
             final_state: Orchestrator 最终状态。
         """
+        status = final_state.get("status", "complete")
         async with self._lock:
             record = self._tasks.get(task_id)
             if record:
-                record["status"] = final_state.get("status", "complete")
+                record["status"] = status
                 record["progress"] = final_state.get("progress", 1.0)
+                record["stage"] = final_state.get("stage", "")
+                record["interrupt_stage"] = ""
                 record["result"] = final_state.get("generation_result")
                 record["evaluation"] = final_state.get("evaluation_report")
                 record["updated_at"] = datetime.now(UTC).isoformat()
 
-        logger.info("任务执行完成: task_id=%s, status=%s", task_id, final_state.get("status"))
+        # 发布完成事件
+        await self._emit("task.progress", {
+            "task_id": task_id,
+            "progress": 1.0,
+            "stage": "complete",
+        })
+        await self._emit("task.status", {
+            "task_id": task_id,
+            "status": status,
+        })
+
+        result_summary = ""
+        if final_state.get("generation_result"):
+            result_summary = "方案生成完成"
+        await self._emit("done", {
+            "task_id": task_id,
+            "result_summary": result_summary,
+        })
+
+        logger.info("任务执行完成: task_id=%s, status=%s", task_id, status)
 
     async def _mark_failed(self, task_id: str, error: str) -> None:
         """标记任务为失败。
@@ -299,6 +403,39 @@ class TaskManager:
                 record["error"] = error
                 record["updated_at"] = datetime.now(UTC).isoformat()
 
+        # 发布失败事件
+        await self._emit("task.status", {
+            "task_id": task_id,
+            "status": "failed",
+            "error": error,
+        })
+        await self._emit("error", {
+            "task_id": task_id,
+            "message": error,
+            "code": "task_failed",
+        })
 
-# 全局单例
+    def set_event_bus(self, event_bus: EventBus) -> None:
+        """设置事件总线实例（延迟注入）。
+
+        Args:
+            event_bus: 事件总线实例。
+        """
+        self._event_bus = event_bus
+
+    async def _emit(self, event_type: str, payload: dict) -> None:
+        """发布事件到 EventBus（如果已注入）。
+
+        Args:
+            event_type: 事件类型。
+            payload: 事件数据。
+        """
+        if self._event_bus is not None:
+            task_id = payload.get("task_id", "")
+            channel = f"task:{task_id}"
+            event = SseEvent(type=event_type, payload=payload)
+            await self._event_bus.publish(channel, event)
+
+
+# 全局单例（延迟注入 EventBus）
 task_manager = TaskManager()

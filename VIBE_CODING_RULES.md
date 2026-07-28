@@ -43,13 +43,24 @@ test_framework:
 
 ```yaml
 forbidden:
-  - "langchain"                     # 整个 langchain 生态禁止引入
-  - "langchain-community"
-  - "langchain-openai"
+  - "langchain"                     # ❌ langchain 全家桶禁用（含 langchain-community）
   - "chromadb"                      # 已指定 PGVector，不用其他向量库
   - "redis"                         # Phase 5 之前不用 Redis
   - "celery"                        # Phase 5 之前不用 Celery
   - "sqlite"                        # 生产环境不用 SQLite
+```
+
+### 1.2a Agent 节点内部：LangChain Core 放行
+
+```yaml
+# 2026-07-27 策略更新：Agent 节点内部允许使用 LangChain
+# 详见 docs/deep-review-fix-plan.md 第三章
+
+allowed_in_agent_nodes:
+  - "langchain-core>=0.3.0"         # ✅ Prompt / OutputParser / BaseChatModel / tools
+  - "langchain-openai>=0.2.0"       # ✅ ChatOpenAI（可选）
+  # 注意：仅限节点内部使用。编排层仍然用 LangGraph 原生 API。
+  # 禁止：langchain.chains / langchain.agents / langchain_community 等全家桶组件
 ```
 
 ### 1.3 违反后果

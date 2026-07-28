@@ -14,6 +14,7 @@ Block F 增强链路：
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import Any
 
@@ -327,6 +328,133 @@ class LLMGateway:
             span.set_attribute("cost", response.cost)
 
             return response
+
+    async def stream_complete(
+        self,
+        prompt: str,
+        task_type: str = "default",
+        workspace_id: str = "",
+        layer: str = "",
+        node: str = "",
+        **kwargs: Any,
+    ) -> AsyncGenerator[str, None]:
+        """流式调用 LLM，逐 token 生成文本。
+
+        保留完整链路：速率限制 → 模型路由 → 预算检查 → 追踪
+        → 语义缓存(跳过) → Failover + Provider.stream_complete() → 成本记录
+
+        Args:
+            prompt: 输入提示词。
+            task_type: 任务类型，用于模型路由。
+            workspace_id: 工作空间 ID。
+            layer: 所属层名。
+            node: 所属节点名。
+            **kwargs: 额外参数传递给 Provider。
+
+        Yields:
+            文本块（逐 token 或逐 chunk）。
+        """
+        # ── 步骤 1: 速率限制检查 ──
+        rate_result = await self.rate_limiter.check(workspace_id)
+        if not rate_result["allowed"]:
+            yield f"[速率限制，请 {rate_result['retry_after']} 秒后重试]"
+            return
+
+        # ── 步骤 2: 路由解析 ──
+        model_config, model_name = self.config_manager.resolve_model(task_type)
+
+        # ── 步骤 3: 预算检查 — 自动降级 ──
+        budget_check = await self.budget_controller.check_and_record(
+            workspace_id, 0.0, model_name,
+        )
+        if budget_check.get("should_downgrade"):
+            low_cost_model = self._get_low_cost_model(model_name)
+            model_name = low_cost_model
+
+        # ── 步骤 4: 语义缓存（流式跳过） ──
+
+        # ── 步骤 5: Failover 链 + Provider 流式调用 ──
+        full_content_chunks: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+
+        for attempt in range(3):
+            try:
+                target = await self.failover.get_target("llm")
+                target_provider = target.provider
+                target_model = target.model
+
+                target_config = self.config_manager.get_config("llm", target_provider)
+                cb = CircuitBreakerManager.get(f"provider:{target_provider}")
+                if cb and not cb.is_available:
+                    continue
+
+                provider = self.provider_factory.create(target_config.provider, target_config)
+                actual_model = kwargs.pop("model", target_model) or target_model
+
+                with tracer.start_as_current_span(
+                    f"gateway.stream_complete.{task_type}",
+                    attributes={
+                        "task_type": task_type,
+                        "workspace_id": workspace_id,
+                        "layer": layer,
+                        "node": node,
+                        "model": actual_model,
+                        "streaming": True,
+                        "provider": target_provider,
+                        "failover_attempt": attempt,
+                    },
+                    kind=1,
+                ) as span:
+                    async for chunk in provider.stream_complete(
+                        prompt=prompt,
+                        model=actual_model,
+                        **kwargs,
+                    ):
+                        full_content_chunks.append(chunk)
+                        yield chunk
+
+                    # ── 成本记录（流式结束后） ──
+                    output_tokens = len("".join(full_content_chunks)) // 4
+                    input_tokens = len(prompt) // 4
+                    estimated_cost = (input_tokens * 0.00015 + output_tokens * 0.0006) / 1000
+
+                    self.cost_tracker.record(
+                        model=actual_model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        metadata={
+                            "task_type": task_type,
+                            "workspace_id": workspace_id,
+                            "layer": layer,
+                            "node": node,
+                            "streaming": True,
+                        },
+                    )
+
+                    if workspace_id:
+                        await self.budget_controller.check_and_record(
+                            workspace_id, estimated_cost, actual_model,
+                        )
+
+                    span.set_attribute("input_tokens", input_tokens)
+                    span.set_attribute("output_tokens", output_tokens)
+                    span.set_attribute("estimated_cost", estimated_cost)
+
+                # 成功，退出重试
+                break
+
+            except AllProvidersUnavailableError:
+                logger.error("流式调用: 所有 LLM Provider 均不可用")
+                yield "[所有 LLM Provider 均不可用]"
+                return
+            except Exception as exc:
+                logger.warning("流式调用失败 (attempt=%d): %s", attempt, exc)
+                with suppress(Exception):
+                    await self.failover.record_failure("llm", target_provider)
+                if attempt == 2:
+                    logger.exception("流式调用全部重试失败: task_type=%s", task_type)
+                    yield f"[流式调用出错: {exc}]"
 
     async def _failover_call(
         self,

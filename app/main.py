@@ -22,6 +22,8 @@ from app.api.routes import model_config as model_config_routes
 from app.api.routes import multimodal as multimodal_routes
 from app.api.routes import review as review_routes
 from app.api.routes import sessions as sessions_routes
+from app.api.routes import stream_generate as stream_generate_routes
+from app.api.routes import stream_qna as stream_qna_routes
 from app.api.routes import web_indexing as web_indexing_routes
 from app.api.routes import workspace as workspace_routes
 from app.api.routes import workspace_members as workspace_members_routes
@@ -55,7 +57,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 初始化 LLM Gateway
     logger.info("LLM Gateway 就绪")
 
-    # Block F: 注册 Agent 工具
+    # Block E: 初始化 EventBus 并注入 TaskManager
+    from app.streaming import event_bus
+    from app.task_manager import task_manager
+
+    task_manager.set_event_bus(event_bus)
+    logger.info("EventBus 已就绪，已注入 TaskManager")
+
+    # Phase 1: 初始化 PostgreSQL Checkpointer（断点持久化恢复）
+    try:
+        from app.orchestrator.main_graph import create_postgres_checkpointer
+        from app.api.deps import set_checkpointer
+
+        checkpointer = await create_postgres_checkpointer()
+        set_checkpointer(checkpointer)
+        logger.info("PostgreSQL Checkpointer 已初始化（断点恢复已启用）")
+    except Exception as exc:
+        logger.warning("PostgreSQL Checkpointer 初始化失败，降级使用 MemorySaver: %s", exc)
+        from app.api.deps import set_checkpointer
+        from app.orchestrator.main_graph import create_memory_checkpointer
+
+        checkpointer = await create_memory_checkpointer()
+        set_checkpointer(checkpointer)
+        logger.info("MemorySaver Checkpointer 已初始化（开发模式）")
+
+    # Block F: 注册 Agent 工具（待迁移至 LangChain ToolNode）
+    # Phase 5: ToolRegistry 将在 Phase 6 被 @tool + ToolNode 替代
     from app.agents.registry import ToolRegistry
     from app.agents.tools.code import GenerateCodeTool, ReadCodeTool
     from app.agents.tools.document import ReadFileTool, SearchDocTool
@@ -71,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         ReadTimeTool, ListFilesTool,
     ]:
         ToolRegistry.register(tool_cls())
-    logger.info("Agent 工具注册完成: %d tools", len(ToolRegistry.get_tool_names()))
+    logger.info("Agent 工具注册完成（待迁移至 LangChain ToolNode）: %d tools", len(ToolRegistry.get_tool_names()))
 
     # Block F: 初始化观测性
     from app.observability import tracer  # noqa: F401
@@ -93,11 +120,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — 不允许 allow_credentials=True 与 allow_origins=["*"] 同时使用
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.CORS_ORIGINS if hasattr(settings, "CORS_ORIGINS") else ["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -193,6 +220,8 @@ app.include_router(multimodal_routes.router)
 app.include_router(collaboration_routes.router)
 app.include_router(batch_routes.router)
 app.include_router(chat_routes.router)  # Block F: 统一 Chat 入口（意图路由）
+app.include_router(stream_generate_routes.router)  # Block E: SSE 流式任务事件
+app.include_router(stream_qna_routes.router)  # Block E: SSE 流式 Q&A
 
 
 @app.get("/")
