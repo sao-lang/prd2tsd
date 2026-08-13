@@ -17,6 +17,7 @@ from app.core.config import Settings
 from app.core.logger import get_logger
 from app.knowledge_layer.pipeline import RetrievalPipeline
 from app.observability.replay.recorder import DecisionRecorder
+from app.observability.tracing import trace_node
 from app.orchestrator.adapters import (
     AnalysisAdapter,
     EvaluationAdapter,
@@ -205,25 +206,25 @@ def build_orchestrator_graph(
     graph = StateGraph(OrchestratorState)
 
     # 意图路由层
-    graph.add_node("classify", classify_node.run)
-    graph.add_node("chat_node", chat_node.run)
-    graph.add_node("retrieve_node", retrieve_node.run)
-    graph.add_node("clarify_node", clarify_node.run)
+    graph.add_node("classify", trace_node("classify")(classify_node.run))
+    graph.add_node("chat_node", trace_node("chat_node")(chat_node.run))
+    graph.add_node("retrieve_node", trace_node("retrieve_node")(retrieve_node.run))
+    graph.add_node("clarify_node", trace_node("clarify_node")(clarify_node.run))
 
     # 复杂生成路径
-    graph.add_node("knowledge_retrieval", kn_node.run)
-    graph.add_node("analysis", analysis_adapter.run)
-    graph.add_node("analysis_human_review", analysis_review.run)
-    graph.add_node("planning", planning_adapter.run)
-    graph.add_node("planning_human_review", planning_review.run)
-    graph.add_node("generation", generation_adapter.run)
-    graph.add_node("evaluation", evaluation_adapter.run)
-    graph.add_node("final_assembly", final_assembly.run)
+    graph.add_node("knowledge_retrieval", trace_node("knowledge_retrieval")(kn_node.run))
+    graph.add_node("analysis", trace_node("analysis")(analysis_adapter.run))
+    graph.add_node("analysis_human_review", trace_node("analysis_human_review")(analysis_review.run))
+    graph.add_node("planning", trace_node("planning")(planning_adapter.run))
+    graph.add_node("planning_human_review", trace_node("planning_human_review")(planning_review.run))
+    graph.add_node("generation", trace_node("generation")(generation_adapter.run))
+    graph.add_node("evaluation", trace_node("evaluation")(evaluation_adapter.run))
+    graph.add_node("final_assembly", trace_node("final_assembly")(final_assembly.run))
 
     # 记忆管理节点
-    graph.add_node("retrieve_memory", retrieve_memory_node.run)
-    graph.add_node("compress_memory", compress_memory_node.run)
-    graph.add_node("save_session", save_session_node.run)
+    graph.add_node("retrieve_memory", trace_node("retrieve_memory")(retrieve_memory_node.run))
+    graph.add_node("compress_memory", trace_node("compress_memory")(compress_memory_node.run))
+    graph.add_node("save_session", trace_node("save_session")(save_session_node.run))
 
     # ── 入口：意图分类 → 条件路由 ──
     graph.set_entry_point("classify")

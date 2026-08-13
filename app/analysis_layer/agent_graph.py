@@ -19,6 +19,7 @@ from app.analysis_layer.nodes import (
     StakeholderAnalyzerNode,
 )
 from app.llm_gateway.langchain_adapter import GatewayChatModel
+from app.observability.tracing import trace_node
 
 # Phase 6: 创建共享的 GatewayChatModel，传入所有 LLM 节点
 _analysis_llm = GatewayChatModel(task_type="analysis", layer="analysis")
@@ -49,18 +50,18 @@ def build_analysis_graph() -> StateGraph:
     """
     graph = StateGraph(AnalysisState)
 
-    # 注册节点
-    graph.add_node("parse", parse_node.run)
-    graph.add_node("lang_detect", lang_detector.run)
-    graph.add_node("requirement", req_extractor.run)
-    graph.add_node("constraint", constraint_analyzer.run)
-    graph.add_node("dependency", dep_analyzer.run)
-    graph.add_node("domain", domain_classifier.run)
-    graph.add_node("quality", quality_scorer.run)
-    graph.add_node("effort", effort_estimator.run)
-    graph.add_node("stakeholder", stakeholder_analyzer.run)
-    graph.add_node("clarity", clarity_checker.run)
-    graph.add_node("assemble", result_assembler.run)
+    # 注册节点（trace_node 统一包装，自动识别同步/异步）
+    graph.add_node("parse", trace_node("parse")(parse_node.run))
+    graph.add_node("lang_detect", trace_node("lang_detect")(lang_detector.run))
+    graph.add_node("requirement", trace_node("requirement")(req_extractor.run))
+    graph.add_node("constraint", trace_node("constraint")(constraint_analyzer.run))
+    graph.add_node("dependency", trace_node("dependency")(dep_analyzer.run))
+    graph.add_node("domain", trace_node("domain")(domain_classifier.run))
+    graph.add_node("quality", trace_node("quality")(quality_scorer.run))
+    graph.add_node("effort", trace_node("effort")(effort_estimator.run))
+    graph.add_node("stakeholder", trace_node("stakeholder")(stakeholder_analyzer.run))
+    graph.add_node("clarity", trace_node("clarity")(clarity_checker.run))
+    graph.add_node("assemble", trace_node("assemble")(result_assembler.run))
 
     # 定义链路
     graph.set_entry_point("parse")

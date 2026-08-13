@@ -8,22 +8,20 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from app.api.routes import auth as auth_routes
 from app.api.routes import batch as batch_routes
-from app.api.routes import chat as chat_routes
-from app.api.routes import collaboration as collaboration_routes
 from app.api.routes import documents as documents_routes
 from app.api.routes import evaluate as evaluate_routes
 from app.api.routes import generate as generate_routes
 from app.api.routes import integrations as integrations_routes
+from app.api.routes import interact as interact_routes
 from app.api.routes import knowledge as knowledge_routes
 from app.api.routes import model_config as model_config_routes
-from app.api.routes import multimodal as multimodal_routes
 from app.api.routes import review as review_routes
 from app.api.routes import sessions as sessions_routes
 from app.api.routes import stream_generate as stream_generate_routes
-from app.api.routes import stream_qna as stream_qna_routes
 from app.api.routes import web_indexing as web_indexing_routes
 from app.api.routes import workspace as workspace_routes
 from app.api.routes import workspace_members as workspace_members_routes
@@ -35,6 +33,7 @@ from app.core.exceptions import Prd2TsdError
 from app.core.logger import get_logger, setup_logger
 from app.llm_gateway import config_manager
 from app.observability.metrics import metrics_app
+from app.observability.tracing import http_tracing_middleware
 
 logger = get_logger("prd2tsd")
 
@@ -119,6 +118,9 @@ app.add_middleware(
 app.add_middleware(AuthMiddleware)
 app.add_middleware(WorkspaceContextMiddleware)
 
+# HTTP 追踪中间件 — 每个 /api/v1/* 请求成为 trace 根 span
+app.middleware("http")(http_tracing_middleware)
+
 
 # 全局异常处理
 @app.exception_handler(Prd2TsdError)
@@ -176,7 +178,7 @@ async def health_check() -> HealthResponse:
 
 
 @app.get("/api/v1/metrics", include_in_schema=False)
-async def metrics_endpoint(request: Request) -> JSONResponse:
+async def metrics_endpoint(request: Request) -> Response:
     """Prometheus 指标暴露端点。
 
     Args:
@@ -185,7 +187,7 @@ async def metrics_endpoint(request: Request) -> JSONResponse:
     Returns:
         Prometheus 格式的指标数据。
     """
-    return await metrics_app(request)  # type: ignore[arg-type]
+    return await metrics_app(request)
 
 
 # ── 注册路由 ──
@@ -202,12 +204,9 @@ app.include_router(sessions_routes.router)
 app.include_router(documents_routes.router)
 app.include_router(web_indexing_routes.router)
 app.include_router(integrations_routes.router)
-app.include_router(multimodal_routes.router)
-app.include_router(collaboration_routes.router)
 app.include_router(batch_routes.router)
-app.include_router(chat_routes.router)  # Block F: 统一 Chat 入口（意图路由）
+app.include_router(interact_routes.router)  # Block E: 统一交互入口（意图分流）
 app.include_router(stream_generate_routes.router)  # Block E: SSE 流式任务事件
-app.include_router(stream_qna_routes.router)  # Block E: SSE 流式 Q&A
 
 
 @app.get("/")

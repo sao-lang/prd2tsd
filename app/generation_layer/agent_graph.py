@@ -20,6 +20,7 @@ from app.generation_layer.nodes import (
     RevisionNode,
     SectionWriterNode,
 )
+from app.observability.tracing import trace_node
 from contracts.interfaces import SectionOutline
 
 outline_node = OutlineGeneratorNode()
@@ -71,14 +72,14 @@ def build_generation_graph() -> StateGraph:
     """
     graph = StateGraph(GenerationState)
 
-    graph.add_node("outline", outline_node.run)
-    graph.add_node("section_writer", section_writer.run)
-    graph.add_node("diagram", diagram_generator.run)
-    graph.add_node("code_scaffold", code_scaffold.run)
-    graph.add_node("consistency", consistency_checker.run)
-    graph.add_node("revision", revision_node.run)
-    graph.add_node("assemble", format_assembler.run)
-    graph.add_node("export", format_exporter.run)
+    graph.add_node("outline", trace_node("outline")(outline_node.run))
+    graph.add_node("section_writer", trace_node("section_writer")(section_writer.run))
+    graph.add_node("diagram", trace_node("diagram")(diagram_generator.run))
+    graph.add_node("code_scaffold", trace_node("code_scaffold")(code_scaffold.run))
+    graph.add_node("consistency", trace_node("consistency")(consistency_checker.run))
+    graph.add_node("revision", trace_node("revision")(revision_node.run))
+    graph.add_node("assemble", trace_node("assemble")(format_assembler.run))
+    graph.add_node("export", trace_node("export")(format_exporter.run))
 
     graph.set_entry_point("outline")
 

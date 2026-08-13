@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
+from app.observability.tracing import trace_node
 from app.planning_layer.models import PlanningState
 from app.planning_layer.nodes import (
     APIPlanningNode,
@@ -53,20 +54,20 @@ def build_planning_graph() -> StateGraph:
     """
     graph = StateGraph(PlanningState)
 
-    graph.add_node("knowledge_augment", knowledge_augment.run)
-    graph.add_node("pattern_recommend", pattern_recommend.run)
-    graph.add_node("pattern_confirm", pattern_confirm.run)
-    graph.add_node("tech_stack_select", tech_stack_select.run)
-    graph.add_node("component_decompose", component_decompose.run)
-    graph.add_node("cost_estimator", cost_estimator.run)
-    graph.add_node("timeline_planner", timeline_planner.run)
-    graph.add_node("skill_gap_analyzer", skill_gap_analyzer.run)
-    graph.add_node("risk_quantifier", risk_quantifier.run)
-    graph.add_node("data_arch_design", data_arch_design.run)
-    graph.add_node("api_planning", api_planning.run)
-    graph.add_node("deployment_planning", deployment_planning.run)
-    graph.add_node("self_check", plan_self_check.run)
-    graph.add_node("assemble", plan_assembler.run)
+    graph.add_node("knowledge_augment", trace_node("knowledge_augment")(knowledge_augment.run))
+    graph.add_node("pattern_recommend", trace_node("pattern_recommend")(pattern_recommend.run))
+    graph.add_node("pattern_confirm", trace_node("pattern_confirm")(pattern_confirm.run))
+    graph.add_node("tech_stack_select", trace_node("tech_stack_select")(tech_stack_select.run))
+    graph.add_node("component_decompose", trace_node("component_decompose")(component_decompose.run))
+    graph.add_node("cost_estimator", trace_node("cost_estimator")(cost_estimator.run))
+    graph.add_node("timeline_planner", trace_node("timeline_planner")(timeline_planner.run))
+    graph.add_node("skill_gap_analyzer", trace_node("skill_gap_analyzer")(skill_gap_analyzer.run))
+    graph.add_node("risk_quantifier", trace_node("risk_quantifier")(risk_quantifier.run))
+    graph.add_node("data_arch_design", trace_node("data_arch_design")(data_arch_design.run))
+    graph.add_node("api_planning", trace_node("api_planning")(api_planning.run))
+    graph.add_node("deployment_planning", trace_node("deployment_planning")(deployment_planning.run))
+    graph.add_node("self_check", trace_node("self_check")(plan_self_check.run))
+    graph.add_node("assemble", trace_node("assemble")(plan_assembler.run))
 
     graph.set_entry_point("knowledge_augment")
     graph.add_edge("knowledge_augment", "pattern_recommend")

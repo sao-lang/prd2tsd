@@ -9,8 +9,13 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.config import settings
 from app.core.connections import ConnectionManager, PostgreSQLConnector
 from app.models.base import Base
+
+# 测试环境禁用 OTLP 导出（无 Jaeger 时避免导出重试噪音与延迟）。
+# 需在 app.observability.tracing 首次导入前设置，故置于 conftest 顶层。
+settings.OTEL_EXPORTER_OTLP_ENDPOINT = ""
 
 
 @pytest.fixture(scope="session")

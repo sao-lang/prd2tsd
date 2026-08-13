@@ -10,6 +10,7 @@ Block E 增强：集成 EventBus，执行过程 SSE 流式推送事件。
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +18,7 @@ from typing import Any
 from langgraph.types import Command
 
 from app.core.logger import get_logger
+from app.observability.metrics import TASKS_DURATION, TASKS_TOTAL
 from app.orchestrator.state import TaskInfo, make_initial_state
 from app.streaming.event_bus import EventBus
 from app.streaming.models import SseEvent
@@ -86,6 +88,9 @@ class TaskManager:
 
         async with self._lock:
             self._tasks[task_id] = task_record
+
+        # 任务指标：创建
+        TASKS_TOTAL.labels("created").inc()
 
         # 发布任务创建事件
         await self._emit("task.created", {
@@ -163,7 +168,7 @@ class TaskManager:
             record["status"] = "resuming"
             record["updated_at"] = datetime.now(UTC).isoformat()
             orchestrator = record.get("orchestrator")
-            thread_id = record.get("thread_id")
+            thread_id: str = str(record.get("thread_id") or "")
 
         if orchestrator is None:
             logger.error("审核恢复失败: 无 orchestrator 引用 (task=%s)", task_id)
@@ -213,7 +218,13 @@ class TaskManager:
 
         if orchestrator is None:
             await self._mark_failed(task_id, "Orchestrator 引用为空")
+            # 任务指标：失败（无 orchestrator）
+            TASKS_TOTAL.labels("failed").inc()
+            TASKS_DURATION.observe(0.0)
             return
+
+        # 任务指标：记录开始时间
+        task_start = time.monotonic()
 
         try:
             # 日志：开始知识检索
@@ -256,6 +267,9 @@ class TaskManager:
             # 检查是否是 interrupt 暂停
             if final_state is not None and final_state.get("status") != "running":
                 await self._update_result(task_id, final_state)
+                # 任务指标：完成
+                TASKS_TOTAL.labels("completed").inc()
+                TASKS_DURATION.observe(time.monotonic() - task_start)
             else:
                 # 图被 interrupt 暂停了（状态保持 running）
                 current_stage = final_state.get("current_stage", "") if final_state else ""
@@ -281,6 +295,9 @@ class TaskManager:
 
         except Exception as exc:
             await self._mark_failed(task_id, str(exc))
+            # 任务指标：失败
+            TASKS_TOTAL.labels("failed").inc()
+            TASKS_DURATION.observe(time.monotonic() - task_start)
 
     async def _resume_task(
         self,
@@ -348,7 +365,7 @@ class TaskManager:
         except Exception as exc:
             await self._mark_failed(task_id, str(exc))
 
-    async def _update_result(self, task_id: str, final_state: dict) -> None:
+    async def _update_result(self, task_id: str, final_state: dict[str, Any]) -> None:
         """更新任务结果为完成状态。
 
         Args:
@@ -428,7 +445,7 @@ class TaskManager:
         """
         self._event_bus = event_bus
 
-    async def _emit(self, event_type: str, payload: dict) -> None:
+    async def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         """发布事件到 EventBus（如果已注入）。
 
         Args:

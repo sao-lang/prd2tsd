@@ -18,12 +18,13 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import Any
 
+from opentelemetry import trace
+
 from app.core.circuit_breaker import CircuitBreaker, CircuitBreakerManager
 from app.core.logger import get_logger
 from app.llm_gateway.budget_controller import BudgetController, budget_controller
 from app.llm_gateway.cache import SemanticCache
 from app.llm_gateway.capabilities.embedding import UnifiedEmbedding
-from app.llm_gateway.capabilities.image_encoder import UnifiedImageEncoder
 from app.llm_gateway.capabilities.reranking import UnifiedReranking
 from app.llm_gateway.config_manager import ModelConfigManager
 from app.llm_gateway.cost_tracker import CostRecord, CostTracker
@@ -42,6 +43,7 @@ from app.llm_gateway.models import (
 )
 from app.llm_gateway.providers import ProviderFactory
 from app.llm_gateway.rate_limiter import RateLimiter, rate_limiter
+from app.observability.metrics import LLM_CALL_TOTAL, LLM_COST_TOTAL, track_llm_call
 from app.observability.tracing import tracer
 
 logger = get_logger("prd2tsd.gateway")
@@ -69,7 +71,6 @@ class LLMGateway:
         rate_limiter: RateLimiter | None = None,
         embedding: UnifiedEmbedding | None = None,
         reranking: UnifiedReranking | None = None,
-        image_encoder: UnifiedImageEncoder | None = None,
     ) -> None:
         """初始化 LLM Gateway。
 
@@ -82,7 +83,6 @@ class LLMGateway:
             rate_limiter: 速率限制器。
             embedding: UnifiedEmbedding 实例。
             reranking: UnifiedReranking 实例。
-            image_encoder: UnifiedImageEncoder 实例。
         """
         self.config_manager = config_manager or ModelConfigManager()
         self.provider_factory = provider_factory or ProviderFactory()
@@ -111,7 +111,6 @@ class LLMGateway:
             config_manager=self.config_manager,
             provider_factory=self.provider_factory,
         )
-        self.image_encoder_cap = image_encoder or UnifiedImageEncoder()
 
     def _init_failover_chains(self) -> None:
         """初始化 Failover 链（配置驱动）。"""
@@ -193,7 +192,7 @@ class LLMGateway:
                 "layer": layer,
                 "node": node,
             },
-            kind=1,
+            kind=trace.SpanKind.CLIENT,
         ) as span:
             # ── 步骤 0: 前置护栏 ──
             guard_context = {
@@ -206,6 +205,8 @@ class LLMGateway:
                 if r.blocked:
                     span.set_attribute("guardrail_blocked", r.name)
                     logger.warning("输入被护栏拦截: %s — %s", r.name, r.reason)
+                    # 护栏拦截路径也记录调用次数（避免指标低估）
+                    LLM_CALL_TOTAL.labels("", layer, node).inc()
                     return LLMResponse(
                         content=f"[输入被护栏拦截: {r.reason}]",
                         model="",
@@ -221,6 +222,8 @@ class LLMGateway:
             if not rate_result["allowed"]:
                 span.set_attribute("rate_limited", True)
                 span.set_attribute("retry_after", rate_result["retry_after"])
+                # 速率限制路径也记录调用次数（避免指标低估）
+                LLM_CALL_TOTAL.labels("", layer, node).inc()
                 return LLMResponse(
                     content="",
                     model="",
@@ -248,93 +251,102 @@ class LLMGateway:
                 model_config = self.config_manager.get_config("llm", downgrade_provider)
                 model_name = low_cost_model
 
-            # ── 步骤 4: 语义缓存 ──
-            cache_key = self.cache.make_key(prompt, task_type)
-            cached = self.cache.get(cache_key)
-            if cached is not None:
-                span.set_attribute("cache_hit", True)
-                return LLMResponse(
-                    content=cached,
+            # ── 指标追踪：包裹缓存命中 + 实际调用 + 成本（含失败路径） ──
+            with track_llm_call(model_name, layer, node) as token_info:
+                # ── 步骤 4: 语义缓存 ──
+                cache_key = self.cache.make_key(prompt, task_type)
+                cached = self.cache.get(cache_key)
+                if cached is not None:
+                    span.set_attribute("cache_hit", True)
+                    return LLMResponse(
+                        content=cached,
+                        model=model_name,
+                        cached=True,
+                        cost=0.0,
+                        input_tokens=0,
+                        output_tokens=0,
+                    )
+
+                # ── 步骤 5: Circuit Breaker + Failover 链 ──
+                pv = model_config.provider
+                provider_name = pv.value if hasattr(pv, "value") else str(pv)
+                cb = CircuitBreakerManager.get(f"provider:{provider_name}")
+
+                # 如果当前 Provider 已熔断，走 Failover
+                if cb and not cb.is_available:
+                    logger.warning("Provider %s 已熔断，走 Failover 链", provider_name)
+                    span.set_attribute("circuit_broken", True)
+                    span.set_attribute("broken_provider", provider_name)
+
+                response, model_name = await self._failover_call(
+                    prompt=prompt,
+                    kwargs=kwargs,
+                )
+
+                if response is None:
+                    span.set_attribute("all_calls_failed", True)
+                    return LLMResponse(
+                        content="[服务暂不可用，请稍后重试]",
+                        model="",
+                        cached=False,
+                        cost=0.0,
+                        input_tokens=0,
+                        output_tokens=0,
+                        metadata={"error": "all_calls_failed"},
+                    )
+
+                # ── 步骤 7: 后置护栏 ──
+                expected_json = kwargs.get("response_format") is not None
+                output_results = await self.guardrails.check_output(
+                    response.content,
+                    {"task_type": task_type, "model": model_name, "expected_json": expected_json},
+                )
+                for r in output_results:
+                    if r.blocked:
+                        if r.masked_text:
+                            response.content = r.masked_text
+                            span.set_attribute("guardrail_masked", True)
+                        else:
+                            response.content = f"[输出被护栏拦截: {r.reason}]"
+                            span.set_attribute("guardrail_blocked", r.name)
+                            break
+
+                # ── 步骤 8: 设置缓存 / 成本 / 预算 / 速率 ──
+                self.cache.set(cache_key, response.content)
+
+                self.cost_tracker.record(
                     model=model_name,
-                    cached=True,
-                    cost=0.0,
-                    input_tokens=0,
-                    output_tokens=0,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    metadata={
+                        "task_type": task_type,
+                        "workspace_id": workspace_id,
+                        "layer": layer,
+                        "node": node,
+                    },
                 )
 
-            # ── 步骤 5: Circuit Breaker + Failover 链 ──
-            pv = model_config.provider
-            provider_name = pv.value if hasattr(pv, "value") else str(pv)
-            cb = CircuitBreakerManager.get(f"provider:{provider_name}")
+                # 成本指标（按实际使用模型）
+                LLM_COST_TOTAL.labels(model_name).inc(response.cost)
 
-            # 如果当前 Provider 已熔断，走 Failover
-            if cb and not cb.is_available:
-                logger.warning("Provider %s 已熔断，走 Failover 链", provider_name)
-                span.set_attribute("circuit_broken", True)
-                span.set_attribute("broken_provider", provider_name)
-
-            response, model_name = await self._failover_call(
-                prompt=prompt,
-                kwargs=kwargs,
-            )
-
-            if response is None:
-                span.set_attribute("all_calls_failed", True)
-                return LLMResponse(
-                    content="[服务暂不可用，请稍后重试]",
-                    model="",
-                    cached=False,
-                    cost=0.0,
-                    input_tokens=0,
-                    output_tokens=0,
-                    metadata={"error": "all_calls_failed"},
+                await self.budget_controller.check_and_record(
+                    workspace_id, response.cost, model_name,
                 )
 
-            # ── 步骤 7: 后置护栏 ──
-            expected_json = kwargs.get("response_format") is not None
-            output_results = await self.guardrails.check_output(
-                response.content,
-                {"task_type": task_type, "model": model_name, "expected_json": expected_json},
-            )
-            for r in output_results:
-                if r.blocked:
-                    if r.masked_text:
-                        response.content = r.masked_text
-                        span.set_attribute("guardrail_masked", True)
-                    else:
-                        response.content = f"[输出被护栏拦截: {r.reason}]"
-                        span.set_attribute("guardrail_blocked", r.name)
-                        break
+                await self.rate_limiter.record(
+                    workspace_id, response.input_tokens + response.output_tokens,
+                )
 
-            # ── 步骤 8: 设置缓存 / 成本 / 预算 / 速率 ──
-            self.cache.set(cache_key, response.content)
+                span.set_attribute("model", model_name)
+                span.set_attribute("input_tokens", response.input_tokens)
+                span.set_attribute("output_tokens", response.output_tokens)
+                span.set_attribute("cost", response.cost)
 
-            self.cost_tracker.record(
-                model=model_name,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                metadata={
-                    "task_type": task_type,
-                    "workspace_id": workspace_id,
-                    "layer": layer,
-                    "node": node,
-                },
-            )
+                # 记录 token 指标
+                token_info["input_tokens"] = response.input_tokens
+                token_info["output_tokens"] = response.output_tokens
 
-            await self.budget_controller.check_and_record(
-                workspace_id, response.cost, model_name,
-            )
-
-            await self.rate_limiter.record(
-                workspace_id, response.input_tokens + response.output_tokens,
-            )
-
-            span.set_attribute("model", model_name)
-            span.set_attribute("input_tokens", response.input_tokens)
-            span.set_attribute("output_tokens", response.output_tokens)
-            span.set_attribute("cost", response.cost)
-
-            return response
+                return response
 
     async def stream_complete(
         self,
@@ -385,83 +397,92 @@ class LLMGateway:
         input_tokens = 0
         output_tokens = 0
 
-        for attempt in range(3):
-            try:
-                target = await self.failover.get_target("llm")
-                target_provider = target.provider
-                target_model = target.model
+        # 指标追踪：包裹流式调用（流式结束后统计 token / 成本）
+        with track_llm_call(model_name, layer, node) as token_info:
+            for attempt in range(3):
+                try:
+                    target = await self.failover.get_target("llm")
+                    target_provider = target.provider
+                    target_model = target.model
 
-                target_config = self.config_manager.get_config("llm", target_provider)
-                cb = CircuitBreakerManager.get(f"provider:{target_provider}")
-                if cb and not cb.is_available:
-                    continue
+                    target_config = self.config_manager.get_config("llm", target_provider)
+                    cb = CircuitBreakerManager.get(f"provider:{target_provider}")
+                    if cb and not cb.is_available:
+                        continue
 
-                provider = self.provider_factory.create(target_config.provider, target_config)
-                actual_model = kwargs.pop("model", target_model) or target_model
+                    provider = self.provider_factory.create(target_config.provider, target_config)
+                    actual_model = kwargs.pop("model", target_model) or target_model
 
-                with tracer.start_as_current_span(
-                    f"gateway.stream_complete.{task_type}",
-                    attributes={
-                        "task_type": task_type,
-                        "workspace_id": workspace_id,
-                        "layer": layer,
-                        "node": node,
-                        "model": actual_model,
-                        "streaming": True,
-                        "provider": target_provider,
-                        "failover_attempt": attempt,
-                    },
-                    kind=1,
-                ) as span:
-                    async for chunk in provider.stream_complete(
-                        prompt=prompt,
-                        model=actual_model,
-                        **kwargs,
-                    ):
-                        full_content_chunks.append(chunk)
-                        yield chunk
-
-                    # ── 成本记录（流式结束后） ──
-                    output_tokens = len("".join(full_content_chunks)) // 4
-                    input_tokens = len(prompt) // 4
-                    estimated_cost = (input_tokens * 0.00015 + output_tokens * 0.0006) / 1000
-
-                    self.cost_tracker.record(
-                        model=actual_model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        metadata={
+                    with tracer.start_as_current_span(
+                        f"gateway.stream_complete.{task_type}",
+                        attributes={
                             "task_type": task_type,
                             "workspace_id": workspace_id,
                             "layer": layer,
                             "node": node,
+                            "model": actual_model,
                             "streaming": True,
+                            "provider": target_provider,
+                            "failover_attempt": attempt,
                         },
-                    )
+                        kind=trace.SpanKind.CLIENT,
+                    ) as span:
+                        async for chunk in provider.stream_complete(
+                            prompt=prompt,
+                            model=actual_model,
+                            **kwargs,
+                        ):
+                            full_content_chunks.append(chunk)
+                            yield chunk
 
-                    if workspace_id:
-                        await self.budget_controller.check_and_record(
-                            workspace_id, estimated_cost, actual_model,
+                        # ── 成本记录（流式结束后） ──
+                        output_tokens = len("".join(full_content_chunks)) // 4
+                        input_tokens = len(prompt) // 4
+                        estimated_cost = (input_tokens * 0.00015 + output_tokens * 0.0006) / 1000
+
+                        self.cost_tracker.record(
+                            model=actual_model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            metadata={
+                                "task_type": task_type,
+                                "workspace_id": workspace_id,
+                                "layer": layer,
+                                "node": node,
+                                "streaming": True,
+                            },
                         )
 
-                    span.set_attribute("input_tokens", input_tokens)
-                    span.set_attribute("output_tokens", output_tokens)
-                    span.set_attribute("estimated_cost", estimated_cost)
+                        # 成本指标（流式按估算成本）
+                        LLM_COST_TOTAL.labels(actual_model).inc(estimated_cost)
 
-                # 成功，退出重试
-                break
+                        if workspace_id:
+                            await self.budget_controller.check_and_record(
+                                workspace_id, estimated_cost, actual_model,
+                            )
 
-            except AllProvidersUnavailableError:
-                logger.error("流式调用: 所有 LLM Provider 均不可用")
-                yield "[所有 LLM Provider 均不可用]"
-                return
-            except Exception as exc:
-                logger.warning("流式调用失败 (attempt=%d): %s", attempt, exc)
-                with suppress(Exception):
-                    await self.failover.record_failure("llm", target_provider)
-                if attempt == 2:
-                    logger.exception("流式调用全部重试失败: task_type=%s", task_type)
-                    yield f"[流式调用出错: {exc}]"
+                        span.set_attribute("input_tokens", input_tokens)
+                        span.set_attribute("output_tokens", output_tokens)
+                        span.set_attribute("estimated_cost", estimated_cost)
+
+                    # 成功，退出重试
+                    break
+
+                except AllProvidersUnavailableError:
+                    logger.error("流式调用: 所有 LLM Provider 均不可用")
+                    yield "[所有 LLM Provider 均不可用]"
+                    return
+                except Exception as exc:
+                    logger.warning("流式调用失败 (attempt=%d): %s", attempt, exc)
+                    with suppress(Exception):
+                        await self.failover.record_failure("llm", target_provider)
+                    if attempt == 2:
+                        logger.exception("流式调用全部重试失败: task_type=%s", task_type)
+                        yield f"[流式调用出错: {exc}]"
+
+            # 记录 token 指标
+            token_info["input_tokens"] = input_tokens
+            token_info["output_tokens"] = output_tokens
 
     async def _failover_call(
         self,
@@ -497,10 +518,10 @@ class LLMGateway:
                 _pr_ref = prompt
 
                 async def _call(
-                    _c=_cfg_ref,
-                    _m=_mdl_ref,
-                    _p=_pr_ref,
-                    _k=_kw_ref,
+                    _c: Any = _cfg_ref,
+                    _m: Any = _mdl_ref,
+                    _p: Any = _pr_ref,
+                    _k: Any = _kw_ref,
                 ) -> LLMResponse:
                     kw = dict(_k)
                     provider = self.provider_factory.create(_c.provider, _c)
@@ -632,45 +653,6 @@ class LLMGateway:
                 output_tokens=0,
             )
         return response
-
-    async def encode_image(
-        self,
-        image_bytes: bytes,
-        mode: str | None = None,
-    ) -> list[float]:
-        """统一图片编码 — API 优先（预留），本地 CLIP 模型兜底。
-
-        通过 UnifiedImageEncoder Capability 执行：
-          1. API 模式：预留（未来接入多模态 API）
-          2. 本地模式：CLIP (openai/clip-vit-base-patch32)
-          3. auto 模式：API 失败时自动降级到本地
-
-        Args:
-            image_bytes: 图片字节数据。
-            mode: 临时覆盖模式（auto/api/local）。
-
-        Returns:
-            512 维视觉向量。
-        """
-        return await self.image_encoder_cap.encode_image(image_bytes, mode=mode)
-
-    async def encode_text(
-        self,
-        text: str,
-        mode: str | None = None,
-    ) -> list[float]:
-        """统一文本编码（CLIP 文本空间）— API 优先（预留），本地 CLIP 模型兜底。
-
-        通过 UnifiedImageEncoder Capability 执行，与 encode_image 共享语义空间。
-
-        Args:
-            text: 输入文本。
-            mode: 临时覆盖模式（auto/api/local）。
-
-        Returns:
-            512 维文本向量。
-        """
-        return await self.image_encoder_cap.encode_text(text, mode=mode)
 
     @staticmethod
     def _get_low_cost_model(model: str) -> str:

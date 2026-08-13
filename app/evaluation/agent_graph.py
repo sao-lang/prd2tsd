@@ -21,6 +21,7 @@ from app.evaluation.nodes import (
     TechAdvancementEvalNode,
 )
 from app.evaluation.scoring import ScoringNode
+from app.observability.tracing import trace_node
 
 coverage_node = PRDCoverageCheckNode()
 consistency_node = ConsistencyEvalNode()
@@ -78,16 +79,16 @@ def build_evaluation_graph() -> StateGraph:
     """
     graph = StateGraph(EvaluationState)
 
-    graph.add_node("coverage", coverage_node.run)
-    graph.add_node("consistency", consistency_node.run)
-    graph.add_node("feasibility", feasibility_node.run)
-    graph.add_node("arch_quality", arch_quality_node.run)
-    graph.add_node("security", security_node.run)
-    graph.add_node("cost_eval", cost_eval_node.run)
-    graph.add_node("implementability", impl_eval_node.run)
-    graph.add_node("tech_advancement", tech_adv_node.run)
-    graph.add_node("legal", legal_node.run)
-    graph.add_node("scoring", scoring_node.run)
+    graph.add_node("coverage", trace_node("coverage")(coverage_node.run))
+    graph.add_node("consistency", trace_node("consistency")(consistency_node.run))
+    graph.add_node("feasibility", trace_node("feasibility")(feasibility_node.run))
+    graph.add_node("arch_quality", trace_node("arch_quality")(arch_quality_node.run))
+    graph.add_node("security", trace_node("security")(security_node.run))
+    graph.add_node("cost_eval", trace_node("cost_eval")(cost_eval_node.run))
+    graph.add_node("implementability", trace_node("implementability")(impl_eval_node.run))
+    graph.add_node("tech_advancement", trace_node("tech_advancement")(tech_adv_node.run))
+    graph.add_node("legal", trace_node("legal")(legal_node.run))
+    graph.add_node("scoring", trace_node("scoring")(scoring_node.run))
 
     # 条件入口：Send() 扇出到所有 evaluator 节点并行执行
     graph.set_conditional_entry_point(

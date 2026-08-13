@@ -18,7 +18,7 @@ logger = get_logger("prd2tsd.metrics")
 
 # ── LLM 调用指标 ──
 
-LLM_CALL_TOTAL: Gauge = Gauge(
+LLM_CALL_TOTAL: Counter = Counter(
     "llm_calls_total",
     "LLM 调用总数",
     ["model", "layer", "node"],
@@ -41,6 +41,21 @@ LLM_TOKEN_USAGE: Counter = Counter(
     "llm_tokens_total",
     "Token 消耗",
     ["model", "type"],
+)
+
+# ── HTTP 指标 ──
+
+HTTP_REQUESTS_TOTAL: Counter = Counter(
+    "http_requests_total",
+    "HTTP 请求总数",
+    ["method", "path", "status"],
+)
+
+HTTP_REQUEST_DURATION: Histogram = Histogram(
+    "http_request_duration_seconds",
+    "HTTP 请求耗时",
+    ["method", "path"],
+    buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
 )
 
 # ── 业务流程指标 ──
