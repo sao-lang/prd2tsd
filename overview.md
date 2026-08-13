@@ -1,5 +1,64 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-08-13
+
+#### 25. 观测性完善（WP1）+ 社区检测简化（WP3）+ RAG/Agent 评测（WP2）
+
+- **时间：** 2026-08-13
+- **发起人：** user（确认实施 `docs/plan-observability-eval-cleanup.md`）
+- **依据：** `docs/plan-observability-eval-cleanup.md`（WP1→WP3→WP2 顺序）
+- **修改内容：**
+  - **WP1 全链路追踪 + Prometheus 指标：**
+    - `metrics.py`：`LLM_CALL_TOTAL` Gauge→Counter；新增 `HTTP_REQUESTS_TOTAL`/`HTTP_REQUEST_DURATION`
+    - `tracing.py`：新增 `trace_node()` 统一包装器（`inspect.iscoroutinefunction` 自动选 sync/async）+ `http_tracing_middleware`（HTTP 根 span，含 user_id 解析）；修复 `wrap_async_node` 误用 `async def` 的 bug
+    - `llm_gateway/__init__.py`：`complete()`/`stream_complete()` 接入 `track_llm_call`（成功/缓存命中/失败路径均计数）；成本处补 `LLM_COST_TOTAL.inc`；修复 span `kind=1`（整数）导致 OTLP 导出 KeyError 的 bug
+    - `task_manager.py`：`TASKS_TOTAL(created/completed/failed)` + `TASKS_DURATION.observe`
+    - 5 个图文件（orchestrator/analysis/planning/generation/evaluation）所有 `add_node` 用 `trace_node` 包装（条件入口函数不包装）
+    - `main.py` 注册 `@app.middleware("http")`；`docker-compose.yml` 新增 `grafana` + provisioning/dashboard；`conftest.py` 测试环境禁用 OTLP
+  - **WP3 社区检测简化：** `global_search.py` 删社区检测/报告（`_get_community_reports`/`_generate_base_reports`/`_select_level`），简化为「实体按类型聚合 → LLM 宏观总结」；`CommunityReport` 删除；`RetrievalContext.community_summary`→`global_summary`（4 处：models/pipeline/retrieve_node/**interact.py**——plan 所述 `stream_qna.py` 已不存在）；文档同步（block-B/full-architecture/prd §3.2.2 标注简化）；顺带修复 `graph_store.py` `session.run(**params)` 含 `query` 键的参数冲突 bug
+  - **WP2 RAG + Agent 评测（引入 ragas 0.4.3）：**
+    - 验证 ragas 0.4.3 与 langchain-core 1.5.4 / langgraph 1.2.11 兼容；`_compat.py` shim 解决 `langchain_community.chat_models.vertexai` 缺失（langchain-community≥0.4 拆分）
+    - 新增 `app/evaluation/rag/`（models/dataset_loader/evaluator：RagEvaluator，含反思 A/B）+ `app/evaluation/agent/`（models/evaluator：AgentEvaluator，L3 过程指标 + L4 rubric judge）
+    - 新增 `scripts/run_rag_eval.py`（--dataset/--variant/--ab-reflection）、`scripts/run_agent_eval.py`
+    - 黄金数据集 `tests/eval/datasets/rag_qa.json`（12 条）/`agent_tasks.json`（4 条）；依赖 `ragas==0.4.3`；`.gitignore` 忽略报告
+- **修改文件：** WP1（observability/*、llm_gateway/__init__、task_manager、5 图文件、main、docker-compose、conftest、test_observability）+ WP3（knowledge_layer/{models,pipeline,graph_store,retrieval/*}、retrieve_node、interact、2 个 global_search 测试）+ WP2（app/evaluation/rag|agent、scripts/run_*_eval、tests/eval、tests/unit/test_rag_eval|test_agent_eval、requirements、pyproject、.gitignore、README）
+- **Lint/类型：** ✅ ruff 改动文件全绿（全量 25 条为既有，非本次引入）；mypy 核心修改文件无新增错误
+- **测试：** ✅ 全量单元 **359 过/1 败**（`test_batch` 需 Redis broker，预存在环境依赖，条目 23 同基线）；WP1 观测 8 过 + 图构建 24 过；WP3 global_search 6 过 + 知识层 15 过；WP2 评测 10 过 + **TaskManager 任务指标 4 过（新增）**；冒烟：Jaeger 见 `http.* → node.*` 完整 trace 树、metrics 非零、pipeline global 模式返回宏观总结、**评测闭环端到端跑通（数据集→检索→回答→评分→报告产出，mock 外部 LLM）**
+- **复盘结果：** WP1 冒烟暴露 2 个预存在 bug（span kind=1 整数致 OTLP 导出崩溃、wrap_async_node 误用 async def），均已修复；WP3 冒烟暴露 graph_store `session.run` 参数冲突（阻塞检索管线），已修复；WP2 真实评测因 `.env` API key 为无效占位符（DeepSeek/OpenAI 均 401）未跑通，需配置有效 key 后执行；`total_tokens` 由硬编码 0 改为从 `RetrievalContext` 实读
+- **潜在风险：** ragas 依赖较重且与 langchain-community 0.4 有 vertexai 兼容 shim（升级需复核）；`community_summary→global_summary` 为内部字段改名；评测报告依赖有效 LLM API key；Grafana 需 `docker compose up -d` 生效
+
+#### 24. 块 E 整改复盘修复（doc_id 文档分析断点 + 集成测试 + 文档同步）
+
+- **时间：** 2026-08-13
+- **发起人：** user（"可以"确认 code-review 修复方案）
+- **依据：** code-review 报告（`enterprise-feature-revamp-plan.md` 实现完整性审查）
+- **修改内容：**
+  - **功能断点修复（#1）：** `document_analysis` 意图经 `doc_id` 分析 PDF/docx/图片时原读预览占位文本（`[PDF 文件，大小 N 字节]`）而非正文。修复：`service.py` 新增 `get_document_content()`（下载原始字节），`interact.py::_load_document_text` 改用 `multi_format_loader.extract_text` 按格式提取真实内容，同时消除 CSV 预览前 20 行截断
+  - **预览增强：** `preview.py` 新增 `_preview_docx`，`_preview_pdf` 复用 `multi_format_loader.extract_text`（解析失败降级占位），预览端点不再返回占位
+  - **集成测试补齐（P3 未完成项）：** 新增 `tests/integration/test_interact_flow.py`（chat / knowledge_qa / complex_generation 三意图同步全流程 + 图异常 LLM 降级）；`test_interact.py` 新增 `TestLoadDocumentText`（断点回归：md/csv 全量提取、pdf 走 extract 非占位、不存在/提取失败降级）
+  - **文档同步（R9b）：** 清理 `block-E-enterprise.md` E12 段、`block-D-orchestration.md`、`block-F-production-hardening.md`、`full-architecture-deep-dive.md`、`phase-prompts.md` 中已删除端点（`/api/v1/chat`、`/generate`、`/qna/stream`、`/generate/stream`、`stream_qna.py`）引用，统一指向 `/api/v1/interact`
+- **修改文件：** `service.py`、`interact.py`、`preview.py` + 新增 `tests/integration/test_interact_flow.py`、改 `tests/unit/test_interact.py` + 5 份 docs
+- **Lint/类型：** ✅ ruff 改动文件全绿
+- **测试：** ✅ 整改相关 73 项全过（unit test_interact 19 + url_security + url_document + multi_format_loader + kg_build_multi_format + document_management）；全量单元回归待确认
+- **复盘结果：** 断点根因是「多格式入图（build_from_bytes）与文档分析（preview）两条提取路径不一致」，符合历史"修复后未递归验证"漏检模式——本轮从分析端修复并补回归测试
+- **潜在风险：** `_analyze_document` 仍截断 12000 字符（长文档分析不完整，可接受）；PDF/docx 分析依赖 pypdf/python-docx 安装；preview 增强对超大 PDF 有解析耗时
+
+#### 23. 块 E 企业级功能整改（P0 删除 + P1 统一入口 + P2 URL + P2.5 多格式入图）
+
+- **时间：** 2026-08-13
+- **发起人：** user（"开始这个任务" → 分阶段验收）
+- **依据：** `docs/enterprise-feature-revamp-plan.md`
+- **修改内容：**
+  - **P0 删除类（4 项）：** A1 删 CSV 双通路索引（`csv_loader.py`、`/csv-import`、`CsvImportResponse`）；A2 删 CLIP 多模态（`app/multimodal/`、路由/schema、`gateway.image_encoder`、`IMAGE_ENCODE_MODE`/`CLIP_MODEL_NAME`、Pillow）；A3 删协作文档（`app/collaboration/`、路由/schema）；A4 删搜索引擎回退（`search_fallback.py`、`/search-fallback`、`pipeline.py` 自动回退段）
+  - **P1 统一交互入口（B1）：** 新增 `POST /api/v1/interact`（chat/knowledge_qa/document_analysis/complex_generation/clarification 分流 + 同步/流式双模式）；`IntentClassifier` 增 `document_analysis` 意图；classify 节点幂等化（消除双实现）；移除 `/chat`、`/generate`、`/qna/stream`、`/generate/stream`；新增 `app/streaming/sse.py` 共享 SSE 工具
+  - **P2 URL 文档分析（B2）：** 新增 `url_security.py`（SSRF：协议白名单 + 内网拦截 + DNS 二次检查）、`url_document.py`（URL→抓取→入库 file_type=url+source_url）、`InteractRequest.generate` 一键生成 TSD
+  - **P2.5 多格式入图（B3）：** 新增 `multi_format_loader.py`（pdf/csv/docx/md/txt/图片提取）、`KnowledgeGraphBuilder.build_from_bytes()`、Celery 任务 `index_document_to_kg`、`upload()` 后自动触发入图 + processing_status 状态跟踪；依赖加 `pypdf`
+- **修改文件：** 新增 8（`interact.py`/`schemas/interact.py`/`streaming/sse.py`/`url_security.py`/`url_document.py`/`multi_format_loader.py` + 6 个测试）；删除 2 目录 + 9 文件（`multimodal/`、`collaboration/`、`chat.py`、`stream_qna.py`、`csv_loader.py`、`search_fallback.py`、相关 schema/测试）；修改 15+（`main.py`、`intent_classifier.py`、`intent_classify.py`、`state.py`、`documents.py`、`service.py`、`batch/tasks.py`、`knowledge_layer/pipeline.py`、`requirements.txt` 等）
+- **Lint/类型：** ✅ ruff 改动文件全绿；mypy 无新增错误（基线 195 条既有 + service.py storage_path 既有）
+- **测试：** ✅ 单元 335 过/1 败（`test_batch` 需 Redis broker，环境）；集成 45 过/5 败（PostgreSQL/LLM 环境依赖）；SSRF 防护 11 用例实测全过；E2E 未跑（需完整外部环境）
+- **复盘结果：** 分阶段（P0→P1→P2→P2.5）逐项验收通过；删除 4 个半实现/假实现/有安全风险功能；单一入口收敛前端对接；URL 文档可分析可入库；多格式上传自动入图；修复 3 处自引入 ruff/GBK 编码问题
+- **潜在风险：** 统一入口改动面大需持续回归；URL 抓取依赖外网可达；生产必需外部服务（PostgreSQL/Redis/MinIO/Neo4j/LLM API）本环境未全部实测；文档更新（docs/*.md）已同步
+
 ### 2026-07-28
 
 #### 22. 全量 Code Review 修复（7 项）
