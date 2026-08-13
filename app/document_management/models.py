@@ -27,6 +27,8 @@ class DocumentUpdate(BaseModel):
     tags: list[str] | None = None
     processing_status: str | None = None
     processing_error: str | None = None
+    file_type: str | None = None
+    source_url: str | None = None
 
 
 class DocumentOut(BaseModel):

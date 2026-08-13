@@ -13,10 +13,13 @@ logger = get_logger("prd2tsd.batch_tasks")
 try:
     from celery import Celery
 
-    # Celery 应用实例
+    from app.core.config import settings
+
+    # Celery 应用实例（broker/result backend 从 settings.REDIS_URL 读取，
+    # 支持环境变量覆盖——容器内 "redis" 主机名 / 宿主机 localhost 均可）
     celery_app = Celery("prd2tsd")
-    celery_app.conf.broker_url = "redis://redis:6379/0"
-    celery_app.conf.result_backend = "redis://redis:6379/0"
+    celery_app.conf.broker_url = settings.REDIS_URL or "redis://redis:6379/0"
+    celery_app.conf.result_backend = settings.REDIS_URL or "redis://redis:6379/0"
 
     @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
     def refresh_knowledge_graph(self: Any) -> dict[str, Any]:
@@ -84,6 +87,78 @@ try:
             logger.error("Web 资源同步失败: %s", exc)
             raise self.retry(exc=exc) from exc
 
+    @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
+    def index_document_to_kg(self: Any, document_id: str) -> dict[str, Any]:
+        """上传文档后异步构建知识图谱（Block E B3）。
+
+        Args:
+            document_id: 文档 ID。
+
+        Returns:
+            构建结果。
+        """
+        import asyncio
+
+        logger.info("Celery 任务: index_document_to_kg 开始 doc=%s", document_id)
+        try:
+            async def _run() -> dict[str, Any]:
+                from sqlalchemy import select
+
+                from app.core.connections import connection_manager
+                from app.document_management.models import DocumentUpdate
+                from app.document_management.repository import DocumentRepository
+                from app.document_management.storage import DocumentStorage
+                from app.knowledge_layer.pipeline import KnowledgeGraphBuilder
+                from app.models.block_e import UploadedDocument
+
+                repo = DocumentRepository()
+                storage = DocumentStorage()
+                connector = connection_manager.get("postgres")
+                async with connector.get_session() as session:  # type: ignore[attr-defined]
+                    result = await session.execute(
+                        select(UploadedDocument).where(UploadedDocument.id == document_id),
+                    )
+                    doc = result.scalar_one_or_none()
+                    if doc is None:
+                        return {"status": "skipped", "reason": "document not found"}
+                    if not doc.storage_path:
+                        return {"status": "skipped", "reason": "no storage path"}
+                    content = await storage.download(doc.storage_path)
+                    await repo.update(
+                        session, doc.id,
+                        DocumentUpdate(processing_status="processing"),
+                    )
+                    try:
+                        builder = KnowledgeGraphBuilder()
+                        stats = await builder.build_from_bytes(
+                            content, doc.original_filename, doc.workspace_id,
+                        )
+                        await repo.update(
+                            session, doc.id,
+                            DocumentUpdate(processing_status="indexed"),
+                        )
+                        return {
+                            "status": "completed",
+                            "doc_id": document_id,
+                            "stats": stats.model_dump(),
+                        }
+                    except Exception as exc:
+                        await repo.update(
+                            session, doc.id,
+                            DocumentUpdate(
+                                processing_status="failed",
+                                processing_error=str(exc),
+                            ),
+                        )
+                        raise
+
+            result = asyncio.run(_run())
+            logger.info("文档入图完成: doc=%s result=%s", document_id, result)
+            return result
+        except Exception as exc:
+            logger.error("文档入图失败: doc=%s err=%s", document_id, exc)
+            raise self.retry(exc=exc) from exc
+
     _celery_available = True
 except ImportError:
     celery_app = None  # type: ignore[assignment]
@@ -102,6 +177,11 @@ except ImportError:
     def sync_web_resources() -> dict[str, Any]:  # type: ignore[misc]
         """（降级）Celery 不可用时返回跳过状态。"""
         logger.warning("Celery 未安装，Web 资源同步任务无法执行")
+        return {"status": "skipped", "reason": "celery not installed"}
+
+    def index_document_to_kg(document_id: str) -> dict[str, Any]:  # type: ignore[misc]
+        """（降级）Celery 不可用时返回跳过状态。"""
+        logger.warning("Celery 未安装，文档入图任务无法执行: %s", document_id)
         return {"status": "skipped", "reason": "celery not installed"}
 
 

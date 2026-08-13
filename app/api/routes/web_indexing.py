@@ -1,19 +1,15 @@
-"""Web 索引 API 路由 — URL 抓取/爬虫/搜索回退。
+"""Web 索引 API 路由 — URL 抓取/爬虫。
 
 E7 增强：抓取内容自动增量写入知识图谱。
-E11 增强：搜索回退使用 LLM 生成关键词 + 结果实时索引。
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db_session
 from app.api.schemas.integration import (
     CrawlRequest,
     CrawlResult,
-    SearchFallbackResult,
     WebFetchRequest,
     WebFetchResult,
 )
@@ -21,9 +17,6 @@ from app.auth.deps import get_current_user
 from app.auth.middleware import _SCOPE_WS_ID as _SCOPE_WORKSPACE_ID
 from app.core.logger import get_logger
 from app.knowledge_layer.pipeline import KnowledgeGraphBuilder
-from app.knowledge_layer.vector_store import PGVectorStore
-from app.llm_gateway import gateway as llm_gateway
-from app.web_indexing.search_fallback import SearchFallback
 from app.web_indexing.web_crawler import WebCrawler
 from app.web_indexing.web_loader import WebLoader
 from app.web_indexing.web_sync import WebSyncScheduler
@@ -166,47 +159,4 @@ async def sync_url(
         url=result["url"],
         content=result.get("content", ""),
         error=result.get("error"),
-    )
-
-
-@router.post("/search-fallback", response_model=SearchFallbackResult)
-async def search_fallback(
-    request: Request,
-    q: str = Query(..., min_length=1, description="搜索查询"),
-    user_id: str = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session),
-    index_results: bool = Query(default=True, description="是否将搜索结果索引到向量库"),
-) -> SearchFallbackResult:
-    """搜索引擎回退 — 当本地检索不足时自动触发网络搜索。
-
-    E11 增强：使用 LLM 生成优化关键词 + 搜索结果实时索引到 PGVector。
-
-    Args:
-        request: FastAPI 请求。
-        q: 搜索关键词。
-        user_id: 当前用户 ID。
-        db: 数据库会话。
-        index_results: 是否将搜索结果索引到向量库。
-
-    Returns:
-        搜索结果（含回退标记）。
-    """
-    ws_id = _get_workspace_id(request)
-    vector_store = PGVectorStore(session=db) if index_results else None
-
-    # E11 增强：传入 LLM Gateway 用于关键词生成
-    fallback = SearchFallback(llm_gateway=llm_gateway)
-
-    # 使用 search_and_index 实现结果实时索引
-    results = await fallback.search_and_index(
-        query=q,
-        workspace_id=ws_id,
-        max_results=5,
-        vector_store=vector_store,
-    )
-
-    return SearchFallbackResult(
-        query=q,
-        fallback_triggered=True,
-        results=results,
     )

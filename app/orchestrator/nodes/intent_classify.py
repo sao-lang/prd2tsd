@@ -41,21 +41,30 @@ class IntentClassifyNode:
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """执行意图分类。
 
+        幂等：state 已含 intent 时跳过分类。
+        统一交互入口（/interact）已在路由层分类并预写入 state，
+        此处检测到 intent 后直接复用，避免"双实现"重复分类。
+
         Args:
             state: 当前 OrchestratorState。
 
         Returns:
             更新了 intent 字段的 OrchestratorState。
         """
+        # 幂等：state 已含 intent 则跳过分类
+        if state.get("intent"):
+            logger.info("意图已存在，跳过分类: %s", state["intent"])
+            return state
+
         user_input = state.get("prd_raw", "")
 
         # 分类
         result: IntentResult = await self._classifier.classify(user_input)
 
         # 写入 State
-        state["intent"] = result.intent.value  # type: ignore[typeddict-unknown-key]
-        state["intent_confidence"] = result.confidence  # type: ignore[typeddict-unknown-key]
-        state["intent_sub"] = result.sub_intent  # type: ignore[typeddict-unknown-key]
+        state["intent"] = result.intent.value
+        state["intent_confidence"] = result.confidence
+        state["intent_sub"] = result.sub_intent
 
         logger.info(
             "意图分类: intent=%s, confidence=%.2f, sub=%s",
@@ -78,5 +87,5 @@ def route_by_intent(state: OrchestratorState) -> str:
     Returns:
         路由目标节点名。
     """
-    intent = state.get("intent", "chat")  # type: ignore[typeddict-unknown-key]
+    intent = state.get("intent", "chat")
     return INTENT_ROUTE_MAP.get(intent, "chat_node")

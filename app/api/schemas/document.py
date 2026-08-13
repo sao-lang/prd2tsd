@@ -77,15 +77,3 @@ class SearchResultItem(BaseModel):
     score: float = 0.0
     match_type: str = "fts"
     created_at: str | None = None
-
-
-class CsvImportResponse(BaseModel):
-    """CSV 导入响应。"""
-
-    document_id: str
-    filename: str
-    row_count: int = 0
-    column_count: int = 0
-    columns: list[dict] = []
-    foreign_keys: list[str] = []
-    text_unit_count: int = 0

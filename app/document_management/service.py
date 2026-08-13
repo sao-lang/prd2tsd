@@ -1,11 +1,10 @@
-"""文档管理服务 — 上传/列表/预览/搜索/删除/CSV 索引。"""
+"""文档管理服务 — 上传/列表/预览/搜索/删除。"""
 
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logger import get_logger
-from app.document_management.csv_loader import CsvDualPathIndexer
 from app.document_management.deduplication import DocumentDeduplicator
 from app.document_management.models import (
     DocumentCreate,
@@ -28,6 +27,29 @@ ALLOWED_EXTENSIONS = {".md", ".pdf", ".docx", ".txt", ".csv", ".tsv", ".png", ".
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 
+def _trigger_kg_index(document_id: str) -> bool:
+    """触发文档入图 Celery 任务；Celery 不可用时降级跳过。
+
+    Args:
+        document_id: 文档 ID。
+
+    Returns:
+        是否成功触发。
+    """
+    try:
+        from app.batch.tasks import celery_app, index_document_to_kg
+
+        if celery_app is None:
+            logger.warning("Celery 未安装，跳过文档入图: %s", document_id)
+            return False
+        index_document_to_kg.delay(document_id)
+        logger.info("已触发文档入图任务: %s", document_id)
+        return True
+    except Exception as exc:
+        logger.warning("触发文档入图失败: %s - %s", document_id, exc)
+        return False
+
+
 class DocumentManagementService:
     """文档管理服务 — 统一对外接口。"""
 
@@ -38,7 +60,6 @@ class DocumentManagementService:
         deduplicator: DocumentDeduplicator | None = None,
         preview: DocumentPreviewGenerator | None = None,
         search_service: DocumentSearchService | None = None,
-        csv_indexer: CsvDualPathIndexer | None = None,
     ) -> None:
         """初始化文档管理服务。
 
@@ -48,14 +69,12 @@ class DocumentManagementService:
             deduplicator: 去重器。
             preview: 预览生成器。
             search_service: 搜索服务。
-            csv_indexer: CSV 索引器。
         """
         self.repository = repository or DocumentRepository()
         self.storage = storage or DocumentStorage()
         self.deduplicator = deduplicator or DocumentDeduplicator()
         self.preview = preview or DocumentPreviewGenerator()
         self.search_service = search_service or DocumentSearchService()
-        self.csv_indexer = csv_indexer or CsvDualPathIndexer()
 
     async def upload(
         self,
@@ -69,7 +88,7 @@ class DocumentManagementService:
     ) -> UploadResponse:
         """上传文档。
 
-        流程：校验 → 去重 → 存 MinIO → 写 DB → CSV 索引。
+        流程：校验 → 去重 → 存 MinIO → 写 DB。
 
         Args:
             db: 数据库会话。
@@ -119,21 +138,15 @@ class DocumentManagementService:
         )
         doc = await self.repository.create(db, workspace_id, user_id, doc_data)
 
-        # CSV 双通路索引
-        if file_type in ("csv", "tsv"):
-            try:
-                index_result = await self.csv_indexer.process(content, filename, doc.id)
-                await self.repository.update(
-                    db, doc.id,
-                    DocumentUpdate(processing_status="indexed"),
-                )
-                logger.info("CSV 索引完成: %s", index_result.get("row_count", 0))
-            except Exception as exc:
-                logger.warning("CSV 索引失败: %s", exc)
-                await self.repository.update(
-                    db, doc.id,
-                    DocumentUpdate(processing_status="failed", processing_error=str(exc)),
-                )
+        # Block E B3: 多格式文档自动入图（异步 Celery 任务）
+        from app.knowledge_layer.ingestion.multi_format_loader import is_indexable
+
+        if is_indexable(filename):
+            await self.repository.update(
+                db, doc.id,
+                DocumentUpdate(processing_status="pending", processing_error=None),
+            )
+            _trigger_kg_index(doc.id)
 
         return UploadResponse(document=doc, deduplicated=False)
 
@@ -152,6 +165,30 @@ class DocumentManagementService:
             文档信息。
         """
         return await self.repository.get(db, document_id)
+
+    async def get_document_content(
+        self,
+        db: AsyncSession,
+        document_id: str,
+    ) -> tuple[bytes, str] | None:
+        """获取文档原始内容与原始文件名（供文档分析/入图复用）。
+
+        与 get_preview 不同，此方法返回未经预览截断的原始字节，
+        供 `multi_format_loader.extract_text` 按格式完整提取文本，
+        避免 PDF/docx 分析读取预览占位文本（Block E B1 断点修复）。
+
+        Args:
+            db: 数据库会话。
+            document_id: 文档 ID。
+
+        Returns:
+            (原始字节, 原始文件名)；文档不存在或无存储路径时返回 None。
+        """
+        doc = await self.repository.get(db, document_id)
+        if doc is None or not doc.storage_path:
+            return None
+        content = await self.storage.download(doc.storage_path)
+        return content, doc.original_filename
 
     async def list_documents(
         self,

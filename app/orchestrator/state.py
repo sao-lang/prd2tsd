@@ -12,7 +12,7 @@ OrchestratorRuntime（运行时上下文）、TenantContext、TaskInfo。
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired
 
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
@@ -123,6 +123,11 @@ class OrchestratorState(TypedDict):
     status: Literal["running", "paused", "complete", "failed", "clarification_needed"]
     error_message: str
     progress: float  # 0.0 ~ 1.0
+
+    # ── 意图路由字段（由统一交互入口或 classify 节点写入）──
+    intent: NotRequired[str]
+    intent_confidence: NotRequired[float]
+    intent_sub: NotRequired[str]
 
 
 class TaskInfo(BaseModel):

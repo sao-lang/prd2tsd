@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.document_management.csv_loader import CsvDualPathIndexer
 from app.document_management.deduplication import DocumentDeduplicator
 from app.document_management.models import DocumentCreate
 from app.document_management.preview import DocumentPreviewGenerator
@@ -99,71 +98,6 @@ class TestDocumentSearch:
         svc = DocumentSearchService()
         results = await svc.search(db_session, "ws", "")
         assert isinstance(results, list)
-
-
-class TestCsvDualPathIndexer:
-    """CSV 双通路索引单元测试。"""
-
-    @pytest.mark.asyncio
-    async def test_process_csv(self) -> None:
-        """验证 CSV 处理。"""
-        content = b"name,age,city_id\nAlice,30,nyc_id\nBob,25,sf_id\n"
-        indexer = CsvDualPathIndexer()
-        result = await indexer.process(content, "test.csv", "doc-1")
-        assert result["row_count"] == 2
-        assert result["column_count"] == 3
-        assert len(result["text_units"]) == 2
-        assert "Alice" in result["text_units"][0]
-
-    @pytest.mark.asyncio
-    async def test_column_type_inference(self) -> None:
-        """验证列类型推断。"""
-        content = b"name,age,score,join_date,status\nAlice,30,95.5,2024-01-15,active\nBob,25,88.0,2023-06-01,active\n"
-        indexer = CsvDualPathIndexer()
-        result = await indexer.process(content, "test.csv", "doc-1")
-        profiles = {p["name"]: p["type"] for p in result["column_profiles"]}
-        assert profiles["name"] == "string"
-        assert profiles["age"] == "integer"
-        assert profiles["score"] == "float"
-        assert profiles["join_date"] == "date"
-        # status: active/active - only 1 unique out of 2, but sample too small (< 10)
-        # so it stays string until enough samples
-
-    @pytest.mark.asyncio
-    async def test_enum_detection_with_enough_samples(self) -> None:
-        """验证枚举类型检测（足够样本时）。"""
-        rows = "\n".join([f"user{i},active" for i in range(20)])
-        content = f"name,status\n{rows}".encode()
-        indexer = CsvDualPathIndexer()
-        result = await indexer.process(content, "test.csv", "doc-1")
-        profiles = {p["name"]: p["type"] for p in result["column_profiles"]}
-        # 20 行数据, status 只有 1 个唯一值 "active" => 应识别为 enum
-        assert profiles["status"] == "enum"
-
-    @pytest.mark.asyncio
-    async def test_foreign_key_detection(self) -> None:
-        """验证外键检测。"""
-        content = b"user_id,order_key,name\n1,ord_1,Alice\n"
-        indexer = CsvDualPathIndexer()
-        result = await indexer.process(content, "test.csv", "doc-1")
-        assert "user_id" in result["foreign_keys"]
-        assert "order_key" in result["foreign_keys"]
-
-    @pytest.mark.asyncio
-    async def test_tsv_delimiter(self) -> None:
-        """验证 TSV 分隔符。"""
-        content = b"name\tage\nAlice\t30\n"
-        indexer = CsvDualPathIndexer()
-        result = await indexer.process(content, "test.tsv", "doc-1")
-        assert result["row_count"] == 1
-        assert "Alice" in result["text_units"][0]
-
-    @pytest.mark.asyncio
-    async def test_empty_csv(self) -> None:
-        """验证空 CSV。"""
-        indexer = CsvDualPathIndexer()
-        result = await indexer.process(b"", "empty.csv", "doc-1")
-        assert result["row_count"] == 0
 
 
 class TestDocumentPreview:

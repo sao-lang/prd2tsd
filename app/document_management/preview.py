@@ -33,7 +33,7 @@ class DocumentPreviewGenerator:
             预览结果。
         """
         try:
-            if file_type == "md":
+            if file_type in ("md", "url"):
                 return await self._preview_markdown(document_id, content)
             if file_type == "txt":
                 return await self._preview_text(document_id, content)
@@ -41,6 +41,8 @@ class DocumentPreviewGenerator:
                 return await self._preview_csv(document_id, content)
             if file_type == "pdf":
                 return await self._preview_pdf(document_id, content)
+            if file_type == "docx":
+                return await self._preview_docx(document_id, content)
             if file_type in ("png", "jpg", "jpeg"):
                 return await self._preview_image(document_id, file_type)
             return PreviewResult(
@@ -105,13 +107,72 @@ class DocumentPreviewGenerator:
         document_id: str,
         content: bytes,
     ) -> PreviewResult:
-        """生成 PDF 预览（占位）。"""
-        return PreviewResult(
-            document_id=document_id,
-            file_type="pdf",
-            text_preview=f"[PDF 文件，大小 {len(content)} 字节]",
-            page_count=0,
-        )
+        """生成 PDF 预览（多格式提取文本）。
+
+        复用 multi_format_loader.extract_text 提取 PDF 文本（pypdf），
+        解析失败时降级为占位信息。
+        """
+        from app.knowledge_layer.ingestion.multi_format_loader import extract_text
+
+        try:
+            text = extract_text(content, "document.pdf")
+            if not text.strip():
+                return PreviewResult(
+                    document_id=document_id,
+                    file_type="pdf",
+                    text_preview="[PDF 无可提取文本]",
+                    page_count=0,
+                )
+            return PreviewResult(
+                document_id=document_id,
+                file_type="pdf",
+                text_preview=text[:self.MAX_PREVIEW_CHARS],
+                page_count=0,
+            )
+        except Exception as exc:
+            logger.warning("PDF 预览解析失败: %s - %s", document_id, exc)
+            return PreviewResult(
+                document_id=document_id,
+                file_type="pdf",
+                text_preview=f"[PDF 文件，大小 {len(content)} 字节，解析失败]",
+                page_count=0,
+            )
+
+    async def _preview_docx(
+        self,
+        document_id: str,
+        content: bytes,
+    ) -> PreviewResult:
+        """生成 docx 预览（多格式提取文本）。
+
+        复用 multi_format_loader.extract_text 提取 docx 段落与表格（python-docx），
+        解析失败时降级为占位信息。
+        """
+        from app.knowledge_layer.ingestion.multi_format_loader import extract_text
+
+        try:
+            text = extract_text(content, "document.docx")
+            if not text.strip():
+                return PreviewResult(
+                    document_id=document_id,
+                    file_type="docx",
+                    text_preview="[DOCX 无可提取文本]",
+                    page_count=0,
+                )
+            return PreviewResult(
+                document_id=document_id,
+                file_type="docx",
+                text_preview=text[:self.MAX_PREVIEW_CHARS],
+                page_count=0,
+            )
+        except Exception as exc:
+            logger.warning("DOCX 预览解析失败: %s - %s", document_id, exc)
+            return PreviewResult(
+                document_id=document_id,
+                file_type="docx",
+                text_preview=f"[DOCX 文件，大小 {len(content)} 字节，解析失败]",
+                page_count=0,
+            )
 
     async def _preview_image(
         self,

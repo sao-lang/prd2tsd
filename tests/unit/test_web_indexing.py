@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-from app.web_indexing.search_fallback import SearchFallback
 from app.web_indexing.web_crawler import WebCrawler
 from app.web_indexing.web_loader import WebLoader
 from app.web_indexing.web_sync import WebSyncScheduler
@@ -93,74 +88,6 @@ class TestWebSync:
         sync._tracked["https://example.com"] = {"etag": "abc"}
         sync.clear()
         assert sync.get_tracked_urls() == []
-
-
-class TestSearchFallback:
-    """搜索回退单元测试。"""
-
-    @pytest.mark.asyncio
-    async def test_should_fallback_when_few_results(self) -> None:
-        """验证本地结果少时触发回退。"""
-        fallback = SearchFallback()
-        assert await fallback.should_fallback([]) is True
-        assert await fallback.should_fallback([1]) is True
-        assert await fallback.should_fallback([1, 2]) is True
-
-    @pytest.mark.asyncio
-    async def test_should_not_fallback_when_enough_results(self) -> None:
-        """验证本地结果足够时不触发回退。"""
-        fallback = SearchFallback()
-        assert await fallback.should_fallback([1, 2, 3]) is False
-        assert await fallback.should_fallback([1, 2, 3, 4, 5]) is False
-
-    def test_parse_html_results_empty(self) -> None:
-        """验证空 HTML 返回空列表。"""
-        results = SearchFallback._parse_html_results("<html></html>", 5)
-        assert len(results) == 0
-
-    @pytest.mark.asyncio
-    async def test_generate_keywords_with_llm(self) -> None:
-        """验证 LLM 关键词生成。"""
-        mock_llm = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.content = "optimized search keywords"
-        mock_llm.complete = AsyncMock(return_value=mock_resp)
-
-        fallback = SearchFallback(llm_gateway=mock_llm)
-        keywords = await fallback.generate_search_keywords("原始查询")
-        assert keywords == "optimized search keywords"
-
-    @pytest.mark.asyncio
-    async def test_generate_keywords_without_llm(self) -> None:
-        """验证无 LLM 时降级。"""
-        fallback = SearchFallback(llm_gateway=None)
-        keywords = await fallback.generate_search_keywords("原始查询")
-        assert keywords == "原始查询"
-
-    @pytest.mark.asyncio
-    async def test_search_and_index_with_vector_store(self) -> None:
-        """验证 search_and_index 向量存储索引。"""
-        fallback = SearchFallback(llm_gateway=None)
-
-        mock_vs = MagicMock()
-        mock_vs.ensure_extensions = AsyncMock()
-        mock_vs.upsert_chunk = AsyncMock()
-
-        # Mock search() 方法绕过真实 HTTP 调用
-        mock_results = [
-            {"title": "Result 1", "url": "https://example.com/1", "snippet": "Snippet 1"},
-        ]
-        with patch.object(fallback, "search", new=AsyncMock(return_value=mock_results)):
-            results = await fallback.search_and_index(
-                query="test",
-                workspace_id="ws-1",
-                max_results=5,
-                vector_store=mock_vs,
-            )
-
-        assert len(results) == 1
-        mock_vs.ensure_extensions.assert_awaited_once()
-        mock_vs.upsert_chunk.assert_awaited_once()
 
 
 class TestWebhook:

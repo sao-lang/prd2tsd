@@ -98,8 +98,6 @@ class Settings(BaseSettings):
     # ── Gateway Capability Modes ──
     EMBEDDING_MODE: str = "auto"        # auto / api / local
     RERANK_MODE: str = "auto"           # auto / api / local
-    IMAGE_ENCODE_MODE: str = "local"    # auto / api / local（当前无 API，默认 local）
-    CLIP_MODEL_NAME: str = "openai/clip-vit-base-patch32"
 
     # ── Model Routing Rules ──
     MODEL_ROUTING__ANALYSIS_REQUIREMENT__TYPE: str = "llm"

@@ -41,29 +41,11 @@
 - Webhook 通知（方案完成时回调指定 URL）
 - 飞书/钉钉通知（可选）
 
-**E6 — ⭐⭐ CSV 双通路索引**
-- CSV/TSV 行级 TextUnit 构建（每行→自然语言句子）
-- 列级 Embedding（列名+列描述→语义向量）
-- 列类型自动推断（string/integer/float/enum/date）
-- 外键自动检测（列名 _id/_key 后缀启发）
-- 行级+列级双通路 PGVector 索引
-
 **E7 — ⭐⭐ Web 资源索引**
 - 单次 URL 抓取（Readability 正文提取→Markdown）
 - 同域递归爬虫（BFS+robots.txt+并发控制）
 - 定时同步（ETag/Last-Modified/内容哈希变更检测）
 - 增量更新知识图谱
-
-**E8 — ⭐⭐ CLIP 多模态/以图搜图**
-- 图片上传→CLIP 视觉 Embedding（768d）
-- 文本描述→CLIP 文本 Embedding（768d）
-- 图文混合检索（以图搜图+文搜图+RRF 融合）
-- ImageChunk 双向量存储（visual_emb + text_emb 同一空间）
-
-**E9 — ⭐ 协作文档**
-- 行内评论（选中段落→添加评论→@提及通知）
-- 建议修改（原文+建议+理由→owner 审批）
-- 变更历史（版本对比+回滚）
 
 **E10 — ⭐ 批量处理与定时任务**
 - Celery Beat 定时任务（知识图谱定期刷新）
@@ -71,17 +53,28 @@
 - 批量方案重新生成（技术栈更新时触发）
 - 定时同步 Web 资源
 
-**E11 — ⭐ 搜索引擎回退**
-- 本地知识图谱检索命中不足时自动触发网络搜索
-- LLM 生成搜索关键词
-- 结果实时索引并返回
-
 **E12 — ⭐⭐ SSE 流式推送**
 - EventBus 内存 Pub/Sub（asyncio.Queue 实现）
 - SSE 端点：任务事件流 / 一键提交+流式 / 流式 Q&A / 审核+流式恢复
 - LLM Gateway `stream_complete()` 流式调用
 - Generation Layer 流式文档片段推送
 - 流式 Q&A：知识检索 + LLM 流式回答
+
+**E13 — ⭐⭐ 统一交互入口（整改 B1）**
+- POST /api/v1/interact 单一入口（对话 / 提问 / 文档分析 / 复杂生成 / 澄清）
+- IntentClassifier 意图识别分流（URL/doc_id 强信号 + 规则 + LLM 两级）
+- 图内 classify 节点幂等（state 已含 intent 则跳过，消除"双实现"）
+- 同步 JSON / 流式 SSE 双模式
+
+**E14 — ⭐⭐ URL 文档分析（整改 B2）**
+- SSRF 防护（协议白名单 + 内网地址拦截 + DNS 解析二次检查）
+- URL 抓取 → 建文档记录（file_type=url + source_url）→ 入库检索
+- generate=true 一键生成 TSD（转 complex_generation）
+
+**E15 — ⭐⭐ 多格式自动入图（整改 B3）**
+- 上传 pdf/csv/docx/md/txt/png/jpg 自动构建知识图谱
+- multi_format_loader 多格式文本提取（图片以元数据占位）
+- Celery 异步任务 index_document_to_kg + processing_status 状态跟踪
 
 ---
 
@@ -93,12 +86,11 @@
 | 链路可追踪 | 每个请求有完整 Span 链，可通过 Jaeger 查看 |
 | 会话可回看 | 创建会话 → 加消息 → 列表 → 搜索 → 导出 全部可用 |
 | 文档可管理 | 上传 → 去重 → 预览 → 搜索 → 删除 全部可用 |
-| CSV 双通路索引 | CSV 上传后行级+列级均可检索 |
+| 统一交互入口 | 对话/提问/文档分析/复杂生成 单一入口可用 |
+| URL 文档可分析 | URL → 抓取 → 入库 → 可检索（可选一键生成 TSD） |
+| 多格式自动入图 | 上传 pdf/csv/docx/md/txt/png/jpg 自动构建知识图谱 |
 | Web 资源可索引 | URL 抓取 → 正文提取 → 知识图谱写入 |
-| 以图搜图可用 | 上传图片 → 找到相似架构图 |
-| 协作文档可用 | 评论/建议修改/变更历史全流程 |
 | 定时任务生效 | Celery Beat 定时刷新知识图谱 |
-| 搜索引擎回退 | 本地无结果时自动触发网络搜索 |
 | SSE 流式推送 | EventBus 可用，SSE 端点就绪，流式 Q&A / 流式文档 / 实时审核通知全部可用 |
 | 端到端仍然通 | 块 D 的 test_full_flow.py 仍然 PASS |
 
@@ -123,9 +115,10 @@ new_deps:
   - celery                                 # 定时任务（块 E 引入）
   - redis                                  # 消息队列（块 E 引入）
   - scrapy                                 # Web 爬虫（可选，也可用 aiohttp）
-  - pillow                                 # 图片处理（多模态缩略图）
-  - transformers                           # CLIP 模型（多模态 Embedding）
-  - httpx                                  # Webhook 发送
+  - pypdf                                  # PDF 文本提取（多格式入图）
+  - python-docx                            # docx 读取（多格式入图）
+  - transformers                           # 重排序模型（reranker）
+  - httpx                                  # Webhook 发送 / URL 抓取
 
 # === 新增容器 ===
 new_services:
@@ -299,36 +292,22 @@ app/session_history/
 
 app/document_management/
 ├── __init__.py
-├── service.py                             # 文档上传/列表/删除/重索引
+├── service.py                             # 文档上传/列表/删除/重索引（上传自动触发入图）
 ├── models.py                              # UploadedDocument Pydantic 模型
 ├── repository.py                          # 数据库访问层
 ├── search.py                              # 文档混合搜索（FTS + 语义）
 ├── preview.py                             # 文档预览生成
 ├── deduplication.py                       # SHA-256 去重
 ├── storage.py                             # MinIO 存储后端
-├── csv_loader.py                          # ⭐ CSV 双通路索引（行级+列级）
 └── batch_operations.py                    # 批量导入/导出/删除
 
-app/web_indexing/                          # ⭐⭐ Web 资源索引（新增模块）
+app/web_indexing/                          # ⭐⭐ Web 资源索引 + URL 文档（新增）
 ├── __init__.py
 ├── web_loader.py                          # 单次 URL 抓取+正文提取
 ├── web_crawler.py                         # 同域递归爬虫
 ├── web_sync.py                            # 定时同步（Celery Beat）
-└── search_fallback.py                     # ⭐ 搜索引擎回退
-
-app/multimodal/                            # ⭐⭐ 多模态（新增模块）
-├── __init__.py
-├── clip_encoder.py                        # CLIP 双塔编码（visual_emb + text_emb）
-├── image_chunk_store.py                   # ImageChunk 存储
-├── multimodal_search.py                   # 以图搜图/文搜图/图文混合
-└── image_preview.py                       # 图片预览+缩略图
-
-app/collaboration/                         # ⭐ 协作文档（新增模块）
-├── __init__.py
-├── service.py                             # 评论/建议/审批
-├── comment.py                             # 行内评论
-├── suggestion.py                          # 建议修改
-└── changelog.py                           # 变更历史
+├── url_security.py                        # ⭐ SSRF 防护（协议白名单+内网拦截）
+└── url_document.py                        # ⭐ URL 抓取→建文档记录→入库
 
 app/integrations/
 ├── __init__.py
@@ -339,40 +318,31 @@ app/batch/                                 # ⭐ 批量处理与定时任务
 ├── __init__.py
 ├── scheduler.py                           # Celery Beat 配置
 ├── batch_operations.py                    # 批量导入/导出/删除/重索引
-└── tasks.py                               # Celery 任务定义
+└── tasks.py                               # Celery 任务定义（含 index_document_to_kg 文档入图）
 
 app/api/routes/
 ├── sessions.py                            # 会话历史接口
 ├── documents.py                           # 文档管理接口
-├── csv_import.py                          # ⭐ CSV 导入接口
+├── interact.py                            # ⭐⭐ 统一交互入口（意图分流）
 ├── web_indexing.py                        # ⭐ Web 索引接口
-├── multimodal.py                          # ⭐ 多模态检索接口
-├── collaboration.py                       # ⭐ 协作接口
 ├── batch.py                               # ⭐ 批量任务接口
 └── integrations.py                        # 集成配置接口
 
 tests/unit/
-├── test_llm_gateway.py
-├── test_session_history.py
 ├── test_document_management.py
-├── test_csv_loader.py                     # ⭐ CSV 双通路索引测试
+├── test_interact.py                       # ⭐ 统一交互入口测试
+├── test_url_security.py                   # ⭐ SSRF 防护测试
+├── test_url_document.py                   # ⭐ URL 入库测试
+├── test_multi_format_loader.py            # ⭐ 多格式文本提取测试
+├── test_kg_build_multi_format.py          # ⭐ build_from_bytes 链路测试
 ├── test_web_loader.py                     # ⭐ Web 加载测试
-├── test_clip_encoder.py                   # ⭐ 多模态编码测试
-├── test_collaboration.py                  # ⭐ 协作文档测试
 ├── test_batch_tasks.py                    # ⭐ 批量任务测试
-├── test_search_fallback.py                # ⭐ 搜索引擎回退测试
 └── test_integrations.py
 
 tests/integration/
-├── test_llm_gateway.py
-├── test_session_history.py
 ├── test_document_management.py
-├── test_csv_indexing.py                   # ⭐ CSV 索引集成测试
 ├── test_web_crawling.py                   # ⭐ Web 爬虫集成测试
-├── test_multimodal_search.py              # ⭐ 多模态检索集成测试
-├── test_collaboration_flow.py             # ⭐ 协作全流程测试
 ├── test_batch_operations.py               # ⭐ 批量操作集成测试
-├── test_search_fallback.py                # ⭐ 搜索回退集成测试
 └── test_integrations.py
 ```
 
@@ -639,29 +609,25 @@ pytest tests/integration/test_document_management.py -v
 pytest tests/e2e/test_full_flow.py -v --slow
 # 期望: 块 D 的全链路仍然正常工作
 
-# E6: CSV 双通路索引
-pytest tests/integration/test_csv_indexing.py -v
-# 期望: CSV 上传→行级+列级均可检索
-
 # E7: Web 资源索引
 pytest tests/integration/test_web_crawling.py -v
 # 期望: URL 抓取→正文提取→知识图谱写入
 
-# E8: 多模态检索
-pytest tests/integration/test_multimodal_search.py -v
-# 期望: 以图搜图返回相似架构图
+# E13: 统一交互入口
+pytest tests/unit/test_interact.py -v
+# 期望: 意图分流（chat/knowledge_qa/document_analysis/complex_generation/clarification）
 
-# E9: 协作文档
-pytest tests/integration/test_collaboration_flow.py -v
-# 期望: 评论→建议修改→审批→变更历史
+# E14: URL 文档分析（SSRF 防护 + 入库）
+pytest tests/unit/test_url_security.py tests/unit/test_url_document.py -v
+# 期望: SSRF 拦截内网 / URL 抓取→入库→source_url
+
+# E15: 多格式自动入图
+pytest tests/unit/test_multi_format_loader.py tests/unit/test_kg_build_multi_format.py -v
+# 期望: 各格式文本提取 / build_from_bytes 链路
 
 # E10: 批量操作
 pytest tests/integration/test_batch_operations.py -v
 # 期望: 批量导入→批量重索引→定时任务触发
-
-# E11: 搜索引擎回退
-pytest tests/integration/test_search_fallback.py -v
-# 期望: 本地无结果→自动触发网络搜索→返回结果
 ```
 
 ### 完成后状态
@@ -673,12 +639,11 @@ pytest tests/integration/test_search_fallback.py -v
 ✅ 用户可查看历史会话、搜索对话内容
 ✅ 用户可上传文档、预览、搜索
 ✅ 文档上传自动去重
-✅ CSV 文件行级+列级双通路索引
+✅ 统一交互入口（对话/提问/文档分析/复杂生成）
+✅ URL 文档可分析（SSRF 防护 + 入库检索 + 一键生成 TSD）
+✅ 多格式上传自动入图（pdf/csv/docx/md/txt/png/jpg）
 ✅ Web URL 可抓取、可爬取、可定时同步
-✅ 以图搜图/文搜图/图文混合检索可用
-✅ 协作文档（评论+建议+变更历史）
 ✅ Celery Beat 定时任务就绪
-✅ 本地无结果时自动触发网络搜索
 ✅ Webhook 可配置
 ✅ EventBus 内存 Pub/Sub 就绪
 ✅ SSE 端点可用（任务事件流 / 流式生成 / 流式 Q&A / 审核流式恢复）
@@ -712,15 +677,13 @@ pytest tests/integration/test_search_fallback.py -v
 ┌──────────────────────────────────┐
 │    FastAPI SSE 路由层             │
 │  /tasks/{id}/events               │
-│  /generate/stream                 │
-│  /qna/stream                      │
+│  /interact?stream=true            │  ← 统一交互入口（chat/knowledge_qa/document_analysis/complex_generation）
 │  /tasks/{id}/stream-review        │
 └──────────┬───────────────────────┘
            ↕ publish / subscribe (asyncio.Queue)
 ┌──────────────────────────────────┐
 │    EventBus (内存 Pub/Sub)        │
 │  channel: "task:{task_id}"       │
-│  channel: "qna:{session_id}"     │
 └──────────┬───────────────────────┘
            ↕ emit
 ┌──────────────────────────────────┐
@@ -740,8 +703,8 @@ app/streaming/
 └── models.py                     # SseEvent, 事件类型常量
 
 app/api/routes/
-├── stream_generate.py            # POST /generate/stream (SSE)
-└── stream_qna.py                 # POST /qna/stream (SSE)
+├── stream_generate.py            # /tasks/{id}/events + /tasks/{id}/stream-review (SSE)
+└── interact.py                   # POST /interact?stream=true（统一入口，替代已删除的 /generate/stream 与 /qna/stream）
 
 app/api/schemas/
 └── streaming.py                  # 流式请求体模型
@@ -813,8 +776,7 @@ event_bus = EventBus()
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/v1/tasks/{task_id}/events` | GET | 订阅任务事件流（核心端点） |
-| `/api/v1/generate/stream` | POST | 一键提交 + 全程 SSE 推送 |
-| `/api/v1/qna/stream` | POST | 流式 Q&A（检索 + LLM 回答） |
+| `/api/v1/interact?stream=true` | POST | 统一交互入口：chat / knowledge_qa / document_analysis / complex_generation 流式（替代已移除的 `/generate/stream` 与 `/qna/stream`） |
 | `/api/v1/tasks/{task_id}/stream-review` | POST | 审核 + 流式恢复 |
 
 SSE 端点使用 `StreamingResponse(text/event-stream)`，配合 `X-Accel-Buffering: no` 头禁用 nginx 缓冲。
@@ -888,7 +850,7 @@ _execute_task():
 ### 11.9 流式 Q&A 流程
 
 ```
-POST /qna/stream
+POST /interact?stream=true  { message: "...", stream: true }（knowledge_qa 意图）
   → SSE: qna.status({phase:"retrieving", message:"正在检索知识图谱..."})
   → RetrievalPipeline.retrieve(query, workspace_id)
   → SSE: qna.status({phase:"retrieved", message:"检索到 N 条结果", sources:[...]})
@@ -913,11 +875,11 @@ POST /qna/stream
 ### 11.11 客户端示例
 
 ```javascript
-// 流式 Q&A
-const resp = await fetch('/api/v1/qna/stream', {
+// 流式 Q&A — 统一交互入口
+const resp = await fetch('/api/v1/interact?stream=true', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ query: "有微服务相关的文档吗？", workspace_id: "ws-1" }),
+  body: JSON.stringify({ message: "有微服务相关的文档吗？", workspace_id: "ws-1", stream: true }),
 });
 
 const reader = resp.body.getReader();

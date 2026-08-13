@@ -16,7 +16,7 @@
 2. **Adapter 适配层**：每层外层包一个 Adapter，做 OrchestratorState ↔ LayerState 的转换
 3. **迭代决策**：Evaluation 不通过时自动回退到 Planning 或 Generation
 4. **Human-in-the-Loop**：分析结果和架构方案需要人工确认的节点
-5. **异步任务**：`POST /api/v1/generate` 提交任务，`GET /api/v1/tasks/{id}` 查询进度
+5. **异步任务**：`POST /api/v1/interact`（complex_generation 意图）提交任务，`GET /api/v1/tasks/{id}` 查询进度
 6. **评测接口**：`POST /api/v1/evaluate` 对已有方案进行评测
 7. **人工审核接口**：`GET /api/v1/review/pending` + `POST /api/v1/review/{task_id}/{stage}`
 
@@ -27,7 +27,7 @@
 | 目标 | 衡量标准 |
 |------|---------|
 | 全链路可跑通 | 输入样本 PRD → 输出完整技术方案文档（> 3000 字） |
-| API 可用 | curl POST /api/v1/generate 返回 200 + task_id |
+| API 可用 | curl POST /api/v1/interact（complex_generation 意图）返回 200 + task_id |
 | 异步任务 | 任务提交后轮询 tasks/{id} 可看到进度变化 |
 | 迭代决策 | Evaluation 低分时自动回退重做 |
 | 块 A/B/C 不变 | 不修改已有 Layer 的任何接口签名 |
@@ -226,7 +226,8 @@ app/orchestrator/
     └── evaluation_adapter.py             # Evaluation Layer Adapter
 
 app/api/routes/
-├── generate.py                           # POST /api/v1/generate + GET /tasks/{id}
+├── interact.py                           # POST /api/v1/interact（统一交互入口）
+├── generate.py                           # GET /tasks/{id} 任务状态查询
 ├── review.py                             # GET /review/pending + POST /review/{id}/{stage}
 └── evaluate.py                           # POST /api/v1/evaluate
 
@@ -399,7 +400,7 @@ orchestrator.add_edge("final_assembly", END)
 
 ```
 API 请求链路:
-  POST /api/v1/generate
+  POST /api/v1/interact（complex_generation 意图）
     → Auth 中间件验证 JWT
     → PermissionChecker 检查权限
     → 脱敏引擎脱敏 PRD 中的敏感信息
@@ -488,8 +489,8 @@ async def test_full_pipeline_with_mock_llm():
 async def test_api_generate_endpoint():
     """验证 API 接口。"""
     client = TestClient(app)
-    resp = await client.post("/api/v1/generate", json={
-        "prd_content": sample_prd,
+    resp = await client.post("/api/v1/interact", json={
+        "message": sample_prd,
         "prd_type": "md",
     })
     assert resp.status_code == 200
@@ -544,9 +545,9 @@ pytest tests/e2e/test_full_flow.py -v --slow
 uvicorn app.api.main:app --port 8000 &
 
 # 3a. 提交生成任务
-curl -s -X POST http://localhost:8000/api/v1/generate \
+curl -s -X POST http://localhost:8000/api/v1/interact \
   -H "Content-Type: application/json" \
-  -d '{"prd_content": "# 测试\n## 功能\n1. 登录", "prd_type": "md"}'
+  -d '{"message": "# 测试\n## 功能\n1. 登录", "prd_type": "md"}'
 # 期望: {"task_id": "...", "status": "running"}
 
 # 3b. 查询任务状态

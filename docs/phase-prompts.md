@@ -28,7 +28,7 @@ flowchart LR
 | **B** | [`docs/block-B-knowledge-layer.md`](block-B-knowledge-layer.md) | 3-5 | neo4j | 文档→图谱构建 + **实体融合/消歧** + **Claims提取** + **Embedding** + **版本控制** + **老化策略** + Local/Global Search |
 | **C** | [`docs/block-C-agent-pipeline.md`](block-C-agent-pipeline.md) | 5-7 | 0 | 4个Agent Layer + **多语言支持** + **质量评分** + **工作量估算** + **干系人分析** + **成本估算** + **时间线** + **技能缺口** + **风险量化** + **模板系统** + **多格式导出** + **评分校准** |
 | **D** | [`docs/block-D-orchestration.md`](block-D-orchestration.md) | 3-5 | 0 | Orchestrator 串联 + API 路由 + 端到端 |
-| **E** | [`docs/block-E-enterprise.md`](block-E-enterprise.md) | 3-5 | jaeger+prom+minio+redis | LLM Gateway增强 + 观测性 + 会话历史 + 文档管理 + **CSV双通路索引** + **Web爬虫** + **CLIP多模态** + **协作文档** + **批量任务** + **搜索回退** + 集成生态 |
+| **E** | [`docs/block-E-enterprise.md`](block-E-enterprise.md) | 3-5 | jaeger+prom+minio+redis | LLM Gateway增强 + 观测性 + 会话历史 + 文档管理 + **Web爬虫** + **批量任务** + **统一交互入口** + **URL 文档分析** + **多格式自动入图** + 集成生态（CSV双通路索引/CLIP多模态/协作文档/搜索回退 已按整改方案删除） |
 
 ---
 

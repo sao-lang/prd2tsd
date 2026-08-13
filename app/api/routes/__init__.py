@@ -13,9 +13,7 @@ __all__ = [
     "documents_routes",
     "web_indexing_routes",
     "integrations_routes",
-    "multimodal_routes",
-    "collaboration_routes",
     "batch_routes",
+    "interact_routes",
     "stream_generate_routes",
-    "stream_qna_routes",
 ]

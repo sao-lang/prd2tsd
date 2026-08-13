@@ -1,5 +1,36 @@
 """API Schemas。"""
 
+from app.api.schemas.batch import (
+    BatchRegenerateRequest,
+    BatchReindexRequest,
+    TaskStatusResponse,
+)
+from app.api.schemas.document import (
+    DocumentListResponse,
+    DocumentResponse,
+    DocumentStatsResponse,
+    PreviewResponse,
+)
+from app.api.schemas.document import (
+    UploadResponse as DocumentUploadResponse,
+)
+from app.api.schemas.integration import (
+    CrawlRequest,
+    CrawlResult,
+    WebFetchRequest,
+    WebFetchResult,
+    WebhookRegisterRequest,
+    WebhookTestResponse,
+)
+from app.api.schemas.interact import (
+    InteractRequest,
+    InteractResponse,
+)
+from app.api.schemas.model_config import (
+    ModelConfigResponse,
+    ModelConfigUpdateRequest,
+    RoutingRuleUpdateRequest,
+)
 from app.api.schemas.request import (
     LoginRequest,
     MemberAddRequest,
@@ -14,61 +45,20 @@ from app.api.schemas.response import (
     UserInfoResponse,
     WorkspaceResponse,
 )
-
-from app.api.schemas.document import (
-    CsvImportResponse,
-    DocumentListResponse,
-    DocumentResponse,
-    DocumentStatsResponse,
-    PreviewResponse,
-    UploadResponse as DocumentUploadResponse,
-)
 from app.api.schemas.session import (
     ExportResponse,
     MessageCreateRequest,
     MessageResponse,
     PageResultResponse,
-    SearchResultItem as SessionSearchResultItem,
     SessionCreateRequest,
     SessionResponse,
     SessionUpdateRequest,
 )
+from app.api.schemas.session import (
+    SearchResultItem as SessionSearchResultItem,
+)
 from app.api.schemas.streaming import (
-    StreamGenerateRequest,
-    StreamQnARequest,
     StreamReviewRequest,
-)
-
-from app.api.schemas.batch import (
-    BatchReindexRequest,
-    BatchRegenerateRequest,
-    TaskStatusResponse,
-)
-from app.api.schemas.collaboration import (
-    ChangeLogEntry,
-    CommentCreateRequest,
-    CommentResponse,
-    SuggestionCreateRequest,
-    SuggestionResponse,
-)
-from app.api.schemas.integration import (
-    CrawlRequest,
-    CrawlResult,
-    SearchFallbackResult,
-    WebFetchRequest,
-    WebFetchResult,
-    WebhookRegisterRequest,
-    WebhookTestResponse,
-)
-from app.api.schemas.model_config import (
-    ModelConfigResponse,
-    ModelConfigUpdateRequest,
-    RoutingRuleUpdateRequest,
-)
-from app.api.schemas.multimodal import (
-    ImageIndexResponse,
-    ImageSearchResult,
-    SearchResultList,
 )
 
 __all__ = [
@@ -95,17 +85,13 @@ __all__ = [
     "DocumentStatsResponse",
     "DocumentUploadResponse",
     "PreviewResponse",
-    "CsvImportResponse",
+    # interact
+    "InteractRequest",
+    "InteractResponse",
     # batch
     "BatchReindexRequest",
     "BatchRegenerateRequest",
     "TaskStatusResponse",
-    # collaboration
-    "CommentCreateRequest",
-    "CommentResponse",
-    "SuggestionCreateRequest",
-    "SuggestionResponse",
-    "ChangeLogEntry",
     # integration
     "WebhookRegisterRequest",
     "WebhookTestResponse",
@@ -113,17 +99,10 @@ __all__ = [
     "WebFetchResult",
     "CrawlRequest",
     "CrawlResult",
-    "SearchFallbackResult",
     # model_config
     "ModelConfigResponse",
     "ModelConfigUpdateRequest",
     "RoutingRuleUpdateRequest",
-    # multimodal
-    "ImageSearchResult",
-    "ImageIndexResponse",
-    "SearchResultList",
     # streaming
-    "StreamGenerateRequest",
-    "StreamQnARequest",
     "StreamReviewRequest",
 ]

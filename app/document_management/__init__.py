@@ -1,6 +1,5 @@
-"""文档管理模块 — 上传/去重/预览/搜索/CSV 双通路索引。"""
+"""文档管理模块 — 上传/去重/预览/搜索。"""
 
-from app.document_management.csv_loader import CsvDualPathIndexer
 from app.document_management.deduplication import DocumentDeduplicator
 from app.document_management.models import (
     DocumentCreate,
@@ -25,5 +24,4 @@ __all__ = [
     "DocumentPreviewGenerator",
     "DocumentSearchService",
     "DocumentManagementService",
-    "CsvDualPathIndexer",
 ]

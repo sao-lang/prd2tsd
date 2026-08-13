@@ -2854,7 +2854,7 @@ class TracingMiddleware:
 
 ### 13.1 问题分析
 
-当前所有用户输入走同一入口 `POST /api/v1/generate`，无论什么问题都走完整 4 层 Orchestrator：
+当前（整改前）所有用户输入走同一入口 `POST /api/v1/generate`（整改后已被 `/api/v1/interact` 统一入口替代），无论什么问题都走完整 4 层 Orchestrator：
 
 ```
 用户输入 "微服务有哪些组件？"   → Orchestrator 全链路（Analysis→Planning→Generation→Evaluation）
@@ -2864,7 +2864,7 @@ class TracingMiddleware:
 问题：
 - ❌ 简单问答（查文档、问概念）也走全链路，浪费 Token 和时间（等 10s+ 才能回答一个简单问题）
 - ❌ 没有意图分类器，无法自动区分"对话"、"知识查询"、"复杂生成"
-- ❌ 客户端必须手动选择端点（`/generate` vs `/qna/stream`），用户体验差
+- ❌ 客户端必须手动选择端点（`/generate` vs `/qna/stream`，整改后已收敛为单一 `/interact`），用户体验差
 
 ### 13.2 设计方案
 
@@ -2873,7 +2873,7 @@ class TracingMiddleware:
 ```
 客户端
   │
-  POST /api/v1/chat  ← 唯一统一入口
+  POST /api/v1/interact  ← 唯一统一入口（整改后实现）
   │
   ▼
 ┌─────────────────────────────────────┐
@@ -3141,11 +3141,11 @@ class ChatRequest(BaseModel):
     workspace_id: str = ""
 
 
-@router.post("/chat")
-async def chat(req: ChatRequest, ...):
+@router.post("/interact")
+async def interact(req: InteractRequest, ...):
     """统一入口 — 自动分流到对应处理器。
 
-    不做：用户手动选 /generate 还是 /qna/stream。
+    不做：用户手动选端点（整改后统一为 /interact，由意图识别自动分流）。
     做：服务端自动判断意图，路由到正确路径。
     """
     # 1. 加载会话历史（如果有）
@@ -3241,16 +3241,15 @@ app/orchestrator/
 └── ...
 
 app/api/routes/
-├── chat.py                    # 🆕 POST /api/v1/chat（统一入口）
-├── stream_generate.py         # （已有）保留，/chat 内部调用
-├── stream_qna.py              # （已有）保留，/chat 内部调用
+├── interact.py               # 🆕 POST /api/v1/interact（统一入口）
+├── stream_generate.py        # （已有）保留：/tasks/{id}/events + /tasks/{id}/stream-review
 └── ...
 ```
 
 ### 13.4 与 SSE 的关系
 
 ```
-POST /api/v1/chat
+POST /api/v1/interact
   → IntentClassifier.classify()
     ├─ chat           → ChatStreamer（§17 新增）
     ├─ knowledge_qa   → QAStreamer（§17.2.7）
@@ -3258,7 +3257,7 @@ POST /api/v1/chat
     └─ clarification  → ClarificationStreamer（§17 新增）
 ```
 
-意图分类器是 **SSE 流式架构的上游调度器**，客户端只需调用 `POST /api/v1/chat`，不需要知道后端路由逻辑。
+意图分类器是 **SSE 流式架构的上游调度器**，客户端只需调用 `POST /api/v1/interact`，不需要知道后端路由逻辑。
 
 ### 13.5 验收标准
 
@@ -3270,7 +3269,7 @@ POST /api/v1/chat
 | LLM 分类兜底 | 规则不确定时 → 调 LLM 分类（置信度 > 规则结果时采用） |
 | 会话内意图切换 | 先问"有什么文档" → 再说"写成方案" → 正确切换路径 |
 | 规则+LLM 双保险 | LLM 不可用时 → 纯规则分类不崩溃 |
-| 统一入口可用 | `POST /api/v1/chat` 返回 SSE 流，客户端无需选择端点 |
+| 统一入口可用 | `POST /api/v1/interact` 返回 SSE 流，客户端无需选择端点 |
 
 ---
 
@@ -3279,7 +3278,7 @@ POST /api/v1/chat
 当前流程是全异步任务 + 轮询：
 
 ```
-POST /api/v1/generate → task_id → 等 30s+ → GET /tasks/{id} → 完整结果
+POST /api/v1/interact（complex_generation）→ task_id → 等 30s+ → GET /tasks/{id} → 完整结果
 ```
 
 问题：
@@ -3800,7 +3799,7 @@ class QAStreamer(BaseStreamer):
 ```
 客户端                              服务端
   │                                   │
-  │  POST /api/v1/generate             │
+  │  POST /api/v1/interact（complex_generation）               │
   │  ← {"task_id": "task_001"}         │
   │                                   │
   │  GET /api/v1/tasks/task_001/stream │

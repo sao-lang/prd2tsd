@@ -21,6 +21,7 @@ class IntentType(StrEnum):
     KNOWLEDGE_QA = "knowledge_qa"  # 知识查询（查文档、问概念、搜代码）
     COMPLEX_GENERATION = "complex_generation"  # 复杂生成（PRD→TSD、技术方案）
     CLARIFICATION = "clarification"  # 需要更多信息（歧义输入）
+    DOCUMENT_ANALYSIS = "document_analysis"  # 文档分析（对 doc_id / url 总结、解析、分析）
 
 
 @dataclass
@@ -109,6 +110,26 @@ class IntentClassifier:
         "PRD",
     ]
 
+    DOCUMENT_ANALYSIS_PATTERNS = [
+        "分析这个",
+        "分析这份",
+        "分析文档",
+        "分析文件",
+        "分析网址",
+        "分析 url",
+        "解析文档",
+        "解析这个",
+        "解读这个",
+        "解读这份",
+        "总结这份文档",
+        "总结这个文档",
+        "这份文档讲了什么",
+        "这个文档说了什么",
+        "analyze this document",
+        "analyze the document",
+        "summarize this document",
+    ]
+
     async def classify(
         self,
         user_input: str,
@@ -152,6 +173,16 @@ class IntentClassifier:
                     confidence=0.85,
                     sub_intent="pattern_generation",
                     explanation=f"匹配生成关键词: {pattern}",
+                )
+
+        # 检查文档分析模式（次高优先级）
+        for pattern in self.DOCUMENT_ANALYSIS_PATTERNS:
+            if pattern in input_lower:
+                return IntentResult(
+                    intent=IntentType.DOCUMENT_ANALYSIS,
+                    confidence=0.85,
+                    sub_intent="pattern_document_analysis",
+                    explanation=f"匹配文档分析关键词: {pattern}",
                 )
 
         # 检查知识查询模式
@@ -218,6 +249,7 @@ class IntentClassifier:
 2. knowledge_qa — 知识查询（查找文档、问概念、技术问题）
 3. complex_generation — 复杂生成（生成文档、设计方案、技术方案）
 4. clarification — 需要澄清（输入模糊、歧义）
+5. document_analysis — 文档分析（对指定文档/URL 进行总结、解析、分析）
 
 返回格式：
 {{"intent": "类型名", "confidence": 0.0~1.0, "reason": "判断理由"}}

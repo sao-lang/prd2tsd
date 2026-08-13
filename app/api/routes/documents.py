@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db_session
 from app.api.schemas.document import (
-    CsvImportResponse,
     DocumentListResponse,
     DocumentResponse,
     DocumentStatsResponse,
@@ -18,7 +17,6 @@ from app.api.schemas.document import (
 from app.auth.deps import get_current_user
 from app.auth.middleware import _SCOPE_WS_ID as _SCOPE_WORKSPACE_ID
 from app.core.logger import get_logger
-from app.document_management.csv_loader import CsvDualPathIndexer
 from app.document_management.service import DocumentManagementService, document_service
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
@@ -235,50 +233,3 @@ async def reindex_document(
     if not success:
         raise HTTPException(status_code=404, detail="文档不存在")
     return {"status": "reindex_triggered", "document_id": document_id}
-
-
-# ── CSV 导入专用端点 ──
-
-
-@router.post("/csv-import", response_model=CsvImportResponse, status_code=201)
-async def import_csv(
-    request: Request,
-    file: UploadFile,
-    user_id: str = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session),
-    svc: DocumentManagementService = Depends(lambda: document_service),
-) -> CsvImportResponse:
-    """导入 CSV 文件（含双通路索引）。
-
-    Args:
-        request: FastAPI 请求。
-        file: CSV 文件。
-        user_id: 当前用户 ID。
-        db: 数据库会话。
-        svc: 文档管理服务。
-
-    Returns:
-        CSV 导入结果。
-    """
-    ws_id = _get_workspace_id(request)
-    content = await file.read()
-    filename = file.filename or "import.csv"
-
-    try:
-        result = await svc.upload(db, ws_id, user_id, content, filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # CSV 索引结果
-    indexer = CsvDualPathIndexer()
-    index_result = await indexer.process(content, filename, result.document.id)
-
-    return CsvImportResponse(
-        document_id=result.document.id,
-        filename=filename,
-        row_count=index_result["row_count"],
-        column_count=index_result["column_count"],
-        columns=index_result["column_profiles"],
-        foreign_keys=index_result["foreign_keys"],
-        text_unit_count=len(index_result["text_units"]),
-    )

@@ -179,7 +179,15 @@ class DocumentRepository:
             更新后的文档。
         """
         values: dict[str, Any] = {}
-        for field in ("title", "description", "tags", "processing_status", "processing_error"):
+        for field in (
+            "title",
+            "description",
+            "tags",
+            "processing_status",
+            "processing_error",
+            "file_type",
+            "source_url",
+        ):
             val = getattr(data, field, None)
             if val is not None:
                 values[field] = val

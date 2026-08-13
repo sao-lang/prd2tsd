@@ -50,11 +50,3 @@ class CrawlResult(BaseModel):
     title: str = ""
     content: str = ""
     error: str | None = None
-
-
-class SearchFallbackResult(BaseModel):
-    """搜索回退结果。"""
-
-    query: str
-    fallback_triggered: bool
-    results: list[dict] = []
