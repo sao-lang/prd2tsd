@@ -25,6 +25,8 @@ dependencies = [
     "bcrypt>=4.0",
     # LLM Gateway
     "openai>=1.0",
+    # Evaluation (Block H)
+    "ragas==0.4.3",
     # Infrastructure Clients
     "redis[hiredis]>=5.0",
     "minio>=7.0",
@@ -42,15 +44,15 @@ dependencies = [
     "prometheus-client>=0.19.0",
     # Task Queue
     "celery>=5.3.0",
-    # Multimodal
+    # Reranker/Encoder models
     "transformers>=4.40.0",
     "cohere>=5.0",
-    "Pillow>=10.0",
     # Document Export
     "markdown>=3.5",
     "weasyprint>=60.0",
     "fpdf2>=2.7",
     "python-docx>=1.1",
+    "pypdf>=4.0",
     # YAML Config
     "PyYAML>=6.0",
 ]

@@ -1,0 +1,54 @@
+{
+  "version": "1.0",
+  "description": "Agent 复杂生成评测任务集（端到端 PRD→TSD）",
+  "samples": [
+    {
+      "id": "agent_001",
+      "task": "根据给定 PRD 生成完整技术方案",
+      "prd_input": "构建用户服务系统：技术栈使用 Spring Boot 3.2 + PostgreSQL 15 + Redis 7；微服务架构，分为用户/认证/通知三个服务；服务间通过 RabbitMQ 异步通信；Docker + Kubernetes 部署；Prometheus + Grafana 监控；JWT 认证（Token 15 分钟）；密码 bcrypt 加密；支持 GDPR 合规。",
+      "expected_key_points": ["架构选型", "数据库设计", "API 设计", "部署方案"],
+      "rubric": {
+        "p0_coverage": "是否覆盖全部 P0 需求（是/否）",
+        "implementability": "方案是否可落地（0-10）",
+        "consistency": "各章节是否自洽（0-10）"
+      },
+      "expected_max_iterations": 2
+    },
+    {
+      "id": "agent_002",
+      "task": "根据电商订单 PRD 生成技术方案",
+      "prd_input": "构建电商订单系统：订单服务、库存服务、支付服务微服务化；使用 PostgreSQL 存订单、Redis 缓存商品库存、RabbitMQ 处理订单事件；需支持订单超时自动取消（延迟消息）；API 需幂等设计；监控告警需要覆盖支付失败场景。",
+      "expected_key_points": ["架构选型", "数据模型", "延迟消息方案", "幂等与容错"],
+      "rubric": {
+        "p0_coverage": "是否覆盖全部 P0 需求（是/否）",
+        "implementability": "方案是否可落地（0-10）",
+        "consistency": "各章节是否自洽（0-10）"
+      },
+      "expected_max_iterations": 2
+    },
+    {
+      "id": "agent_003",
+      "task": "根据内容平台 PRD 生成技术方案",
+      "prd_input": "构建内容推荐平台：用户生成内容（UGC）+ 标签系统；使用向量检索做相似内容推荐；Elasticsearch 做全文搜索；Neo4j 存内容关系图谱；支持热门内容榜单实时计算；内容审核需要人工 + 自动两层。",
+      "expected_key_points": ["架构选型", "向量检索方案", "实时榜单方案", "审核流程"],
+      "rubric": {
+        "p0_coverage": "是否覆盖全部 P0 需求（是/否）",
+        "implementability": "方案是否可落地（0-10）",
+        "consistency": "各章节是否自洽（0-10）"
+      },
+      "expected_max_iterations": 2
+    },
+    {
+      "id": "agent_004",
+      "task": "根据内部工具 PRD 生成技术方案",
+      "prd_input": "构建内部数据看板系统：多数据源接入（PostgreSQL/MySQL/CSV）；定时任务 ETL；图表可视化；权限分角色（管理员/普通用户）；导出报表；系统需可观测（日志/指标/告警）。",
+      "expected_key_points": ["架构选型", "ETL 方案", "权限模型", "可观测性"],
+      "rubric": {
+        "p0_coverage": "是否覆盖全部 P0 需求（是/否）",
+        "implementability": "方案是否可落地（0-10）",
+        "consistency": "各章节是否自洽（0-10）"
+      },
+      "expected_max_iterations": 2
+    }
+  ]
+}

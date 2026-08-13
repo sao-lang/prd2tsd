@@ -25,6 +25,11 @@ htmlcov/
 *.db
 *.sqlite
 
+# Evaluation reports
+# 评测报告为运行产物，不入库（保留 .gitkeep）
+tests/eval/reports/*
+!tests/eval/reports/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

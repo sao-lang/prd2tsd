@@ -161,6 +161,37 @@ pytest tests/integration/ -v
 python scripts/e2e_test.py
 ```
 
+## 评测体系（Evaluation）
+
+提供 RAG 检索/回答质量评测（基于 ragas）与 Agent 端到端能力评测，形成
+"评测 → 定位短板 → 优化 → 再评测"闭环。
+
+### RAG 评测
+
+```bash
+# 基础评测（黄金数据集 tests/eval/datasets/rag_qa.json）
+python scripts/run_rag_eval.py
+
+# 对比实验（覆盖检索配置）
+python scripts/run_rag_eval.py --variant '{"top_k": 5, "reflection": true}'
+
+# 反思（ReflectionJudge）A/B 对比
+python scripts/run_rag_eval.py --ab-reflection
+```
+
+指标：`context_precision` / `context_recall`（检索质量）+ `faithfulness` / `answer_relevancy`（回答质量）。
+报告输出到 `tests/eval/reports/`。
+
+### Agent 评测
+
+```bash
+python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
+```
+
+指标：任务完成率、平均迭代轮数、人工介入率、rubric 化 judge 均分。
+
+> **注意**：真实评测需要有效的 LLM API Key（`.env` 中 `MODEL_CONFIG__JUDGE__OPENAI__*`）。
+
 ## API 接口
 
 | 方法 | 路径 | 说明 | 认证 |
