@@ -98,7 +98,8 @@ class RetrievalContext(BaseModel):
     results: list[ScoredDoc] = Field(default_factory=list)
     matched_entities: list[KGEntity] = Field(default_factory=list)
     text_unit_evidence: list[str] = Field(default_factory=list)
-    community_summary: str = ""
+    # Global Search 宏观总结（社区检测已简化，字段由 community_summary 更名）
+    global_summary: str = ""
     total_tokens: int = 0
 
 
@@ -120,15 +121,3 @@ class Chunk(BaseModel):
     section_path: str = ""
     index: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class CommunityReport(BaseModel):
-    """社区报告 — Global Search 的基础。"""
-
-    id: str = ""
-    community_id: str = ""
-    level: int = 1
-    summary: str = ""
-    entities: list[str] = Field(default_factory=list)
-    key_findings: list[str] = Field(default_factory=list)
-    workspace_id: str = ""

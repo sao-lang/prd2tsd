@@ -76,7 +76,7 @@
 │  缓存/队列:        Redis 7.x（Celery 任务队列）                   │
 │  对象存储:         MinIO（文档/图片存储）                         │
 │  Embedding:       BAAI/bge-large-zh-v1.5 (1024d)                │
-│  多模态:           CLIP 双塔模型（768d 视觉+文本）                │
+│  文档入图:         multi_format_loader（pdf/csv/docx/md/图片）    │
 │  追踪:            OpenTelemetry → Jaeger                        │
 │  指标:            Prometheus → Grafana                           │
 │  LLM 观测:        LangFuse                                        │
@@ -104,8 +104,8 @@
 │              文档摄取 → 多粒度分块 → 实体提取 →               │
 │              Neo4j 图存储 + PGVector 向量存储                 │
 ├──────────────────────────────────────────────────────────────┤
-│  企业增强:    SSE流式 │ 会话历史 │ 文档管理 │ CSV/Web/多模态 │
-│              协作评论 │ 批量任务 │ 搜索回退 │ Webhook通知    │
+│  企业增强:    SSE流式 │ 会话历史 │ 文档管理 │ 统一交互入口  │
+│              URL文档 │ 多格式入图 │ 批量任务 │ Webhook通知  │
 ├──────────────────────────────────────────────────────────────┤
 │  生产加固:    工具系统 │ 护栏拦截 │ 熔断器 │ Failover链      │
 │              记忆增强 │ Prompt管理 │ 行为回放 │ 结构化输出   │
@@ -331,7 +331,6 @@ model_types = {
     "embedding":  [text-embedding-3-small, BAAI/bge-large-zh-v1.5, ...],
     "rerank":     [cohere-rerank-v3, ...],
     "judge":      [GPT-4o-mini, ...],        # 评测用低成本模型
-    "vision":     [CLIP, GPT-4V, ...],
 }
 ```
 
@@ -427,8 +426,7 @@ L4 (绝密):    加密密钥、支付信息
 DocumentLoader.load(file_path)
     │  ├─ .md  → 直接读取
     │  ├─ .pdf → docling 解析
-    │  ├─ .docx → python-docx 解析
-    │  └─ .csv → CsvDualPathIndexer（行级+列级双通路）
+    │  └─ .docx → python-docx 解析
     │
     ▼
 MultiGranularityChunker.chunk(text, level="paragraph")
@@ -532,18 +530,10 @@ BuildStats { entities_created, entities_merged, chunks_indexed, duration_ms }
     │  └─ ...
     │
     ▼
-2. 社区检测
-    │  在 Neo4j 中运行社区检测算法
-    │  识别紧密关联的实体群体
-    │
-    ▼
-3. 社区报告生成（LLM）
-    │  每个社区 → LLM 摘要生成一段报告
-    │  "用户服务社区使用 PostgreSQL + Redis，采用微服务架构..."
-    │
-    ▼
-4. LLM 聚合
-    │  将所有社区报告聚合为宏观概括
+2. LLM 聚合
+    │  将按类型聚合的实体作为输入
+    │  "TechStack: [PostgreSQL, Redis, Neo4j...]\nComponent: [UserService, OrderService...]"
+    │  生成宏观架构概述
     │
     ▼
 返回 RetrievalContext（宏观层面的架构概述）
@@ -609,7 +599,7 @@ app/knowledge_layer/
     ├── rewriter.py            # Query Rewriter
     ├── enricher.py            # Query Enricher
     ├── local_search.py        # Local Search 引擎（Neo4j + PGVector）
-    ├── global_search.py       # Global Search 引擎（社区报告 + LLM 聚合）
+    ├── global_search.py       # Global Search 引擎（实体聚合 + LLM 宏观总结）
     ├── reflection.py          # ReflectionJudge（检索反思裁判）
     ├── fusion.py              # RRF 倒数排名融合
     ├── reranker.py            # Cross-encoder 精排
@@ -1240,12 +1230,9 @@ Session.thread_id = LangGraph checkpoint thread_id
     ├─ SHA-256 哈希 → DocumentDeduplicator 去重检查
     ├─ 存储到 MinIO（对象存储）
     ├─ 写入 PostgreSQL 文档元数据
-    ├─ CSV 文件 → CsvDualPathIndexer（行级+列级双通路）
-    │     ├─ 行级: 每行 → 自然语言句子 → PGVector
-    │     ├─ 列级: 列名+列描述 → 语义向量 → PGVector
-    │     ├─ 列类型自动推断（string/int/float/enum/date）
-    │     └─ 外键自动检测（列名 _id/_key 后缀启发）
-    └─ 触发知识图谱增量构建
+    └─ 多格式自动入图（pdf/csv/docx/md/txt/png/jpg）:
+          multi_format_loader 提取文本 → KnowledgeGraphBuilder.build_from_bytes
+          → 实体提取 → Neo4j + PGVector（Celery 异步，processing_status 跟踪）
 ```
 
 ### 6.4 Web 资源索引
@@ -1271,39 +1258,26 @@ URL 抓取流程:
     └─ 仅变更页面触发重新索引
 ```
 
-### 6.5 多模态检索（CLIP 双塔）
+### 6.5 统一交互入口（POST /api/v1/interact）
 
 ```
-图片上传:
-  ImageChunkStore.upload(image)
-    ├─ CLIP 视觉 Encoder → visual_embedding (768d)
-    ├─ CLIP 文本 Encoder → text_embedding (768d)（图片描述/alt text）
-    └─ 存储到 PGVector（visual_emb + text_emb 同一空间）
-
-检索:
-  以图搜图: visual_embedding → PGVector 近似最近邻
-  文搜图: query → CLIP 文本 Encoder → PGVector 近似最近邻
-  图文混合: visual + text → RRF 融合
+交互分发:
+  IntentClassifier 意图识别（URL/doc_id 强信号 + 规则 + LLM 两级）
+    ├─ chat / knowledge_qa / clarification → 主编排图（classify 节点幂等跳过）
+    ├─ complex_generation → 异步任务（同步返回 task_id / 流式 SSE task.*）
+    └─ document_analysis → 文档分析（URL 抓取/已上传文档）
+流式模式: stream=true → text/event-stream（复用 E12 EventBus）
 ```
 
-### 6.6 协作文档
+### 6.6 URL 文档分析（SSRF 防护 + 入库）
 
 ```
-CollaborationService:
-  ├─ 行内评论:
-  │     CommentService.add_comment(document_id, user_id, data)
-  │       ├─ 选中段落 → 添加评论 → @提及通知
-  │       └─ resolve_comment / reply_comment
-  │
-  ├─ 建议修改:
-  │     SuggestionService.create(document_id, user_id, data)
-  │       ├─ 原文 + 建议 + 理由 → owner 审批
-  │       └─ approve / reject
-  │
-  └─ 变更历史:
-        ChangeLogService.record(document_id, user_id, action, detail)
-          ├─ 版本对比
-          └─ 回滚到历史版本
+URL 文档流程:
+  url_security.validate_url (协议白名单 + 内网拦截 + DNS 二次检查)
+    → WebLoader.fetch → Markdown
+    → UrlDocumentService.ingest → uploaded_documents(file_type=url + source_url)
+    → 入库检索（可按文件名/标题搜索）
+    → generate=true 一键生成 TSD（转 complex_generation）
 ```
 
 ### 6.7 批量处理与定时任务（Celery Beat）
@@ -1323,17 +1297,19 @@ BEAT_SCHEDULE = {
         "schedule": 7200,   # 每 2 小时
     },
 }
+# 文档入图任务（上传后异步触发）:
+#   index_document_to_kg(document_id)
 ```
 
-### 6.8 搜索引擎回退
+### 6.8 多格式自动入图
 
 ```
-本地知识图谱检索命中不足时:
-  SearchFallback.fallback(query)
-    ├─ LLM 生成 3-5 个搜索关键词
-    ├─ 调用外部搜索 API（如 Bing/Google）
-    ├─ 结果实时索引到知识图谱
-    └─ 返回结果给用户
+上传即入图（pdf/csv/docx/md/txt/png/jpg）:
+  service.upload()
+    → multi_format_loader.extract_text(bytes, filename)
+    → KnowledgeGraphBuilder.build_from_bytes(content, filename, workspace_id)
+    → build_from_text 链路（分块→实体提取→消歧→Neo4j→PGVector）
+状态跟踪: pending → processing → indexed / failed（processing_error）
 ```
 
 ---
@@ -1732,10 +1708,10 @@ FastAPI lifespan 事件:
 ### Step 1: 用户请求 → 意图分类
 
 ```
-POST /api/v1/chat
+POST /api/v1/interact
   Body: { "message": "帮我设计一个电商平台的技术方案，要求支持高并发..." }
 
-  app/api/routes/chat.py :: chat()
+  app/api/routes/interact.py :: interact()
     │
     ├─ Step 1.1: IntentClassifier.classify(user_input)
     │     │
@@ -1887,7 +1863,7 @@ Node: knowledge_retrieval (KnowledgeRetrievalNode)
         ├─ PGVector: "电商平台" → 向量检索 → [ScoredDoc(微服务架构...), ...]
         └─ Neo4j: MATCH (e:KGEntity) WHERE e.name CONTAINS '电商'
                   → [KGEntity(电商平台), KGEntity(高并发), ...]
-      GlobalSearch: 实体类型分组 → 社区报告 → LLM 聚合
+      GlobalSearch: 实体类型分组 → LLM 宏观总结
       RRFFusion: k=60, 融合 Local + Global 结果
       ReflectionJudge:
         query="电商平台 技术方案 高并发"
@@ -2290,7 +2266,7 @@ TaskManager._execute_task():
 ### 10.1 chat 路径（闲聊/问候）
 
 ```
-POST /api/v1/chat { message: "你好，你是谁？" }
+POST /api/v1/interact { message: "你好，你是谁？" }
   │
   ├─ IntentClassifier → intent = "chat", confidence = 1.0
   │
@@ -2330,7 +2306,7 @@ POST /api/v1/chat { message: "你好，你是谁？" }
 ### 10.2 knowledge_qa 路径（知识库查询）
 
 ```
-POST /api/v1/chat { message: "这个项目中有哪些关于用户服务的架构设计？" }
+POST /api/v1/interact { message: "这个项目中有哪些关于用户服务的架构设计？" }
   │
   ├─ IntentClassifier → intent = "knowledge_qa"
   │   匹配: "哪些" + "架构设计" → KNOWLEDGE_PATTERNS
@@ -2505,7 +2481,7 @@ POST /api/v1/chat { message: "这个项目中有哪些关于用户服务的架�
 │       └─ 返回 SessionOut { thread_id: "xxx-yyy-zzz", ... }  │
 │                                                             │
 │  2. 发送消息（绑定会话）                                      │
-│     POST /api/v1/chat                                        │
+│     POST /api/v1/interact                                   │
 │       Body: { message: "...", session_id: "session-001" }   │
 │       → 从 sessions 表取出 thread_id = "xxx-yyy-zzz"         │
 │       → config = {"configurable": {"thread_id": thread_id}} │
@@ -2566,7 +2542,7 @@ POST /api/v1/chat { message: "这个项目中有哪些关于用户服务的架�
 │       └─ Enterprise: 不自动清理                               │
 │                                                             │
 │  7. 续接会话                                                 │
-│     POST /api/v1/chat                                        │
+│     POST /api/v1/interact                                   │
 │       Body: { message: "继续上次讨论...", session_id: "..." } │
 │       → 读取 session.thread_id                                │
 │       → config = {"configurable": {"thread_id": thread_id}}  │
@@ -3369,9 +3345,7 @@ class EvaluationReportDetail(BaseModel):
 
 | 方法 | 路径 | 功能 |
 |------|------|------|
-| POST | /api/v1/chat | 统一入口（意图分类 + 路由） |
-| POST | /api/v1/generate | 提交 PRD 生成任务（不通过 chat 入口） |
-| POST | /api/v1/generate/stream | 一键提交 + SSE 流式推送 |
+| POST | /api/v1/interact | 统一入口（意图分类 + 路由，对话/提问/文档分析/生成） |
 | GET | /api/v1/tasks/{task_id} | 查询任务状态 |
 | GET | /api/v1/tasks/{task_id}/events | SSE 事件流订阅 |
 | POST | /api/v1/tasks/{task_id}/stream-review | 审核 + 流式恢复 |
@@ -3428,16 +3402,11 @@ class EvaluationReportDetail(BaseModel):
 
 | 方法 | 路径 | 功能 | 所属模块 |
 |------|------|------|---------|
-| POST | /api/v1/qna/stream | 流式 Q&A | streaming |
+| POST | /api/v1/interact | 统一交互入口（意图分流） | interact |
+| GET | /api/v1/tasks/{task_id} | 任务状态查询 | generate |
+| GET | /api/v1/tasks/{task_id}/events | 任务事件流（SSE） | streaming |
 | POST | /api/v1/web-index/url | 索引单 URL | web_indexing |
 | POST | /api/v1/web-index/crawl | 启动爬虫 | web_indexing |
-| POST | /api/v1/multimodal/search | 多模态搜索 | multimodal |
-| POST | /api/v1/multimodal/upload | 上传图片 | multimodal |
-| POST | /api/v1/collaboration/comments | 添加评论 | collaboration |
-| GET | /api/v1/collaboration/comments/{doc_id} | 获取评论 | collaboration |
-| POST | /api/v1/collaboration/suggestions | 创建建议 | collaboration |
-| POST | /api/v1/collaboration/suggestions/{id}/approve | 审批建议 | collaboration |
-| GET | /api/v1/collaboration/history/{doc_id} | 变更历史 | collaboration |
 | POST | /api/v1/batch/trigger/{task_name} | 手动触发定时任务 | batch |
 | GET | /api/v1/batch/schedule | 查看定时任务配置 | batch |
 
@@ -3812,8 +3781,7 @@ async def test_full_pipeline():
 | **迭代自评** | ✅ 10维评分 + 校准 + 自动回退 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 |
 | **多模型路由** | ✅ Gateway 统一管理多Provider | ⚠️ 单一 Provider | ⚠️ 单一 | ⚠️ 单一 | ⚠️ 单一 |
 | **文档导出** | ✅ Markdown/PDF/DOCX/HTML | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 |
-| **协作文档** | ✅ 评论/建议修改/变更历史 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 |
-| **多模态检索** | ✅ CLIP 双塔以图搜图 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 |
+| **统一交互入口** | ✅ 对话/提问/文档分析/生成单一入口 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 |
 
 ---
 
@@ -4570,11 +4538,6 @@ MODEL_CONFIG__JUDGE__OPENAI__API_KEY=sk-your-openai-api-key
 MODEL_CONFIG__JUDGE__OPENAI__BASE_URL=https://api.openai.com/v1
 MODEL_CONFIG__JUDGE__OPENAI__DEFAULT_MODEL=gpt-4o-mini
 
-# ===== Vision (多模态) =====
-MODEL_CONFIG__VISION__OPENAI__API_KEY=sk-your-openai-api-key
-MODEL_CONFIG__VISION__OPENAI__BASE_URL=https://api.openai.com/v1
-MODEL_CONFIG__VISION__OPENAI__DEFAULT_MODEL=gpt-4o
-
 # ===== OpenTelemetry =====
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 OTEL_SERVICE_NAME=prd2tsd
@@ -5017,10 +4980,8 @@ prd2tsd-agents/
 │   │   ├── cleanup.py                   # SessionCleanupPolicy
 │   │   ├── compressor.py                # ContextCompressor
 │   │   └── memory_retriever.py           # MemoryRetriever
-│   ├── document_management/             # Block E: 文档管理
-│   ├── collaboration/                   # Block E: 协作文档
-│   ├── web_indexing/                    # Block E: Web 资源索引
-│   ├── multimodal/                      # Block E: 多模态检索
+│   ├── document_management/             # Block E: 文档管理（上传自动入图）
+│   ├── web_indexing/                    # Block E: Web 资源索引 + URL 文档
 │   ├── integrations/                    # Block E: 集成生态
 │   ├── batch/                           # Block E: 批量/定时任务
 │   ├── observability/                   # Block E: 观测性
@@ -5210,7 +5171,7 @@ prd2tsd-agents/
 
 ### 按 API 端点查找
 - 完整 API 路由清单 → 附篇 A
-- POST /api/v1/chat 详解 → 第九章 Step 1
+- POST /api/v1/interact 详解 → 第九章 Step 1
 - GET /api/v1/tasks/{id}/events 详解 → 第十三章 §13.2
 - POST /api/v1/review/{id}/{stage} 详解 → 第九章 节点 4.6
 
@@ -5252,7 +5213,6 @@ prd2tsd-agents/
 | CircuitBreaker 默认 failure_threshold | 3 次 |
 | CircuitBreaker 默认 recovery_timeout | 30 秒 |
 | Embedding 维度 | 1024 (BAAI/bge-large-zh-v1.5) |
-| CLIP Embedding 维度 | 768 |
 | 文档上传最大大小 | 50 MB |
 | Free 计划会话保留 | 30 天 |
 | Pro 计划会话保留 | 180 天 |

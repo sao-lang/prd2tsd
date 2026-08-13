@@ -1,4 +1,8 @@
-"""Global Search 引擎 — 社区检测 → 社区报告 → LLM 聚合 → 宏观概括。"""
+"""Global Search 引擎 — 实体按类型聚合 → LLM 宏观总结。
+
+Global Search 保留"宏观总结"价值：拉取全部实体，按实体类型聚合，
+再由 LLM 生成宏观系统架构概述（社区检测/社区报告逻辑已简化删除）。
+"""
 
 from __future__ import annotations
 
@@ -7,15 +11,15 @@ from typing import Any
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
 from app.knowledge_layer.graph_store import Neo4jGraphStore
-from app.knowledge_layer.models import CommunityReport, ScoredDoc
+from app.knowledge_layer.models import ScoredDoc
 from app.llm_gateway import gateway
 
 logger = get_logger("prd2tsd.knowledge.global_search")
 
-COMMUNITY_SUMMARY_PROMPT = """你是一个知识图谱分析专家。基于以下社区报告，给出宏观的系统架构概述。
+GLOBAL_SUMMARY_PROMPT = """你是一个知识图谱分析专家。基于以下按实体类型聚合的知识实体，给出宏观的系统架构概述。
 
-社区报告：
-{reports}
+聚合实体：
+{entities}
 
 用户查询：{query}
 
@@ -29,22 +33,13 @@ COMMUNITY_SUMMARY_PROMPT = """你是一个知识图谱分析专家。基于以�
 class GlobalSearchResult:
     """Global Search 结果。"""
 
-    def __init__(
-        self,
-        answer: str,
-        reports: list[CommunityReport],
-        level: int,
-    ) -> None:
+    def __init__(self, answer: str) -> None:
         """初始化搜索结果。
 
         Args:
             answer: LLM 聚合后的答案。
-            reports: 使用的社区报告列表。
-            level: 使用的社区层级。
         """
         self.answer = answer
-        self.reports = reports
-        self.level = level
 
 
 class GlobalSearch:
@@ -72,6 +67,8 @@ class GlobalSearch:
     ) -> GlobalSearchResult:
         """执行 Global Search。
 
+        拉取全部实体 → 按实体类型聚合 → LLM 生成宏观总结。
+
         Args:
             query: 用户查询。
             workspace_id: 工作空间 ID。
@@ -79,153 +76,59 @@ class GlobalSearch:
         Returns:
             Global Search 结果。
         """
-        # 1. 获取社区报告
-        reports = await self._get_community_reports(workspace_id)
-
-        # 2. 选择合适层级
-        level = self._select_level(query, reports)
-
-        # 3. 筛选当前层级的报告
-        level_reports = [r for r in reports if r.level == level][:self._top_k]
-
-        # 4. LLM 聚合
-        if level_reports:
-            reports_text = "\n\n".join(
-                f"社区 {r.community_id} (层级 {r.level}):\n{r.summary}\n"
-                f"关键发现: {'; '.join(r.key_findings[:5])}"
-                for r in level_reports
-            )
-            answer = await self._summarize(query, reports_text)
-        else:
-            answer = "未找到社区报告，无法生成宏观概括。"
-
-        logger.info(
-            "Global Search 完成: level=%d, reports=%d",
-            level,
-            len(level_reports),
-        )
-
-        return GlobalSearchResult(
-            answer=answer,
-            reports=level_reports,
-            level=level,
-        )
-
-    async def _get_community_reports(self, workspace_id: str) -> list[CommunityReport]:
-        """从 Neo4j 获取社区报告。
-
-        如果图谱中没有社区报告，生成基础级别报告。
-
-        Args:
-            workspace_id: 工作空间 ID。
-
-        Returns:
-            社区报告列表。
-        """
-        cypher = "MATCH (cr:CommunityReport) RETURN cr"
-        params: dict[str, Any] = {}
-        if workspace_id:
-            cypher = "MATCH (cr:CommunityReport {workspace_id: $workspace_id}) RETURN cr"
-            params["workspace_id"] = workspace_id
-
-        records = await self._graph_store.run_cypher(cypher, params)
-        reports: list[CommunityReport] = []
-        for record in records:
-            props = dict(record["cr"])
-            reports.append(
-                CommunityReport(
-                    id=props.get("id", ""),
-                    community_id=props.get("community_id", ""),
-                    level=int(props.get("level", 1)),
-                    summary=props.get("summary", ""),
-                    entities=props.get("entities", []),
-                    key_findings=props.get("key_findings", []),
-                    workspace_id=props.get("workspace_id", ""),
-                )
-            )
-
-        # 无社区报告时创建基础报告
-        if not reports:
-            reports = await self._generate_base_reports(workspace_id)
-
-        return reports
-
-    async def _generate_base_reports(self, workspace_id: str) -> list[CommunityReport]:
-        """从实体类型生成基础社区报告。
-
-        Args:
-            workspace_id: 工作空间 ID。
-
-        Returns:
-            基础社区报告列表。
-        """
+        # 1. 获取全部实体
         entities = await self._graph_store.get_all_entities(workspace_id)
-        if not entities:
-            return []
 
-        # 按类型分组作为社区
+        # 2. 按实体类型聚合
+        groups = self._group_by_type(entities)
+
+        # 3. LLM 聚合生成宏观总结
+        if groups:
+            entities_text = "\n\n".join(
+                f"类型 {entity_type} ({len(names)} 个): {', '.join(names[:10])}"
+                for entity_type, names in groups.items()
+            )
+            answer = await self._summarize(query, entities_text)
+        else:
+            answer = "未找到知识实体，无法生成宏观概括。"
+
+        logger.info("Global Search 完成: groups=%d", len(groups))
+
+        return GlobalSearchResult(answer=answer)
+
+    def _group_by_type(self, entities: list[Any]) -> dict[str, list[str]]:
+        """按实体类型分组聚合实体名称。
+
+        Args:
+            entities: 知识实体列表。
+
+        Returns:
+            {实体类型: [实体名]} 映射（按实体数降序，最多取 top_k 个类型）。
+        """
         groups: dict[str, list[str]] = {}
         for entity in entities:
             if entity.type not in groups:
                 groups[entity.type] = []
             groups[entity.type].append(entity.name)
+        # 按实体数降序，取前 top_k 个类型
+        return dict(
+            sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)[: self._top_k]
+        )
 
-        reports: list[CommunityReport] = []
-        for entity_type, names in groups.items():
-            reports.append(
-                CommunityReport(
-                    id=f"base_{entity_type}",
-                    community_id=f"type_{entity_type}",
-                    level=1,
-                    summary=f"类型 {entity_type} 包含 {len(names)} 个实体: {', '.join(names[:10])}",
-                    entities=names,
-                    key_findings=[f"发现 {len(names)} 个 {entity_type} 类型实体"],
-                    workspace_id=workspace_id,
-                )
-            )
-        return reports
-
-    def _select_level(self, query: str, reports: list[CommunityReport]) -> int:
-        """根据查询选择社区层级。
-
-        宽泛查询选高层级（level 小），具体查询选低层级。
+    async def _summarize(self, query: str, entities_text: str) -> str:
+        """使用 LLM 聚合实体生成宏观总结。
 
         Args:
             query: 用户查询。
-            reports: 社区报告列表。
-
-        Returns:
-            选择的层级。
-        """
-        if not reports:
-            return 1
-
-        max_level = max(r.level for r in reports)
-        # 宽泛查询关键词
-        broad_keywords = ["整体", "架构", "概述", "总结", "所有", "全部"]
-        query_lower = query.lower()
-
-        for kw in broad_keywords:
-            if kw in query_lower:
-                return 1  # 最高层级
-
-        # 具体查询选最低层级
-        return max_level
-
-    async def _summarize(self, query: str, reports_text: str) -> str:
-        """使用 LLM 聚合社区报告生成答案。
-
-        Args:
-            query: 用户查询。
-            reports_text: 社区报告文本。
+            entities_text: 按类型聚合的实体文本。
 
         Returns:
             聚合后的答案。
         """
         try:
             resp = await gateway.complete(
-                prompt=COMMUNITY_SUMMARY_PROMPT.format(
-                    reports=reports_text[:4000],
+                prompt=GLOBAL_SUMMARY_PROMPT.format(
+                    entities=entities_text[:4000],
                     query=query,
                 ),
                 task_type="default",
@@ -238,7 +141,7 @@ class GlobalSearch:
             return resp.content
         except Exception as e:
             logger.warning("Global Search 聚合失败: %s", str(e))
-            return f"基于社区报告的分析（查询: {query}）:\n\n{reports_text[:1000]}"
+            return f"基于知识实体的分析（查询: {query}）:\n\n{entities_text[:1000]}"
 
     async def search_as_docs(
         self,
@@ -261,6 +164,6 @@ class GlobalSearch:
                 text=result.answer,
                 score=1.0,
                 source="global",
-                metadata={"level": result.level, "reports": len(result.reports)},
+                metadata={"source": "global"},
             )
         ]

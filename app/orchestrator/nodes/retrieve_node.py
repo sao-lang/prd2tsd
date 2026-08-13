@@ -84,8 +84,8 @@ class KnowledgeQANode:
 
             # 从 RetrievalContext 提取上下文
             context_parts: list[str] = []
-            if hasattr(retrieval_result, "community_summary") and retrieval_result.community_summary:
-                context_parts.append(str(retrieval_result.community_summary))
+            if hasattr(retrieval_result, "global_summary") and retrieval_result.global_summary:
+                context_parts.append(str(retrieval_result.global_summary))
             for doc in retrieval_result.results[:5]:
                 context_parts.append(doc.text)
             context = "\n---\n".join(context_parts)

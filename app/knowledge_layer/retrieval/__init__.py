@@ -1,4 +1,7 @@
-"""Retrieval — 多路检索管线（含反思）。"""
+"""Retrieval — 多路检索管线（含反思）。
+
+GlobalSearch 为实体按类型聚合 + LLM 宏观总结（社区检测已简化）。
+"""
 
 from __future__ import annotations
 

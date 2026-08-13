@@ -1089,6 +1089,8 @@ class TextUnitBuilder:
 
 #### 3.2.2 社区检测与摘要（Community Detection & Summarization）
 
+> **⚠️ 已简化/未实现**：Leiden 社区检测 + 社区报告（Community Report）逻辑**未实际实现**（无 igraph/leidenalg 依赖），已于 WP3 简化删除。Global Search 保留轻量实现：实体按类型聚合 → LLM 宏观总结。详见 `docs/plan-observability-eval-cleanup.md` §3。
+
 ```
 社区检测流程：
 ┌────────────────────────────────────────────────────────────────────────────┐

@@ -222,6 +222,35 @@ class KnowledgeGraphBuilder:
         )
         return stats
 
+    async def build_from_bytes(
+        self,
+        content: bytes,
+        filename: str,
+        workspace_id: str = "",
+    ) -> BuildStats:
+        """从文件字节内容构建实体索引（多格式自动提取文本）。
+
+        Block E B3：支持 pdf / csv / docx / md / txt / png / jpg，
+        图片以元数据占位入图。复用 build_from_text 链路。
+
+        Args:
+            content: 文件字节数据。
+            filename: 原始文件名。
+            workspace_id: 工作空间 ID。
+
+        Returns:
+            构建统计。
+
+        Raises:
+            ValueError: 文件无可提取文本内容。
+        """
+        from app.knowledge_layer.ingestion.multi_format_loader import extract_text
+
+        text = extract_text(content, filename)
+        if not text.strip():
+            raise ValueError(f"文件 {filename} 无可提取文本内容")
+        return await self.build_from_text(text, source_name=filename, workspace_id=workspace_id)
+
 
 class RetrievalPipeline:
     """多路检索主入口（含反思循环）。"""
@@ -327,52 +356,19 @@ class RetrievalPipeline:
             else:
                 logger.info("反思达到最大轮数(%d)，采用当前结果", self.max_reflection_rounds)
 
-        # 5. ⭐ E11 搜索引擎回退 — 本地结果不足时自动触发网络搜索
-        if len(all_results) < 3:
-            try:
-                from app.web_indexing.search_fallback import SearchFallback
-                fallback = SearchFallback()
-                should = await fallback.should_fallback(all_results)
-                if should:
-                    logger.info("本地检索结果不足(%d)，触发搜索引擎回退", len(all_results))
-                    web_results = await fallback.search_and_index(
-                        query=query,
-                        workspace_id=workspace_id,
-                        max_results=top_k,
-                        vector_store=self.vector_store,
-                    )
-                    if web_results:
-                        for r in web_results:
-                            snippet = r.get("snippet", "") or r.get("title", "")
-                            if snippet:
-                                all_results.append(ScoredDoc(
-                                    id=f"web_{r.get('url', '')[:64]}",
-                                    text=snippet,
-                                    score=0.5,
-                                    source="web_fallback",
-                                    metadata={
-                                        "url": r.get("url", ""),
-                                        "title": r.get("title", ""),
-                                        "source": "web_search_fallback",
-                                    },
-                                ))
-                        logger.info("搜索引擎回退追加 %d 条结果", len(web_results))
-            except Exception as exc:
-                logger.warning("搜索引擎回退失败: %s", exc)
-
-        # 6. 重排
+        # 5. 重排
         reranked = self.reranker.rerank(current_query, all_results, top_k)
 
-        # 7. 压缩
+        # 6. 压缩
         compressed = self.compressor.compress(reranked)
 
-        # 8. 组装结果
+        # 7. 组装结果
         context = RetrievalContext(
             query=query,
             mode=detected_mode,
             results=compressed,
             text_unit_evidence=[],
-            community_summary=global_result.answer if detected_mode in ("global", "hybrid") and global_result else "",
+            global_summary=global_result.answer if detected_mode in ("global", "hybrid") and global_result else "",
         )
 
         logger.info(

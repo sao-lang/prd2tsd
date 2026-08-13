@@ -20,7 +20,7 @@
 6. **Neo4j 存储**：图数据库写入实体节点
 7. **PGVector 存储**：向量化 Chunk 和 Entity Embedding
 8. **Local Search**：实体匹配 → 子图遍历 → 原文证据 → 上下文组装
-9. **Global Search**：实体类型分组 → 社区报告 → LLM 聚合 → 宏观概括
+9. **Global Search**：实体类型分组 → LLM 聚合 → 宏观总结（社区检测/报告已简化删除）
 10. **检索 Pipeline**：Intent Router → Rewriter → Retriever → RRF Fusion → Re-rank → Compress
 11. **⭐⭐ 检索反思**（Reflection）：每次检索后 LLM 判断结果质量，不满足时自动修正查询并重新检索
 
@@ -32,7 +32,7 @@
 |------|---------|
 | 知识图谱可构建 | 输入样本 .md → 输出 Neo4j 中 > 5 个实体 |
 | Local Search 可用 | 输入"用户服务用了什么技术栈" → 返回匹配实体 + 子图 + 原文证据 |
-| Global Search 可用 | 输入"这个项目的整体架构" → 返回社区报告摘要 |
+| Global Search 可用 | 输入"这个项目的整体架构" → 返回宏观总结 |
 | 检索 Pipeline 完整 | 支持 local / global / hybrid 三种模式，结果经过重排和压缩 |
 | 与块 A 联通 | 使用块 A 的 DB Session 和 LLM 客户端，不自己创建 |
 
@@ -364,11 +364,13 @@ async def test_local_search_returns_entities():
 ```python
 # tests/integration/test_global_search.py
 async def test_global_search_returns_summary():
-    """验证 Global Search 返回架构摘要。"""
+    """验证 Global Search 返回宏观总结。"""
     result = await searcher.search("整体架构")
     assert result.answer is not None
     assert len(result.answer) > 50
 ```
+
+> **说明**：社区检测/社区报告逻辑已简化删除，Global Search 简化为「实体按类型聚合 → LLM 宏观总结」。
 
 ---
 
@@ -406,7 +408,7 @@ pytest tests/unit/test_reflection.py -v
 
 # 验证 Global Search
 pytest tests/integration/test_global_search.py -v
-# 期望: 返回架构摘要
+# 期望: 返回宏观总结
 
 # 验证块 A 回归测试仍然全绿
 pytest tests/integration/test_auth_flow.py -v

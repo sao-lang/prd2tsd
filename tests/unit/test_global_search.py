@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,23 +29,39 @@ class TestGlobalSearch:
         return mock
 
     async def test_search_returns_answer(self, graph_store_mock) -> None:
-        """验证 Global Search 返回答案。"""
+        """验证 Global Search 返回宏观总结答案。"""
         searcher = GlobalSearch(graph_store=graph_store_mock)
-        result = await searcher.search("整体架构")
+        with patch("app.knowledge_layer.retrieval.global_search.gateway") as mock_gateway:
+            mock_gateway.complete = AsyncMock(
+                return_value=MagicMock(content="宏观架构总结：Spring Boot + PostgreSQL 微服务架构"),
+            )
+            result = await searcher.search("整体架构")
         assert result.answer is not None
+        assert "宏观" in result.answer
+
+    async def test_search_returns_answer_when_no_entities(self) -> None:
+        """验证无实体时返回降级提示。"""
+        mock = MagicMock(spec=Neo4jGraphStore)
+        mock.get_all_entities = AsyncMock(return_value=[])
+        searcher = GlobalSearch(graph_store=mock)
+        result = await searcher.search("整体架构")
+        assert "未找到知识实体" in result.answer
 
     async def test_search_as_docs(self, graph_store_mock) -> None:
-        """验证 Global Search 返回 ScoredDoc。"""
+        """验证 Global Search 返回 ScoredDoc（source=global）。"""
         searcher = GlobalSearch(graph_store=graph_store_mock)
-        docs = await searcher.search_as_docs("整体架构")
+        with patch("app.knowledge_layer.retrieval.global_search.gateway") as mock_gateway:
+            mock_gateway.complete = AsyncMock(return_value=MagicMock(content="宏观总结"))
+            docs = await searcher.search_as_docs("整体架构")
         assert len(docs) > 0
         assert docs[0].source == "global"
+        assert docs[0].id == "global_summary"
 
-    async def test_base_reports_generation(self, graph_store_mock) -> None:
-        """验证基础社区报告生成。"""
+    async def test_group_by_type(self, graph_store_mock) -> None:
+        """验证实体按类型聚合。"""
         searcher = GlobalSearch(graph_store=graph_store_mock)
-        reports = await searcher._generate_base_reports(workspace_id="")
-        assert len(reports) > 0
-        # 至少应有 TechStack 和 Component 两个社区
-        types = {r.community_id for r in reports}
-        assert len(types) >= 2
+        entities = await graph_store_mock.get_all_entities("")
+        groups = searcher._group_by_type(entities)
+        assert set(groups.keys()) == {"TechStack", "Component"}
+        assert "Spring Boot" in groups["TechStack"]
+        assert "UserService" in groups["Component"]

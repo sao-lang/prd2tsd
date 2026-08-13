@@ -125,7 +125,8 @@ class Neo4jGraphStore:
             params["workspace_id"] = workspace_id
         query += " RETURN e LIMIT 1"
         async with driver.session(database=self._database) as session:
-            result = await session.run(query, **params)
+            # 参数以 dict 形式作为 parameters 传入，避免 params 含 query 键与位置参数冲突
+            result = await session.run(query, params)
             record = await result.single()
         if record is None:
             return None
@@ -157,7 +158,8 @@ class Neo4jGraphStore:
             cypher += " AND e.workspace_id = $workspace_id"
         cypher += " RETURN e LIMIT $limit"
         async with driver.session(database=self._database) as session:
-            result = await session.run(cypher, **params)
+            # 参数以 dict 形式传入，避免 params 中的 query 键与位置参数冲突
+            result = await session.run(cypher, params)
             records = await result.fetch(limit)
         return [self._record_to_entity(r["e"]) for r in records]
 
@@ -191,7 +193,7 @@ class Neo4jGraphStore:
             )
             params["workspace_id"] = workspace_id
         async with driver.session(database=self._database) as session:
-            result = await session.run(cypher, **params)
+            result = await session.run(cypher, params)
             record = await result.single()
         if record is None:
             return []
@@ -214,7 +216,7 @@ class Neo4jGraphStore:
             params["workspace_id"] = workspace_id
         cypher += " RETURN e"
         async with driver.session(database=self._database) as session:
-            result = await session.run(cypher, **params)
+            result = await session.run(cypher, params)
             records = await result.fetch(10000)
         return [self._record_to_entity(r["e"]) for r in records]
 
@@ -272,7 +274,8 @@ class Neo4jGraphStore:
         """
         driver = await self._get_driver()
         async with driver.session(database=self._database) as session:
-            result = await session.run(query, **(params or {}))
+            # 参数以 dict 形式传入，避免 params 含 query 键时与位置参数冲突
+            result = await session.run(query, params or {})
             return await result.fetch(10000)
 
     def _record_to_entity(self, node: Any) -> KGEntity:
