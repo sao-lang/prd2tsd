@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
@@ -42,8 +44,8 @@ async def evaluate_generation(
 
     调用 Evaluation Layer 做覆盖度/一致性/可行性等维度评分。
     """
-    input_state = {
-        "analysis_result": req.analysis_result or AnalysisResultDetail(),
+    input_state: dict[str, Any] = {
+        "analysis_result": req.analysis_result or AnalysisResultDetail(project_name="", summary=""),
         "planning_result": req.planning_result or PlanningResultDetail(),
         "generation_result": req.generation_result,
         "evaluation_report": EvaluationReportDetail(),

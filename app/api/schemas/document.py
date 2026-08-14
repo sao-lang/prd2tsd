@@ -29,10 +29,23 @@ class DocumentResponse(BaseModel):
     updated_at: str | None = None
 
 
+class SearchResultItem(BaseModel):
+    """搜索结果项。"""
+
+    document_id: str
+    title: str
+    description: str | None = None
+    file_type: str
+    file_size: int
+    score: float = 0.0
+    match_type: str = "fts"
+    created_at: str | None = None
+
+
 class DocumentListResponse(BaseModel):
     """文档列表响应。"""
 
-    items: list[DocumentResponse]
+    items: list[DocumentResponse | SearchResultItem]
     total: int
     page: int
     page_size: int
@@ -64,16 +77,3 @@ class PreviewResponse(BaseModel):
     text_preview: str | None = None
     page_count: int | None = None
     error: str | None = None
-
-
-class SearchResultItem(BaseModel):
-    """搜索结果项。"""
-
-    document_id: str
-    title: str
-    description: str | None = None
-    file_type: str
-    file_size: int
-    score: float = 0.0
-    match_type: str = "fts"
-    created_at: str | None = None
