@@ -2,6 +2,22 @@
 
 ### 2026-08-14
 
+#### 28. 代码审查修复：evaluate/文档搜索两处 500 + Postgres checkpointer 用法错误
+
+- **时间：** 2026-08-15
+- **发起人：** user（"审查" → 确认实施修复）
+- **依据：** 全库审查实测复现的 3 个问题
+- **修改内容：**
+  - **`POST /api/v1/evaluate` 500**：`evaluate.py` 在请求不带 `analysis_result` 时构造 `AnalysisResultDetail()`，缺必填字段 `project_name`/`summary` 抛 ValidationError。修复为 `AnalysisResultDetail(project_name="", summary="")`，并给 `input_state` 补类型注解
+  - **`GET /api/v1/documents?q=...` 500**：搜索分支返回 `SearchResultItem`，但 `DocumentListResponse.items` 声明为 `list[DocumentResponse]`，FastAPI 响应序列化失败。修复为 `list[DocumentResponse | SearchResultItem]`（`SearchResultItem` 定义上移）
+  - **`create_postgres_checkpointer()` 用法错误**：`PostgresSaver.from_conn_string()` 返回上下文管理器，原代码直接 `.setup()` 必抛 AttributeError。修复为 `with ... as checkpointer` 内建表并返回；依赖补 `psycopg[binary]>=3.2.0`（纯 psycopg 缺 libpq 无法导入）
+  - 新增回归测试 `tests/unit/test_evaluate_route.py`（2 例）、`tests/unit/test_documents_route.py`（2 例，搜索/列表两分支）
+- **修改文件：** `app/api/routes/evaluate.py`、`app/api/schemas/document.py`、`app/orchestrator/main_graph.py`、`requirements.txt`、`pyproject.toml`、`tests/unit/test_evaluate_route.py`（新增）、`tests/unit/test_documents_route.py`（新增）
+- **Lint/类型：** ✅ ruff 改动文件全绿；mypy 对应错误（evaluate call-arg、documents misc、checkpointer attr-defined/return-value）全部消除，剩余为既有泛型参数噪音
+- **测试：** ✅ 新增回归 4 例 + 文档管理既有用例共 16 过；两个 500 修复均经运行时探针复现验证
+- **复盘结果：** 两个 API 500 无测试覆盖故存活至今；checkpointer 错误为 mypy 报错但函数未接线未被触发。根因均为"类型/接口契约与实际返回不一致"
+- **潜在风险：** `DocumentListResponse.items` 改为联合类型后，OpenAPI 响应 schema 变为 union；`create_postgres_checkpointer` 仍未被 deps 接线（生产断点持久化尚未启用，见架构文档第二十一章）
+
 #### 27. 架构文档补齐缺失链路（可追踪链路等 5 条）
 
 - **时间：** 2026-08-14
