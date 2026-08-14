@@ -1,5 +1,38 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-08-14
+
+#### 27. 架构文档补齐缺失链路（可追踪链路等 5 条）
+
+- **时间：** 2026-08-14
+- **发起人：** user（"你确定所有链路都有了吗？我没看到可追踪链路"）
+- **依据：** 用户审查反馈——文档第八章仅有追踪模块实现细节，缺完整"可追踪链路"
+- **修改内容：** `docs/full-architecture-deep-dive.md` 新增 5 条链路小节
+  - **8.6 可追踪链路**（重点）：span 生成与传播（http 根 span → node 节点 span → gateway CLIENT span → BatchSpanProcessor → OTLP gRPC → Jaeger），含 trace 树示例、attributes 清单、按 task_id 检索方式、**异步任务 trace 特性说明**（asyncio.create_task 复制 contextvars、HTTP 根 span 早于任务结束 → 按 task_id 检索最可靠）；指标链路（埋点 → /api/v1/metrics 暴露 → Prometheus scrape → Grafana 展示）
+  - **2.8 认证授权链路**：注册/登录/刷新/登出 + 请求鉴权（AuthMiddleware → WorkspaceContextMiddleware → http tracing → require_permission → TenantContext）
+  - **3.12 知识图谱构建链路**：文档上传/URL/路径三条入口 → 多格式提取 → 分块 → 实体 → 消歧 → embedding → 双写 Neo4j+PGVector → Claims → 状态跟踪
+  - **3.13 检索链路**：四条查询入口 → IntentRouter → Rewriter → Enricher → 反思循环（Local/Global/RRF）→ ReRanker → Compressor → RetrievalContext → 消费方
+  - **6.9 文档上传 → 入图链路**：上传 → 校验/去重 → MinIO → DB → Celery 异步入图 → 状态更新 → 查询消费
+  - 更新文档结尾"覆盖"声明（全链路清单加入可追踪/认证/构建/检索/文档入图）
+- **修改文件：** `docs/full-architecture-deep-dive.md`、`overview.md`（本条）
+- **复盘结果：** 文档"链路章节"此前只有 7 条用户请求类链路（主线/对话/问答/文档/断点/历史/SSE/LLM），横切链路（追踪/认证）与数据类链路（构建/检索/入图）缺失；本次按"链路 = 有头有尾的数据流"标准补齐
+- **潜在风险：** 8.6 异步任务 trace 特性为实测观察（create_task 复制 contextvars），Jaeger 实际呈现取决于任务创建时机；如后续修复 RuntimeInjector，SSE 副作用链路需同步更新
+
+#### 26. 架构文档全链路重写（v3.0）+ 面试专题迁移
+
+- **时间：** 2026-08-14
+- **发起人：** user（"更新这个文档…需要全链路…去掉面试相关的章节另开一个文档"）
+- **依据：** 探索代码库实际状态（overview 25 之前的全部演进均已落地）
+- **修改内容：**
+  - **重写 `docs/full-architecture-deep-dive.md`（4287 行 → 1987 行，v3.0）：** 基于 2026-08-13 代码库真实状态全量重写，覆盖所有功能模块与运行时链路
+    - 修正过时信息：ToolRegistry 工具系统已废弃标注；6 个已删端点（/chat、/generate、/qna/stream 等）统一为 /interact；社区检测已简化（community_summary→global_summary）；Send() 并行扇出已实现（Evaluation 9 节点 + Generation fan_out_sections）；docker 拓扑（grafana/PG15/neo4j 7700）；DB 表（10 张，无 documents/web_resources 表）
+    - 新增章节：八（评测与观测 WP1/WP2）、十一（document_analysis/URL 链路）、二十一（已知问题与风险 18 项，基于实测）
+  - **新建 `docs/interview-questions.md`：** 迁移原第十七章（核心卖点）+ 附篇 I（业界对比）+ 附篇 J（问答模板），并基于代码现状更新（Send 已实现/工具已废弃/统一入口/评测闭环），新增 Q9 评测体系、Q10 数据脱敏
+- **修改文件：** `docs/full-architecture-deep-dive.md`（重写）、`docs/interview-questions.md`（新建）、`overview.md`（本条）
+- **Lint/类型：** N/A（纯文档）
+- **复盘结果：** 文档与代码不一致的根因是"演进记录分散在 overview 各条目，未回写架构文档"；本轮以代码为唯一真相源重写，并在文档中明确标注已知问题（RuntimeInjector 未接线/SaveSessionNode 未持久化/IterationDecider 硬编码/WebIndexer 悬空引用等）
+- **潜在风险：** 新文档约 1987 行（原 4287 行），删除了重复/过时内容，信息密度更高但篇幅变小；若后续代码演进，需同步回写本文档；interview-questions.md 为独立文档，架构文档已移除面试章节
+
 ### 2026-08-13
 
 #### 25. 观测性完善（WP1）+ 社区检测简化（WP3）+ RAG/Agent 评测（WP2）
