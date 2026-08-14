@@ -376,10 +376,11 @@ async def create_postgres_checkpointer(
 
     # PostgresSaver 需要 sync 连接字符串（不含 +asyncpg）
     sync_url = db_url.replace("+asyncpg", "")
-    checkpointer = PostgresSaver.from_conn_string(sync_url)
-    await checkpointer.setup()
-    logger.info("PostgreSQL checkpointer 已初始化")
-    return checkpointer
+    # from_conn_string 返回上下文管理器（连接生命周期由 with 管理）
+    with PostgresSaver.from_conn_string(sync_url) as checkpointer:
+        checkpointer.setup()
+        logger.info("PostgreSQL checkpointer 已初始化")
+        return checkpointer
 
 
 async def create_memory_checkpointer() -> BaseCheckpointSaver:

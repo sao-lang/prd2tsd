@@ -50,6 +50,9 @@ prometheus-client>=0.19.0
 # === Task Queue (Block E) ===
 celery>=5.3.0
 
+# === LangGraph PostgreSQL Checkpointer ===
+psycopg[binary]>=3.2.0
+
 # === Reranker/Encoder models ===
 transformers>=4.40.0
 cohere>=5.0
