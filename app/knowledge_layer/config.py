@@ -33,7 +33,6 @@ class KnowledgeLayerConfig:
     # ── Retrieval ──
     local_top_k: int = 10
     global_top_k: int = 5
-    hybrid_top_k: int = 10
     rrf_k: int = 60
     max_compress_tokens: int = 4000
 
@@ -41,9 +40,6 @@ class KnowledgeLayerConfig:
     downgrade_days: int = 90
     archive_days: int = 180
     soft_delete_days: int = 365
-
-    # ── Entity Resolution ──
-    semantic_similarity_threshold: float = 0.85
 
     def __post_init__(self) -> None:
         """未显式设置时从 settings 读取默认值。"""

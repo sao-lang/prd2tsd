@@ -49,10 +49,21 @@ class MemoryRetriever:
         """
         items: list[MemoryItem] = []
         for msg in messages:
+            # 时间戳优先取消息自带值，缺失才用 now（修复 recency 全≈1.0）
+            raw_ts = msg.get("timestamp")
+            if isinstance(raw_ts, datetime):
+                ts = raw_ts
+            elif isinstance(raw_ts, str) and raw_ts:
+                try:
+                    ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                except ValueError:
+                    ts = datetime.now(UTC)
+            else:
+                ts = datetime.now(UTC)
             item = MemoryItem(
                 content=msg.get("content", ""),
                 role=msg.get("role", "user"),
-                timestamp=datetime.now(UTC),
+                timestamp=ts,
             )
             item.recency_score = self._score_recency(item.timestamp)
 
@@ -78,6 +89,22 @@ class MemoryRetriever:
         """相关性评分 — 向量语义相似度或关键词重叠。"""
         if not content:
             return 0.0
+        if self.vector_store is not None:
+            try:
+                if hasattr(self.vector_store, "similarity_search"):
+                    from app.llm_gateway import gateway
+
+                    resp = await gateway.embed(texts=[query], task_type="embedding")
+                    if not resp.embeddings or not resp.embeddings[0]:
+                        return 0.0
+                    hits = await self.vector_store.similarity_search(
+                        embedding=resp.embeddings[0],
+                        top_k=1,
+                    )
+                    if hits:
+                        return float(hits[0].score)
+            except Exception:
+                pass  # 向量检索失败时降级关键词重叠
         q_words = set(query.lower().split())
         c_words = set(content.lower().split())
         overlap = len(q_words & c_words)

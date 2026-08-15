@@ -108,6 +108,7 @@ class BuildStats(BaseModel):
 
     entities: int = 0
     chunks: int = 0
+    claims: int = 0
     file_path: str = ""
     workspace_id: str = ""
 

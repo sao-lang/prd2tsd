@@ -74,11 +74,38 @@ try:
         logger.info("Celery 任务: sync_web_resources 开始")
         try:
             async def _run() -> dict[str, Any]:
-                from app.web_indexing import WebIndexer
+                from sqlalchemy import select
 
-                indexer = WebIndexer()
-                result = await indexer.sync_all()
-                return {"status": "completed", "task": "sync_web_resources", "synced": result}
+                from app.core.connections import connection_manager
+                from app.models.block_e import UploadedDocument
+                from app.web_indexing.web_sync import WebSyncScheduler
+
+                # 从 uploaded_documents 收集待同步的 URL（source_url 非空且未删除）
+                urls: list[str] = []
+                try:
+                    pg = connection_manager.get("postgres")
+                    async with pg.get_session() as db:
+                        result = await db.execute(
+                            select(UploadedDocument.source_url).where(
+                                UploadedDocument.source_url.is_not(None),
+                                UploadedDocument.is_deleted.is_(False),
+                            )
+                        )
+                        urls = [u for (u,) in result.all() if u]
+                except Exception as exc:
+                    logger.warning("读取待同步 URL 失败: %s", exc)
+
+                if not urls:
+                    return {
+                        "status": "completed",
+                        "task": "sync_web_resources",
+                        "synced": [],
+                        "note": "无待同步 URL",
+                    }
+
+                scheduler = WebSyncScheduler()
+                synced = await scheduler.sync_multi(urls[:50])
+                return {"status": "completed", "task": "sync_web_resources", "synced": synced}
 
             result = asyncio.run(_run())
             logger.info("Web 资源同步完成: %s", result)
