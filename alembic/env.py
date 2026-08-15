@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
+# 优先使用应用配置的 DATABASE_URL（支持 .env / 环境变量覆盖），避免与 alembic.ini 硬编码漂移
+from app.core.config import settings  # noqa: E402
+
 # 导入所有模型子类以注册到 Base.metadata（供 autogenerate 检测变更）
 from app.models import (  # noqa: F401
     BudgetConfig,
@@ -33,6 +36,8 @@ from app.models.base import Base
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+if settings.DATABASE_URL:
+    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 # 目标元数据
 target_metadata = Base.metadata
