@@ -22,6 +22,18 @@ from app.observability.metrics import TASKS_DURATION, TASKS_TOTAL
 from app.orchestrator.state import TaskInfo, make_initial_state
 from app.streaming.event_bus import EventBus
 from app.streaming.models import SseEvent
+from app.task_manager_store import (
+    create_task_run as _store_create,
+)
+from app.task_manager_store import (
+    load_paused_task_ids as _store_paused_ids,
+)
+from app.task_manager_store import (
+    load_task_run as _store_load,
+)
+from app.task_manager_store import (
+    update_task_run as _store_update,
+)
 
 logger = get_logger("prd2tsd.task_manager")
 
@@ -51,6 +63,7 @@ class TaskManager:
         user_id: str = "",
         user_role: str = "",
         permissions: list[str] | None = None,
+        session_id: str = "",
         orchestrator: Any = None,
     ) -> str:
         """创建并启动异步生成任务。
@@ -62,6 +75,7 @@ class TaskManager:
             user_id: 用户 ID。
             user_role: 用户角色。
             permissions: 用户权限列表。
+            session_id: 关联会话 ID（用于记忆检索与会话持久化绑定）。
             orchestrator: 编译后的主编排 StateGraph（需使用 MemorySaver）。
 
         Returns:
@@ -72,6 +86,7 @@ class TaskManager:
 
         task_record: dict[str, Any] = {
             "task_id": task_id,
+            "session_id": session_id,
             "status": "running",
             "progress": 0.0,
             "stage": "",
@@ -91,6 +106,9 @@ class TaskManager:
 
         # 任务指标：创建
         TASKS_TOTAL.labels("created").inc()
+
+        # 持久化任务记录（重启可恢复断点索引）
+        await _store_create(task_record)
 
         # 发布任务创建事件
         await self._emit("task.created", {
@@ -127,7 +145,22 @@ class TaskManager:
         async with self._lock:
             record = self._tasks.get(task_id)
         if record is None:
-            return None
+            # 内存未命中时回退持久化存储（进程重启后恢复）
+            stored = await _store_load(task_id)
+            if stored is None:
+                return None
+            return TaskInfo(
+                task_id=stored["task_id"],
+                status=stored["status"],
+                progress=stored["progress"],
+                stage=stored["stage"],
+                interrupt_stage=stored["interrupt_stage"],
+                result=stored["result"],
+                evaluation=stored["evaluation"],
+                error=stored["error"],
+                created_at=stored["created_at"],
+                updated_at=stored["updated_at"],
+            )
         return TaskInfo(**record)
 
     async def get_pending_reviews(self) -> list[TaskInfo]:
@@ -138,7 +171,15 @@ class TaskManager:
         """
         async with self._lock:
             pending = [TaskInfo(**r) for r in self._tasks.values() if r["status"] == "paused"]
-        return pending
+        if pending:
+            return pending
+        # 内存无暂停任务时从持久化存储恢复（进程重启场景）
+        restored: list[TaskInfo] = []
+        for task_id in await _store_paused_ids():
+            stored = await _store_load(task_id)
+            if stored is not None:
+                restored.append(TaskInfo(**stored))
+        return restored
 
     async def resolve_review(
         self,
@@ -161,7 +202,14 @@ class TaskManager:
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None:
-                return False
+                # 进程重启后恢复：从持久化存储加载并重新挂载全局 orchestrator
+                stored = await _store_load(task_id)
+                if stored is None:
+                    return False
+                from app.api.deps import get_orchestrator
+
+                record = {**stored, "orchestrator": get_orchestrator()}  # type: ignore[no-untyped-call]
+                self._tasks[task_id] = record
             if record["status"] != "paused":
                 return False
 
@@ -169,6 +217,8 @@ class TaskManager:
             record["updated_at"] = datetime.now(UTC).isoformat()
             orchestrator = record.get("orchestrator")
             thread_id: str = str(record.get("thread_id") or "")
+
+        await _store_update(task_id, status="resuming")
 
         if orchestrator is None:
             logger.error("审核恢复失败: 无 orchestrator 引用 (task=%s)", task_id)
@@ -247,6 +297,7 @@ class TaskManager:
                 user_id=user_id,
                 user_role=user_role,
                 permissions=permissions,
+                session_id=record.get("session_id", "") if record else "",
             )
 
             # 带线程配置执行（支持 interrupt/resume）
@@ -280,6 +331,12 @@ class TaskManager:
                         r["stage"] = current_stage
                         r["interrupt_stage"] = current_stage
                         r["updated_at"] = datetime.now(UTC).isoformat()
+                await _store_update(
+                    task_id,
+                    status="paused",
+                    stage=current_stage,
+                    interrupt_stage=current_stage,
+                )
 
                 # 发布审核请求事件
                 await self._emit("task.review_required", {
@@ -356,6 +413,7 @@ class TaskManager:
                         r["stage"] = ""
                         r["interrupt_stage"] = ""
                         r["updated_at"] = datetime.now(UTC).isoformat()
+                await _store_update(task_id, status="paused", stage="", interrupt_stage="")
 
                 await self._emit("task.status", {
                     "task_id": task_id,
@@ -385,6 +443,16 @@ class TaskManager:
                 # Phase 2: 支持简单对话/知识查询路径的 chat_response
                 record["chat_response"] = final_state.get("chat_response", "")
                 record["updated_at"] = datetime.now(UTC).isoformat()
+
+        await _store_update(
+            task_id,
+            status=record.get("status", status) if record else status,
+            progress=record.get("progress", 1.0) if record else 1.0,
+            stage=record.get("stage", "") if record else "",
+            interrupt_stage="",
+            result=record.get("result") if record else None,
+            evaluation=record.get("evaluation") if record else None,
+        )
 
         # 发布完成事件
         await self._emit("task.progress", {
@@ -424,6 +492,7 @@ class TaskManager:
                 record["status"] = "failed"
                 record["error"] = error
                 record["updated_at"] = datetime.now(UTC).isoformat()
+        await _store_update(task_id, status="failed", error=error)
 
         # 发布失败事件
         await self._emit("task.status", {

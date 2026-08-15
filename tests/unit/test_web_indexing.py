@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.web_indexing.web_crawler import WebCrawler
 from app.web_indexing.web_loader import WebLoader
 from app.web_indexing.web_sync import WebSyncScheduler
@@ -93,20 +95,22 @@ class TestWebSync:
 class TestWebhook:
     """Webhook 单元测试。"""
 
-    def test_register_and_unregister(self) -> None:
+    @pytest.mark.asyncio
+    async def test_register_and_unregister(self) -> None:
         """验证 Webhook 注册和注销。"""
         from app.integrations.webhook import IntegrationHub
 
         hub = IntegrationHub()
-        hub.register_webhook("ws-1", "https://example.com/hook", "task.completed")
-        assert hub.get_webhook_url("ws-1", "task.completed") == "https://example.com/hook"
+        await hub.register_webhook("ws-1", "https://example.com/hook", "task.completed")
+        assert await hub.get_webhook_url("ws-1", "task.completed") == "https://example.com/hook"
 
-        hub.unregister_webhook("ws-1", "task.completed")
-        assert hub.get_webhook_url("ws-1", "task.completed") is None
+        await hub.unregister_webhook("ws-1", "task.completed")
+        assert await hub.get_webhook_url("ws-1", "task.completed") is None
 
-    def test_unregister_nonexistent(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unregister_nonexistent(self) -> None:
         """验证注销不存在的 Webhook 返回 False。"""
         from app.integrations.webhook import IntegrationHub
 
         hub = IntegrationHub()
-        assert hub.unregister_webhook("ws-x", "task.completed") is False
+        assert await hub.unregister_webhook("ws-x", "task.completed") is False

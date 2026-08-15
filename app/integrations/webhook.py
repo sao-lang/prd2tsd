@@ -122,13 +122,16 @@ class IntegrationHub:
 
     def __init__(self) -> None:
         """初始化集成中心。"""
+        # 内存缓存（写穿持久化到 webhook_subscriptions 表）
         self._webhooks: dict[str, dict[str, str]] = {}  # {workspace_id: {event: url}}
 
-    def register_webhook(
+    async def register_webhook(
         self,
         workspace_id: str,
         url: str,
         event: str = "task.completed",
+        secret: str = "",
+        db: Any | None = None,
     ) -> None:
         """注册 Webhook。
 
@@ -136,52 +139,91 @@ class IntegrationHub:
             workspace_id: 工作空间 ID。
             url: 回调 URL。
             event: 事件类型。
+            secret: 签名密钥（可选）。
+            db: 数据库会话（可选，未提供时自建）。
         """
         if workspace_id not in self._webhooks:
             self._webhooks[workspace_id] = {}
         self._webhooks[workspace_id][event] = url
+        await self._persist_upsert(workspace_id, event, url, secret, db)
         logger.info(
             "Webhook 已注册: workspace=%s, event=%s, url=%s",
             workspace_id, event, url,
         )
 
-    def unregister_webhook(self, workspace_id: str, event: str) -> bool:
+    async def unregister_webhook(
+        self,
+        workspace_id: str,
+        event: str,
+        db: Any | None = None,
+    ) -> bool:
         """注销 Webhook。
 
         Args:
             workspace_id: 工作空间 ID。
             event: 事件类型。
+            db: 数据库会话（可选）。
 
         Returns:
             是否注销成功。
         """
         if workspace_id in self._webhooks and event in self._webhooks[workspace_id]:
             del self._webhooks[workspace_id][event]
+            await self._persist_delete(workspace_id, event, db)
             return True
         return False
 
-    def get_webhook_url(self, workspace_id: str, event: str) -> str | None:
+    async def get_webhook_url(
+        self,
+        workspace_id: str,
+        event: str,
+        db: Any | None = None,
+    ) -> str | None:
         """获取 Webhook URL。
 
         Args:
             workspace_id: 工作空间 ID。
             event: 事件类型。
+            db: 数据库会话（可选）。
 
         Returns:
             Webhook URL，未注册时返回 None。
         """
-        return self._webhooks.get(workspace_id, {}).get(event)
+        url = self._webhooks.get(workspace_id, {}).get(event)
+        if url is not None:
+            return url
+        return await self._load_url(workspace_id, event, db)
 
-    def list_webhooks(self, workspace_id: str) -> list[dict[str, str]]:
+    async def list_webhooks(
+        self,
+        workspace_id: str,
+        db: Any | None = None,
+    ) -> list[dict[str, str]]:
         """列出工作空间的所有 Webhook。
 
         Args:
             workspace_id: 工作空间 ID。
+            db: 数据库会话（可选）。
 
         Returns:
             Webhook 列表，每项包含 event 和 url。
         """
-        hooks = self._webhooks.get(workspace_id, {})
+        hooks = dict(self._webhooks.get(workspace_id, {}))
+        try:
+            from sqlalchemy import select
+
+            from app.models.persistence import WebhookSubscription
+
+            async with self._session(db) as session:
+                result = await session.execute(
+                    select(WebhookSubscription).where(
+                        WebhookSubscription.workspace_id == workspace_id
+                    )
+                )
+                for row in result.scalars().all():
+                    hooks.setdefault(row.event, row.url)
+        except Exception as exc:
+            logger.warning("读取 Webhook 持久化失败: %s", exc)
         return [{"event": event, "url": url} for event, url in hooks.items()]
 
     async def notify(
@@ -189,6 +231,7 @@ class IntegrationHub:
         event: str,
         payload: dict[str, Any],
         sender: WebhookSender | None = None,
+        db: Any | None = None,
     ) -> list[dict[str, Any]]:
         """通知所有注册了该事件的 Webhook。
 
@@ -196,21 +239,133 @@ class IntegrationHub:
             event: 事件类型。
             payload: 负载数据。
             sender: Webhook 发送器。
+            db: 数据库会话（可选）。
 
         Returns:
             各 Webhook 的发送结果。
         """
         s = sender or WebhookSender()
         results: list[dict[str, Any]] = []
+        targets: list[tuple[str, str, str]] = []  # (ws_id, url, secret)
         for ws_id, hooks in self._webhooks.items():
-            url = hooks.get(event)
-            if url:
-                result = await s.send(url, event, {
-                    "workspace_id": ws_id,
-                    **payload,
-                })
-                results.append(result)
+            if event in hooks:
+                targets.append((ws_id, hooks[event], ""))
+        try:
+            from sqlalchemy import select
+
+            from app.models.persistence import WebhookSubscription
+
+            async with self._session(db) as session:
+                result = await session.execute(
+                    select(WebhookSubscription).where(
+                        WebhookSubscription.event == event
+                    )
+                )
+                for row in result.scalars().all():
+                    targets.append((row.workspace_id, row.url, row.secret or ""))
+        except Exception as exc:
+            logger.warning("读取 Webhook 订阅失败: %s", exc)
+
+        seen: set[tuple[str, str]] = set()
+        for ws_id, url, _secret in targets:
+            key = (ws_id, url)
+            if key in seen:
+                continue
+            seen.add(key)
+            result = await s.send(url, event, {
+                "workspace_id": ws_id,
+                **payload,
+            })
+            results.append(result)
         return results
+
+    def _session(self, db: Any | None) -> Any:
+        """返回数据库会话上下文管理器（自建或复用）。"""
+        if db is not None:
+            class _Ctx:
+                def __init__(self, s: Any) -> None:
+                    self.s = s
+
+                async def __aenter__(self) -> Any:
+                    return self.s
+
+                async def __aexit__(self, *args: Any) -> None:
+                    return None
+
+            return _Ctx(db)
+        from app.core.connections import connection_manager
+
+        return connection_manager.get("postgres").get_session()  # type: ignore[attr-defined]
+
+    async def _persist_upsert(
+        self,
+        workspace_id: str,
+        event: str,
+        url: str,
+        secret: str,
+        db: Any | None,
+    ) -> None:
+        """写穿：注册记录到 webhook_subscriptions 表。"""
+        try:
+            from datetime import UTC, datetime
+
+            from app.models.persistence import WebhookSubscription
+
+            async with self._session(db) as session:
+                from sqlalchemy.dialects.postgresql import insert
+
+                stmt = insert(WebhookSubscription).values(
+                    workspace_id=workspace_id,
+                    event=event,
+                    url=url,
+                    secret=secret,
+                    created_at=datetime.now(UTC),
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[WebhookSubscription.workspace_id, WebhookSubscription.event],
+                    set_={"url": url, "secret": secret},
+                )
+                await session.execute(stmt)
+                await session.commit()
+        except Exception as exc:
+            logger.warning("Webhook 持久化注册失败: %s", exc)
+
+    async def _persist_delete(self, workspace_id: str, event: str, db: Any | None) -> None:
+        """写穿：删除 webhook_subscriptions 记录。"""
+        try:
+            from sqlalchemy import delete
+
+            from app.models.persistence import WebhookSubscription
+
+            async with self._session(db) as session:
+                await session.execute(
+                    delete(WebhookSubscription).where(
+                        WebhookSubscription.workspace_id == workspace_id,
+                        WebhookSubscription.event == event,
+                    )
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("Webhook 持久化注销失败: %s", exc)
+
+    async def _load_url(self, workspace_id: str, event: str, db: Any | None) -> str | None:
+        """从持久化存储读取单个 Webhook URL。"""
+        try:
+            from sqlalchemy import select
+
+            from app.models.persistence import WebhookSubscription
+
+            async with self._session(db) as session:
+                result = await session.execute(
+                    select(WebhookSubscription.url).where(
+                        WebhookSubscription.workspace_id == workspace_id,
+                        WebhookSubscription.event == event,
+                    )
+                )
+                return result.scalar_one_or_none()  # type: ignore[no-any-return]
+        except Exception as exc:
+            logger.warning("读取 Webhook URL 失败: %s", exc)
+            return None
 
 
 # 全局单例

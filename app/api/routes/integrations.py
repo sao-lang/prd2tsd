@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_db_session
 from app.api.schemas.integration import WebhookRegisterRequest, WebhookTestResponse
 from app.auth.deps import get_current_user
 from app.auth.middleware import _SCOPE_WS_ID as _SCOPE_WORKSPACE_ID
@@ -26,6 +28,7 @@ async def register_webhook(
     request: Request,
     req: WebhookRegisterRequest,
     user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """注册 Webhook。
 
@@ -33,12 +36,13 @@ async def register_webhook(
         request: FastAPI 请求。
         req: 注册请求。
         user_id: 当前用户 ID。
+        db: 数据库会话。
 
     Returns:
         注册结果。
     """
     ws_id = _get_workspace_id(request)
-    integration_hub.register_webhook(ws_id, req.url, req.event)
+    await integration_hub.register_webhook(ws_id, req.url, req.event, req.secret or "", db)
     return {"status": "registered", "workspace_id": ws_id, "event": req.event, "url": req.url}
 
 
@@ -47,6 +51,7 @@ async def unregister_webhook(
     request: Request,
     event: str = "task.completed",
     user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """注销 Webhook。
 
@@ -54,12 +59,13 @@ async def unregister_webhook(
         request: FastAPI 请求。
         event: 事件类型。
         user_id: 当前用户 ID。
+        db: 数据库会话。
 
     Returns:
         注销结果。
     """
     ws_id = _get_workspace_id(request)
-    success = integration_hub.unregister_webhook(ws_id, event)
+    success = await integration_hub.unregister_webhook(ws_id, event, db)
     if not success:
         raise HTTPException(status_code=404, detail="Webhook 未注册")
     return {"status": "unregistered", "workspace_id": ws_id, "event": event}
@@ -95,15 +101,17 @@ async def test_webhook(
 async def list_webhooks(
     request: Request,
     user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """列出已注册的 Webhook。
 
     Args:
         request: FastAPI 请求。
         user_id: 当前用户 ID。
+        db: 数据库会话。
 
     Returns:
         Webhook 列表。
     """
     ws_id = _get_workspace_id(request)
-    return integration_hub.list_webhooks(ws_id)
+    return await integration_hub.list_webhooks(ws_id, db)
