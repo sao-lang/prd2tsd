@@ -20,6 +20,33 @@ class TestSessionRepository:
     """会话仓库单元测试。"""
 
     @pytest.mark.asyncio
+    async def test_add_message_turn_index_increments(self, db_session: AsyncSession) -> None:
+        """回归：第二条消息 turn_index 应递增（0→1），不得因 0 or -1 回退到 -1。"""
+        repo = SessionRepository()
+        session = await repo.create_session(
+            db_session,
+            "ws-turn",
+            "user-turn",
+            SessionCreate(title="turn 测试"),
+            thread_id="th-turn",
+        )
+        m1 = await repo.add_message(
+            db_session,
+            session.id,
+            "user-turn",
+            MessageCreate(role="user", content="你好"),
+        )
+        m2 = await repo.add_message(
+            db_session,
+            session.id,
+            "user-turn",
+            MessageCreate(role="assistant", content="回答"),
+        )
+
+        assert m1.turn_index == 0
+        assert m2.turn_index == 1
+
+    @pytest.mark.asyncio
     async def test_to_session_out_converts_orm(self, db_session: AsyncSession) -> None:
         """验证 ORM 转 Pydantic 响应。"""
         from app.models.block_e import Session

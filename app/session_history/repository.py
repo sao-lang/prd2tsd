@@ -220,7 +220,9 @@ class SessionRepository:
             select(func.coalesce(func.max(SessionMessage.turn_index), -1))
             .where(SessionMessage.session_id == session_id),
         )
-        max_turn = result.scalar() or -1
+        max_turn = result.scalar()
+        if max_turn is None:
+            max_turn = -1
 
         message = SessionMessage(
             session_id=session_id,
