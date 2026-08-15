@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from app.core.logger import get_logger
+from app.orchestrator.nodes.memory_context import get_event_bus
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.clarify_node")
@@ -30,12 +31,15 @@ class ClarifyNode:
         """
         task_id = state.get("task_id", "")
         user_input = state.get("prd_raw", "")
-        runtime = state.get("_runtime")  # type: ignore[typeddict-unknown-key]
+        runtime = state.get("_runtime")
 
         logger.info("澄清节点: task=%s, input_preview=%.100s", task_id, user_input)
 
         # 推送澄清事件
         event_bus = getattr(runtime, "event_bus", None) if runtime else None
+        if event_bus is None:
+            # Runtime 未注入时回退全局 EventBus，保证 SSE 副作用真实生效
+            event_bus = await get_event_bus()
         if event_bus is not None:
             from app.streaming.models import SseEvent
             await event_bus.publish(
@@ -51,6 +55,6 @@ class ClarifyNode:
 
         state["status"] = "clarification_needed"
         state["progress"] = 1.0
-        state["chat_response"] = "您的输入不够明确，请提供更多信息来描述您想要完成的具体任务。"  # type: ignore[typeddict-unknown-key]
+        state["chat_response"] = "您的输入不够明确，请提供更多信息来描述您想要完成的具体任务。"
 
         return state

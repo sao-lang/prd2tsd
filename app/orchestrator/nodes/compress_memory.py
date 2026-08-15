@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.logger import get_logger
+from app.orchestrator.nodes.memory_context import load_history_messages
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.compress_memory")
@@ -57,7 +58,7 @@ class CompressMemoryNode:
 
         try:
             # 从 State 获取历史消息
-            messages = state.get("_history_messages", [])  # type: ignore[typeddict-unknown-key]
+            messages = await load_history_messages(state)
 
             if not messages:
                 logger.debug("无历史消息需要压缩: task=%s", task_id)
@@ -75,7 +76,7 @@ class CompressMemoryNode:
             compressed = await self._compressor.compress(chat_messages)
 
             # 写入 State
-            state["compressed_context"] = [  # type: ignore[typeddict-unknown-key]
+            state["compressed_context"] = [
                 {"role": m.role, "content": m.content} for m in compressed
             ]
 

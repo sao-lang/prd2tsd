@@ -129,6 +129,12 @@ class OrchestratorState(TypedDict):
     intent_confidence: NotRequired[float]
     intent_sub: NotRequired[str]
 
+    # ── 会话记忆（Block F 记忆增强）──
+    session_id: NotRequired[str]
+    _history_messages: NotRequired[list[dict[str, str]]]  # 历史会话消息（retrieve/compress 节点消费）
+    retrieved_memories: NotRequired[list[dict[str, Any]]]  # 记忆检索结果（chat/retrieve 节点消费）
+    compressed_context: NotRequired[list[dict[str, str]]]  # 压缩后的上下文（save_session 持久化）
+
 
 class TaskInfo(BaseModel):
     """任务信息（API 返回）。"""
@@ -156,6 +162,7 @@ def make_initial_state(
     max_iterations: int = 3,
     tenant_context: TenantContext | None = None,
     history_messages: list[dict[str, str]] | None = None,
+    session_id: str = "",
 ) -> OrchestratorState:
     """构造初始 OrchestratorState。
 
@@ -170,6 +177,7 @@ def make_initial_state(
         max_iterations: 最大迭代次数。
         tenant_context: 多租户上下文。
         history_messages: 历史会话消息列表（Phase 3: 记忆增强输入）。
+        session_id: 关联会话 ID（可选，用于记忆检索与会话持久化绑定）。
 
     Returns:
         初始化的 OrchestratorState。
@@ -182,6 +190,7 @@ def make_initial_state(
         "user_id": user_id,
         "user_role": user_role,
         "permissions": permissions or [],
+        "session_id": session_id,
         "tenant_context": tenant_context or TenantContext(),
         "knowledge_context": None,
         "analysis_result": AnalysisResultDetail(project_name="", summary=""),

@@ -14,6 +14,7 @@ from typing import Any
 from app.core.connections import connection_manager
 from app.core.logger import get_logger
 from app.orchestrator.state import OrchestratorState
+from app.session_history.models import MessageCreate, SessionCreate, SessionUpdate
 
 logger = get_logger("prd2tsd.orchestrator.save_session")
 
@@ -44,10 +45,11 @@ class SaveSessionNode:
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """保存会话状态到数据库。
 
-        从 State 中提取:
-        - 用户消息（prd_raw 的前 500 字符作为摘要）
-        - AI 响应（generation_result 的摘要）
-        - 任务状态 + 评测分数
+        从 State 中提取并写入 sessions / session_messages 表：
+        - 用户消息（prd_raw）
+        - AI 响应（chat_response / generation_result 摘要）
+        - 会话摘要（compressed_context 或响应摘要）+ 任务状态 + 评测分数
+        - thread_id 绑定 task_id，保证 Session ↔ LangGraph checkpoint 可追溯
 
         Args:
             state: 当前 OrchestratorState。
@@ -57,32 +59,54 @@ class SaveSessionNode:
         """
         task_id = state.get("task_id", "")
         status = state.get("status", "complete")
+        workspace_id = state.get("workspace_id", "")
+        user_id = state.get("user_id", "")
+        session_id = state.get("session_id", "")
+        intent = state.get("intent", "")
 
         logger.info("保存会话: task=%s, status=%s", task_id, status)
 
         if self._session_service is None:
-            logger.warning("SessionHistoryService 未注入，跳过会话持久化: task=%s", task_id)
-            return state
+            # 兜底：未注入时自建（生产环境由 deps 注入单例）
+            from app.session_history.service import SessionHistoryService
+
+            self._session_service = SessionHistoryService()
 
         # 2026-07-28: 通过 connection_manager 自行创建 DB 会话，
         # 不再依赖 state["_runtime"] 注入（该字段可能未被设置）。
         try:
             pg_connector = connection_manager.get("postgres")
-            async with pg_connector.get_session() as _db_session:
+            async with pg_connector.get_session() as _db_session:  # type: ignore[attr-defined]
+                repo = self._session_service.repository
+
                 # 提取结果摘要（支持复杂生成和简单对话两种路径）
-                chat_response = state.get("chat_response", "")  # type: ignore[typeddict-unknown-key]
+                chat_response = state.get("chat_response", "")
                 generation_result = state.get("generation_result")
                 evaluation_report = state.get("evaluation_report")
 
+                response_text = ""
                 result_summary = ""
                 if chat_response:
                     # 简单对话/知识查询路径
+                    response_text = chat_response
                     result_summary = chat_response[:200]
                 elif generation_result is not None:
                     if hasattr(generation_result, "summary"):
                         result_summary = generation_result.summary or ""
                     elif isinstance(generation_result, dict):
                         result_summary = generation_result.get("summary", "")
+                    if hasattr(generation_result, "content"):
+                        response_text = generation_result.content or ""
+                    elif isinstance(generation_result, dict):
+                        response_text = generation_result.get("content", "")
+
+                # 压缩上下文作为会话摘要的优先来源（压缩节点已有消费者）
+                compressed = state.get("compressed_context")
+                if compressed:
+                    result_summary = "\n".join(
+                        f"{m.get('role', '')}: {m.get('content', '')[:200]}"
+                        for m in compressed
+                    )[:1000] or result_summary
 
                 overall_score = None
                 if evaluation_report is not None:
@@ -90,6 +114,51 @@ class SaveSessionNode:
                         overall_score = evaluation_report.overall_score
                     elif isinstance(evaluation_report, dict):
                         overall_score = evaluation_report.get("overall_score")
+
+                # 1. 解析或创建会话（thread_id 绑定 task_id，保证断点可追溯）
+                session = None
+                if session_id:
+                    session = await repo.get_session(_db_session, session_id)
+                if session is None:
+                    session_type = "generate" if intent == "complex_generation" else (intent or "chat")
+                    title = (state.get("prd_raw", "") or "新会话")[:50]
+                    session = await repo.create_session(
+                        _db_session,
+                        workspace_id,
+                        user_id,
+                        SessionCreate(title=title, session_type=session_type),
+                        thread_id=task_id,
+                    )
+                    session_id = session.id
+
+                # 2. 持久化用户消息
+                user_input = state.get("prd_raw", "")
+                if session_id and user_input:
+                    await repo.add_message(
+                        _db_session,
+                        session_id,
+                        user_id or None,
+                        MessageCreate(role="user", content=user_input[:20000]),
+                    )
+
+                # 3. 持久化 AI 响应
+                if session_id and response_text:
+                    await repo.add_message(
+                        _db_session,
+                        session_id,
+                        user_id or None,
+                        MessageCreate(role="assistant", content=response_text[:50000]),
+                    )
+
+                # 4. 更新会话状态/摘要/评分
+                if session_id:
+                    update_data = SessionUpdate(
+                        summary=result_summary or None,
+                        status=status,
+                    )
+                    await repo.update_session(_db_session, session_id, update_data)
+
+                await _db_session.commit()
 
                 # 通过 EventBus 推送任务保存事件（如果可用）
                 try:
@@ -111,8 +180,9 @@ class SaveSessionNode:
                     pass  # EventBus 不可用时静默跳过
 
                 logger.info(
-                    "会话已保存: task=%s, status=%s, score=%s",
+                    "会话已保存: task=%s, session=%s, status=%s, score=%s",
                     task_id,
+                    session_id,
                     status,
                     overall_score,
                 )

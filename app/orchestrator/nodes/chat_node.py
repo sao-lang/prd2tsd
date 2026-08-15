@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from app.core.logger import get_logger
+from app.orchestrator.nodes.memory_context import build_memory_context, get_event_bus
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.chat_node")
@@ -33,7 +34,7 @@ class ChatNode:
         """
         user_input = state.get("prd_raw", "")
         task_id = state.get("task_id", "")
-        runtime = state.get("_runtime")  # type: ignore[typeddict-unknown-key]
+        runtime = state.get("_runtime")
 
         logger.info("Chat 节点: task=%s, input_len=%d", task_id, len(user_input))
 
@@ -47,6 +48,12 @@ class ChatNode:
             llm_gateway = _gw
 
         event_bus = getattr(runtime, "event_bus", None) if runtime else None
+        if event_bus is None:
+            # Runtime 未注入时回退全局 EventBus，保证 SSE 副作用真实生效
+            event_bus = await get_event_bus()
+
+        # 记忆增强：注入历史相关记忆
+        memory_context = await build_memory_context(state)
 
         # 推送开始事件
         if event_bus is not None:
@@ -60,10 +67,11 @@ class ChatNode:
             )
 
         try:
-            # 流式调用 LLM
+            # 流式调用 LLM（带记忆上下文）
+            prompt = f"{memory_context}\n\n用户问题：{user_input}" if memory_context else user_input
             full_response = ""
             async for token in llm_gateway.stream_complete(
-                prompt=user_input,
+                prompt=prompt,
                 task_type="chat",
                 temperature=0.7,
                 max_tokens=1024,
@@ -86,7 +94,7 @@ class ChatNode:
             full_response = f"抱歉，回答生成失败：{exc}"
 
         # 写入 State
-        state["chat_response"] = full_response  # type: ignore[typeddict-unknown-key]
+        state["chat_response"] = full_response
         state["status"] = "complete"
         state["progress"] = 1.0
 

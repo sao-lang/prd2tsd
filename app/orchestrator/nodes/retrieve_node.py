@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.core.logger import get_logger
+from app.orchestrator.nodes.memory_context import build_memory_context, get_event_bus
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.retrieve_node")
@@ -18,7 +21,7 @@ class KnowledgeQANode:
     适用于：查文档、问概念、搜代码、技术问答。
     """
 
-    def __init__(self, retrieval_pipeline: object | None = None) -> None:
+    def __init__(self, retrieval_pipeline: Any | None = None) -> None:
         """初始化知识查询节点。
 
         Args:
@@ -43,7 +46,7 @@ class KnowledgeQANode:
         user_input = state.get("prd_raw", "")
         task_id = state.get("task_id", "")
         workspace_id = state.get("workspace_id", "")
-        runtime = state.get("_runtime")  # type: ignore[typeddict-unknown-key]
+        runtime = state.get("_runtime")
 
         logger.info("KnowledgeQA 节点: task=%s, query_len=%d", task_id, len(user_input))
 
@@ -56,6 +59,12 @@ class KnowledgeQANode:
             llm_gateway = _gw
 
         event_bus = getattr(runtime, "event_bus", None) if runtime else None
+        if event_bus is None:
+            # Runtime 未注入时回退全局 EventBus，保证 SSE 副作用真实生效
+            event_bus = await get_event_bus()
+
+        # 记忆增强：注入历史相关记忆
+        memory_context = await build_memory_context(state)
 
         # ── 阶段 1: 知识检索 ──
         if event_bus is not None:
@@ -69,7 +78,7 @@ class KnowledgeQANode:
             )
 
         context = ""
-        sources: list[dict] = []
+        sources: list[dict[str, Any]] = []
         try:
             pipeline = self._pipeline
             if pipeline is None:
@@ -128,7 +137,7 @@ class KnowledgeQANode:
                 ),
             )
 
-        # 构建带上下文的 Prompt
+        # 构建带上下文的 Prompt（知识库 + 历史记忆）
         if context:
             prompt = (
                 f"根据以下知识库内容回答用户问题。\n\n"
@@ -136,6 +145,10 @@ class KnowledgeQANode:
                 f"用户问题：{user_input}\n\n"
                 f"请基于知识库内容给出准确、专业的回答。如果知识库内容不足以回答问题，请说明。"
             )
+            if memory_context:
+                prompt = f"{memory_context}\n\n{prompt}"
+        elif memory_context:
+            prompt = f"{memory_context}\n\n用户问题：{user_input}"
         else:
             prompt = user_input
 
@@ -164,7 +177,7 @@ class KnowledgeQANode:
             full_response = f"抱歉，回答生成失败：{exc}"
 
         # 写入 State
-        state["chat_response"] = full_response  # type: ignore[typeddict-unknown-key]
+        state["chat_response"] = full_response
         state["status"] = "complete"
         state["progress"] = 1.0
 

@@ -171,6 +171,7 @@ async def _graph_sync(
         prd_raw=req.message,
         prd_file_type=req.prd_type,
         workspace_id=req.workspace_id,
+        session_id=req.session_id,
     )
     # 预写入意图，图内 classify 节点检测到后跳过分类
     initial_state["intent"] = intent_result.intent.value
@@ -241,6 +242,7 @@ async def _create_generation_task(
         workspace_id=req.workspace_id,
         user_id=str(current_user.id),
         user_role=user_role,
+        session_id=req.session_id,
         orchestrator=orchestrator,
     )
     return task_id

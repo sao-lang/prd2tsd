@@ -28,16 +28,19 @@ class SessionRepository:
         workspace_id: str,
         user_id: str,
         data: SessionCreate,
+        thread_id: str | None = None,
     ) -> SessionOut:
         """创建新会话。
 
-        Phase 3: 自动生成 thread_id 用于 LangGraph checkpoint 绑定。
+        Phase 3: 自动生成 thread_id 用于 LangGraph checkpoint 绑定；
+        也可由调用方显式指定（主编排图内以 task_id 绑定断点）。
 
         Args:
             db: 数据库会话。
             workspace_id: 工作空间 ID。
             user_id: 用户 ID。
             data: 创建参数。
+            thread_id: LangGraph 线程 ID（默认自动生成 UUID）。
 
         Returns:
             创建的会话信息。
@@ -50,7 +53,7 @@ class SessionRepository:
             title=data.title,
             session_type=data.session_type or "generate",
             tags=data.tags or [],
-            thread_id=str(_uuid.uuid4()),  # Phase 3: 自动生成 LangGraph thread_id
+            thread_id=thread_id or str(_uuid.uuid4()),  # Phase 3: LangGraph thread_id
         )
         db.add(session)
         await db.flush()

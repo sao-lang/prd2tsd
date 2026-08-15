@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.logger import get_logger
+from app.orchestrator.nodes.memory_context import load_history_messages
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.retrieve_memory")
@@ -58,7 +59,7 @@ class RetrieveMemoryNode:
 
         try:
             # 从 State 获取历史消息
-            messages = state.get("_history_messages", [])  # type: ignore[typeddict-unknown-key]
+            messages = await load_history_messages(state)
             if not messages:
                 logger.debug("无历史消息可用于检索: task=%s", task_id)
                 return state
@@ -72,7 +73,7 @@ class RetrieveMemoryNode:
             )
 
             # 写入 State
-            state["retrieved_memories"] = [  # type: ignore[typeddict-unknown-key]
+            state["retrieved_memories"] = [
                 {
                     "content": r.content,
                     "role": r.role,
