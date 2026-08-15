@@ -35,15 +35,20 @@ logger = get_logger("prd2tsd.orchestrator")
 class KnowledgeRetrievalNode:
     """知识检索节点 — 调用块 B 的 RetrievalPipeline。"""
 
-    def __init__(self, pipeline: RetrievalPipeline) -> None:
+    def __init__(
+        self,
+        pipeline: RetrievalPipeline,
+        recorder: DecisionRecorder | None = None,
+    ) -> None:
         """初始化知识检索节点。
 
         Args:
             pipeline: RetrievalPipeline 实例。
+            recorder: DecisionRecorder 实例（可选，共享单例以贯通首尾 trace）。
         """
         self.pipeline = pipeline
         # Block F: 决策记录器
-        self.recorder = DecisionRecorder()
+        self.recorder = recorder or DecisionRecorder()
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """执行知识检索。
@@ -78,6 +83,21 @@ class KnowledgeRetrievalNode:
                 workspace_id=workspace_id,
             )
             state["knowledge_context"] = ctx
+            # Block F: 记录决策（知识检索结果）
+            await self.recorder.record_decision(
+                task_id=task_id,
+                agent_name="orchestrator",
+                node_name="knowledge_retrieval",
+                input_state={"query": prd_raw[:500], "workspace_id": workspace_id},
+                input_prompt=prd_raw[:500],
+                input_tools=[],
+                llm_response="",
+                tool_calls=[],
+                tool_results=[],
+                output_state={"docs": len(ctx.results), "mode": "hybrid"},
+                duration_ms=0,
+                tokens=0,
+            )
             logger.info("知识检索完成: docs=%d", len(ctx.results))
         except Exception as exc:
             logger.warning("知识检索失败（降级继续）: %s", exc)
@@ -94,8 +114,8 @@ class FinalAssemblyNode:
     Block F 增强：结束决策追踪。
     """
 
-    def __init__(self) -> None:
-        self.recorder = DecisionRecorder()
+    def __init__(self, recorder: DecisionRecorder | None = None) -> None:
+        self.recorder = recorder or DecisionRecorder()
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """组装最终结果。
@@ -115,6 +135,25 @@ class FinalAssemblyNode:
 
         # Block F: 结束决策追踪
         await self.recorder.end_trace(task_id)
+
+        # Block F: 记录最终组装决策
+        await self.recorder.record_decision(
+            task_id=task_id,
+            agent_name="orchestrator",
+            node_name="final_assembly",
+            input_state={"status": state.get("status", ""), "progress": state.get("progress", 0.0)},
+            input_prompt="",
+            input_tools=[],
+            llm_response=str(state.get("generation_result", ""))[:500],
+            tool_calls=[],
+            tool_results=[],
+            output_state={
+                "status": state.get("status", ""),
+                "score": getattr(state.get("evaluation_report"), "overall_score", None),
+            },
+            duration_ms=0,
+            tokens=0,
+        )
 
         # E5 增强：任务完成后触发 Webhook 通知
         try:
@@ -187,15 +226,16 @@ def build_orchestrator_graph(
     clarify_node = ClarifyNode()
 
     # ── 复杂生成路径节点 ──
-    kn_node = KnowledgeRetrievalNode(pipeline)
-    analysis_adapter = AnalysisAdapter(analysis_graph)
+    recorder = DecisionRecorder()  # 单例：贯通 knowledge_retrieval → final_assembly 全链路 trace
+    kn_node = KnowledgeRetrievalNode(pipeline, recorder)
+    analysis_adapter = AnalysisAdapter(analysis_graph, recorder)
     analysis_review = HumanReviewNode("analysis")
-    planning_adapter = PlanningAdapter(planning_graph)
+    planning_adapter = PlanningAdapter(planning_graph, recorder)
     planning_review = HumanReviewNode("planning")
-    generation_adapter = GenerationAdapter(generation_graph)
-    evaluation_adapter = EvaluationAdapter(evaluation_graph)
+    generation_adapter = GenerationAdapter(generation_graph, recorder)
+    evaluation_adapter = EvaluationAdapter(evaluation_graph, recorder)
     iteration_decider = IterationDecider()
-    final_assembly = FinalAssemblyNode()
+    final_assembly = FinalAssemblyNode(recorder)
 
     # ── 记忆管理节点 ──
     compress_memory_node = CompressMemoryNode(compressor=context_compressor)

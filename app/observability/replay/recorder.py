@@ -202,3 +202,43 @@ LLM 输出: {record.llm_response[:200]}
             record.decision_summary = resp.content
         except Exception:
             record.decision_summary = f"{record.agent_name}.{record.node_name}"
+
+
+async def record_node_execution(
+    recorder: DecisionRecorder,
+    task_id: str,
+    node_name: str,
+    input_state: dict[str, Any],
+    input_prompt: str,
+    output_state: dict[str, Any],
+) -> DecisionRecord | None:
+    """轻量记录一次节点执行（供编排层适配器/节点复用）。
+
+    Args:
+        recorder: DecisionRecorder 实例。
+        task_id: 任务 ID。
+        node_name: 节点名称（analysis/planning/generation/evaluation 等）。
+        input_state: 输入状态摘要（已裁剪，避免超大对象）。
+        input_prompt: 输入 Prompt 摘要。
+        output_state: 输出状态摘要（已裁剪）。
+
+    Returns:
+        生成的 DecisionRecord；失败时返回 None（不中断主流程）。
+    """
+    try:
+        return await recorder.record_decision(
+            task_id=task_id,
+            agent_name="orchestrator",
+            node_name=node_name,
+            input_state=input_state,
+            input_prompt=input_prompt[:1000],
+            input_tools=[],
+            llm_response="",
+            tool_calls=[],
+            tool_results=[],
+            output_state=output_state,
+            duration_ms=0,
+            tokens=0,
+        )
+    except Exception:
+        return None

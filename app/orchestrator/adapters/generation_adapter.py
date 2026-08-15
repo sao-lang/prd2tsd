@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import StateGraph
 
+from app.observability.replay.recorder import DecisionRecorder, record_node_execution
 from app.orchestrator.state import OrchestratorState
 
 
@@ -14,13 +15,15 @@ class GenerationAdapter:
     将 GenerationState 结果映射回 OrchestratorState。
     """
 
-    def __init__(self, generation_graph: StateGraph) -> None:
+    def __init__(self, generation_graph: StateGraph, recorder: DecisionRecorder | None = None) -> None:
         """初始化 Adapter。
 
         Args:
             generation_graph: 编译后的 Generation Layer StateGraph。
+            recorder: DecisionRecorder 实例（可选，用于决策回放）。
         """
         self.graph = generation_graph
+        self.recorder = recorder
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """执行 Generation Layer。
@@ -118,5 +121,19 @@ class GenerationAdapter:
         state["section_contents"] = result.get("section_contents", {})
         state["export_formats"] = result.get("export_formats", {})
         state["progress"] = 0.75
+
+        # Block F: 记录决策（供回放分析）
+        if self.recorder is not None:
+            await record_node_execution(
+                self.recorder,
+                state.get("task_id", ""),
+                "generation",
+                {"planning_ready": state.get("planning_result") is not None},
+                str(state.get("prd_raw", ""))[:500],
+                {
+                    "generation_result": str(state.get("generation_result", ""))[:200],
+                    "sections": len(state.get("section_contents", {})),
+                },
+            )
 
         return state

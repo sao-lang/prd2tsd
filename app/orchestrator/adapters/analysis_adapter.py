@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import StateGraph
 
+from app.observability.replay.recorder import DecisionRecorder, record_node_execution
 from app.orchestrator.state import OrchestratorState
 
 
@@ -14,13 +15,15 @@ class AnalysisAdapter:
     将 AnalysisState 结果映射回 OrchestratorState。
     """
 
-    def __init__(self, analysis_graph: StateGraph) -> None:
+    def __init__(self, analysis_graph: StateGraph, recorder: DecisionRecorder | None = None) -> None:
         """初始化 Adapter。
 
         Args:
             analysis_graph: 编译后的 Analysis Layer StateGraph。
+            recorder: DecisionRecorder 实例（可选，用于决策回放）。
         """
         self.graph = analysis_graph
+        self.recorder = recorder
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """执行 Analysis Layer。
@@ -83,5 +86,20 @@ class AnalysisAdapter:
         state["extracted_requirements"] = result.get("extracted_requirements", [])
         state["extracted_constraints"] = result.get("extracted_constraints", [])
         state["progress"] = 0.25
+
+        # Block F: 记录决策（供回放分析）
+        if self.recorder is not None:
+            await record_node_execution(
+                self.recorder,
+                state.get("task_id", ""),
+                "analysis",
+                {"prd_raw_len": len(state.get("prd_raw", "")), "has_knowledge": kn_ctx is not None},
+                str(state.get("prd_raw", ""))[:500],
+                {
+                    "analysis_result": str(state.get("analysis_result", ""))[:200],
+                    "requirements": len(state.get("extracted_requirements", [])),
+                    "constraints": len(state.get("extracted_constraints", [])),
+                },
+            )
 
         return state

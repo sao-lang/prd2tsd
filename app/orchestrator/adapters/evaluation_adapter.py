@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import StateGraph
 
+from app.observability.replay.recorder import DecisionRecorder, record_node_execution
 from app.orchestrator.state import OrchestratorState
 
 
@@ -14,13 +15,15 @@ class EvaluationAdapter:
     将 EvaluationState 结果映射回 OrchestratorState。
     """
 
-    def __init__(self, evaluation_graph: StateGraph) -> None:
+    def __init__(self, evaluation_graph: StateGraph, recorder: DecisionRecorder | None = None) -> None:
         """初始化 Adapter。
 
         Args:
             evaluation_graph: 编译后的 Evaluation Layer StateGraph。
+            recorder: DecisionRecorder 实例（可选，用于决策回放）。
         """
         self.graph = evaluation_graph
+        self.recorder = recorder
 
     async def run(self, state: OrchestratorState) -> OrchestratorState:
         """执行 Evaluation Layer。
@@ -45,5 +48,19 @@ class EvaluationAdapter:
         state["evaluation_report"] = result.get("evaluation_report")
         state["iteration_count"] = state.get("iteration_count", 0) + 1
         state["progress"] = 0.90
+
+        # Block F: 记录决策（供回放分析）
+        if self.recorder is not None:
+            await record_node_execution(
+                self.recorder,
+                state.get("task_id", ""),
+                "evaluation",
+                {"generation_ready": state.get("generation_result") is not None},
+                str(state.get("prd_raw", ""))[:500],
+                {
+                    "evaluation_report": str(state.get("evaluation_report", ""))[:200],
+                    "iteration_count": state.get("iteration_count", 0),
+                },
+            )
 
         return state
