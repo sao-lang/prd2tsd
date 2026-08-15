@@ -2607,6 +2607,11 @@ volumes:  pgdata
 
 > 基于 2026-08-13 代码审查的**实测**问题（区别于设计文档的理想描述）。
 
+> **2026-08-15 整改状态**（overview 条目 29）：
+> - ✅ 已修复：**2**（SaveSessionNode 真正落库）、**3 部分**（IterationDecider 阈值硬编码未动，见下）、**4**（EVENT_TYPES 补全 7 项）、**5**（WebIndexer→WebSyncScheduler）、**6**（agents/tools 死代码已删除）、**7**（ScoringNode 显式加权）、**8**（ScoreCalibrator 历史落库）、**9**（BuildStats.claims）、**10**（MemoryRetriever 时间戳来源修复）、**11**（Implementability 改读 planning_result.metadata）、**12**（tech-stack.yml 对齐真实栈）、**13**（死配置清理/search_claims 接线确认）、**14**（DecisionRecorder 单例 + record_decision 调用点）、**16**（roles/team_members 迁移对齐）、**17 部分**（TaskManager 落库，BatchTaskService 仍内存）
+> - 🆕 本轮新增修复：Webhook 注册落库（webhook_subscriptions 表）、DataMaskingEngine 可逆脱敏接入 Gateway、core/prompt_registry 死模块删除
+> - ⚠️ 仍待处理：#1 RuntimeInjector 本身未接线（SSE 副作用已通过全局 EventBus 回退生效）、#3 IterationDecider 阈值硬编码、#15 TokenResponse 重复定义、#18 评测依赖有效 API key
+
 | # | 问题 | 影响 | 建议 |
 |---|------|------|------|
 | 1 | **RuntimeInjector 未接线**：`_runtime` 从未注入主编排图 | `chat_node`/`retrieve_node`/`clarify_node` 的 SSE 副作用（chat.chunk/qna.chunk 等）在图中实际不生效（event_bus=None）；`OrchestratorRuntime` 设计未落地 | 在 build_and_compile 前调用 RuntimeInjector.inject，或在节点内改为显式依赖注入 |

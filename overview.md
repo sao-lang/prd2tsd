@@ -2,6 +2,21 @@
 
 ### 2026-08-14
 
+#### 29. 功能断点全量整改（18 项：记忆/SSE/回放/评分/脱敏/持久化）
+
+- **时间：** 2026-08-15
+- **发起人：** user（"先解决你检查出来的问题吧"→"按方案全做"）
+- **依据：** 全库审查实测断点清单（6 🔴 + 11 🟡 + 4 🔵）
+- **修改内容：**
+  - **P0 管道断裂（5 项）**：SaveSessionNode 真正落库（会话+双消息+摘要，thread_id 绑定 task_id）；chat/clarify/retrieve 节点 SSE 回退全局 EventBus；WebIndexer 悬空导入改 WebSyncScheduler；记忆链路打通（State 增 session_id/历史/记忆字段，interact/task_manager 传 session_id，retrieve/compress/chat 节点注入与消费）；DecisionRecorder 单例化 + 4 适配器与 2 节点补 record_decision
+  - **P1 半实现（9 项）**：EVENT_TYPES 补 7 项；MemoryRetriever 时间戳/向量相关性；BuildStats.claims；ScoringNode 显式 DIM_WEIGHTS + ScoreCalibrator 历史落库（evaluation_scores 表）；ImplementabilityEvalNode 改读 planning_result.metadata；DataMaskingEngine 可逆脱敏接入 gateway；TaskManager 落库（task_runs，重启可恢复断点）；Webhook 注册落库（webhook_subscriptions）；迁移/ORM 对齐 + tech-stack.yml 修正
+  - **P2 死代码（4 项）**：删除 app/agents 与 app/core/prompt_registry 及其测试；UnifiedImageEncoder 确认已不存在；死配置清理
+- **修改文件：** app/orchestrator|session_history|evaluation|security|llm_gateway|integrations|batch|models|api/routes 等约 35 文件 + alembic 迁移 e1f2g3h4i5j6 + 8 个新测试
+- **Lint/类型：** ✅ ruff 改动文件全绿；mypy 改动文件无新增错误
+- **测试：** ✅ 新增接线断言 10 例 + 修正 3 个受影响既有测试；全量单元 355 过 / 4 败（test_batch 需 Redis 为既有环境依赖；2 个 test_ingestion 为本机 tmp_path 权限）
+- **复盘结果：** 用运行时证据+递归检索复核，纠正上轮 1 处误报（Checkpointer 实际已接线）；断点根因仍是"组件初始化≠被调用、注释先于实现、无接线断言测试"
+- **潜在风险：** 迁移需在真实 Postgres 执行 `alembic upgrade head`；TaskManager 落库依赖 task_runs 表，DB 不可用时降级内存；BatchTaskService 仍内存；RuntimeInjector/IterationDecider 阈值/TokenResponse 重复定义待后续处理
+
 #### 28. 代码审查修复：evaluate/文档搜索两处 500 + Postgres checkpointer 用法错误
 
 - **时间：** 2026-08-15
