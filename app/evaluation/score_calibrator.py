@@ -16,6 +16,14 @@ class ScoreCalibrator:
     def __init__(self) -> None:
         self.history: list[dict[str, float]] = []
 
+    def set_history(self, history: list[dict[str, float]]) -> None:
+        """注入历史评分（持久化数据源加载后调用）。
+
+        Args:
+            history: 历史评分记录列表。
+        """
+        self.history = history or []
+
     def calibrate(self, overall: float, dimensions: dict[str, float]) -> dict[str, Any]:
         """执行评分校准。
 

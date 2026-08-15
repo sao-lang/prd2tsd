@@ -28,10 +28,17 @@ class ImplementabilityEvalNode:
 
     async def run(self, state: EvaluationState) -> EvaluationState:
         try:
-            # 从 state 提取技能和时间线信息（如果可用）
-            node_outputs = state.get("node_outputs", {})
-            skills = str(node_outputs.get("skill_gaps", "见技能分析章节"))
-            timeline = str(node_outputs.get("timeline", "见时间线章节"))
+            # 从 planning_result.metadata 提取技能和时间线信息
+            # （规划层各节点将 node_outputs 汇总写入 planning_result.metadata）
+            planning_result = state.get("planning_result")
+            metadata: dict = {}
+            if planning_result is not None:
+                if hasattr(planning_result, "metadata"):
+                    metadata = planning_result.metadata or {}
+                elif isinstance(planning_result, dict):
+                    metadata = planning_result.get("metadata", {})
+            skills = str(metadata.get("skill_gaps", "见技能分析章节"))
+            timeline = str(metadata.get("timeline", "见时间线章节"))
 
             result: ScoreResult = await self.chain.ainvoke({
                 "skills": skills[:1000],

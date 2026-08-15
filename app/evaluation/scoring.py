@@ -46,6 +46,19 @@ SCORING_PROMPT = """你是一个技术方案评审专家。对以下技术方案
 仅返回 JSON。
 """
 
+# 显式维度权重（合计 1.0；completeness 由 LLM 补充，不参与加权）
+DIM_WEIGHTS: dict[str, float] = {
+    "prd_coverage": 0.20,
+    "consistency": 0.20,
+    "feasibility": 0.15,
+    "security": 0.15,
+    "architecture_quality": 0.10,
+    "cost": 0.05,
+    "implementability": 0.05,
+    "tech_advancement": 0.05,
+    "legal_compliance": 0.05,
+}
+
 
 class ScoringNode:
     """10 维加权评分节点（汇总各子节点评分 + LLM 综合评分）。"""
@@ -75,7 +88,13 @@ class ScoringNode:
             "legal_compliance", "completeness",
         ]
 
-        # 2. LLM 补全缺失维度
+        # 2. 加载历史评分（ScoreCalibrator 持久化数据源）
+        from app.evaluation.score_history import load_recent_scores, save_evaluation_score
+
+        history = await load_recent_scores()
+        self.calibrator.set_history(history)
+
+        # 3. LLM 补全缺失维度
         prompt = SCORING_PROMPT
         response = await call_llm(prompt, model="gpt-4o-mini")
 
@@ -84,7 +103,6 @@ class ScoringNode:
             if json_match:
                 data: dict[str, Any] = json.loads(json_match.group())
                 llm_dims = data.get("dimensions", {})
-                overall = float(data.get("overall", 0))
                 conclusion = data.get("conclusion", "不通过")
                 p0_cov = float(data.get("p0_coverage", 0))
                 issues = data.get("issues", [])
@@ -100,8 +118,23 @@ class ScoringNode:
                     else:
                         merged[dim] = 5.0
 
-                # 评分校准
-                calibrated = self.calibrator.calibrate(overall, merged)
+                # 显式加权总分（DIM_WEIGHTS 合计 1.0）
+                weighted = sum(
+                    merged.get(dim, 5.0) * w
+                    for dim, w in DIM_WEIGHTS.items()
+                )
+                weighted_overall = round(weighted, 1)
+
+                # 评分校准（历史比对；LLM overall 作为校准参考）
+                calibrated = self.calibrator.calibrate(weighted_overall, merged)
+
+                # 持久化评测历史（失败不中断）
+                await save_evaluation_score(
+                    workspace_id="",
+                    task_id="",
+                    overall_score=calibrated["overall"],
+                    dimension_scores=merged,
+                )
 
                 report = EvaluationReportDetail(
                     overall_score=calibrated["overall"],
