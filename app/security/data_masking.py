@@ -19,6 +19,9 @@ class DataMaskingEngine:
         self._classifier = DataClassifier()
         self._patterns: dict[str, re.Pattern] = {}
         self._masks: dict[str, str] = {}
+        # 可逆脱敏注册表：掩码 token → 原始文本
+        self._registry: dict[str, str] = {}
+        self._seq = 0
 
         for name, (pattern, _level) in SENSITIVE_PATTERNS.items():
             self._patterns[name] = re.compile(pattern, re.IGNORECASE)
@@ -74,6 +77,57 @@ class DataMaskingEngine:
             "masked_text": result,
             "masked_types": masked_types,
         }
+
+    def mask_reversible(self, text: str, level: str = "L2") -> str:
+        """可逆脱敏 — 生成唯一掩码 token 并记录原文，供 unmask 还原。
+
+        用于 LLM 调用链：敏感信息以掩码形式进入第三方模型，
+        响应生成后由 unmask() 还原，避免敏感数据外泄且不影响正常输出。
+
+        Args:
+            text: 待脱敏的原始文本。
+            level: 脱敏等级（同 mask()）。
+
+        Returns:
+            脱敏后的文本（唯一 token 掩码）。
+        """
+        if not text:
+            return text
+
+        result = text
+        target_level = DataLevel(level)
+
+        for name, (_, data_level) in SENSITIVE_PATTERNS.items():
+            dl = self._classifier._level_rank(data_level)
+            tl = self._classifier._level_rank(target_level)
+            if dl <= tl:
+                pattern = self._patterns[name]
+
+                def _repl(match: re.Match[str], _name: str = name) -> str:
+                    self._seq += 1
+                    token = f"[MASKED_{_name.upper()}:{self._seq}]"
+                    self._registry[token] = match.group(0)
+                    return token
+
+                result = pattern.sub(_repl, result)
+
+        return result
+
+    def unmask(self, text: str) -> str:
+        """还原可逆掩码 token 为原始文本。
+
+        Args:
+            text: 可能包含掩码 token 的文本。
+
+        Returns:
+            还原后的文本。
+        """
+        if not text:
+            return text
+        for token, original in self._registry.items():
+            if token in text:
+                text = text.replace(token, original)
+        return text
 
     def get_classifier(self) -> DataClassifier:
         """获取数据分类器。

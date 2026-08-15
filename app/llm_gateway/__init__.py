@@ -45,6 +45,7 @@ from app.llm_gateway.providers import ProviderFactory
 from app.llm_gateway.rate_limiter import RateLimiter, rate_limiter
 from app.observability.metrics import LLM_CALL_TOTAL, LLM_COST_TOTAL, track_llm_call
 from app.observability.tracing import tracer
+from app.security.data_masking import DataMaskingEngine
 
 logger = get_logger("prd2tsd.gateway")
 
@@ -279,7 +280,7 @@ class LLMGateway:
                     span.set_attribute("broken_provider", provider_name)
 
                 response, model_name = await self._failover_call(
-                    prompt=prompt,
+                    prompt=_masking_engine.mask_reversible(prompt) if prompt else prompt,
                     kwargs=kwargs,
                 )
 
@@ -310,6 +311,9 @@ class LLMGateway:
                             response.content = f"[输出被护栏拦截: {r.reason}]"
                             span.set_attribute("guardrail_blocked", r.name)
                             break
+
+                # ── 输出还原：把输入脱敏 token 还原为原文（敏感数据不落第三方 LLM，输出保持完整）──
+                response.content = _masking_engine.unmask(response.content)
 
                 # ── 步骤 8: 设置缓存 / 成本 / 预算 / 速率 ──
                 self.cache.set(cache_key, response.content)
@@ -674,6 +678,9 @@ class LLMGateway:
 
 # 全局 Gateway 实例
 gateway = LLMGateway()
+
+# 数据脱敏引擎单例（LLM 调用链输入脱敏 / 输出还原）
+_masking_engine = DataMaskingEngine()
 
 __all__ = [
     "LLMGateway",
