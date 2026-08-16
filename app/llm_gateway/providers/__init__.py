@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from app.llm_gateway.providers.anthropic import AnthropicProvider
 from app.llm_gateway.providers.base import BaseProvider
 from app.llm_gateway.providers.cohere import CohereProvider
@@ -54,4 +56,4 @@ class ProviderFactory:
         if provider_cls is None:
             raise ValueError(f"不支持的供应商类型: {provider_type}")
 
-        return provider_cls(config)
+        return cast(BaseProvider, cast(Any, provider_cls)(config))

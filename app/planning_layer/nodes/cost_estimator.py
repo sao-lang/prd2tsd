@@ -27,6 +27,7 @@ class CostEstimatorNode:
         self.chain = COST_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行成本估算节点逻辑。"""
         ar = state["analysis_result"]
         stack_names = ", ".join(t.recommendation for t in state.get("tech_stack_choices", []))
         node_outputs = dict(state.get("node_outputs", {}))

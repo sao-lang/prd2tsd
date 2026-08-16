@@ -22,7 +22,9 @@ class RevisionNode:
         self.chain = REVISION_PROMPT | llm
 
     async def run(self, state: GenerationState) -> GenerationState:
-        issues = state.get("consistency_issues", [])
+        """执行一致性修订节点逻辑。"""
+        issues_raw = state.get("consistency_issues", [])
+        issues = issues_raw if isinstance(issues_raw, list) else [issues_raw]
         if not issues:
             return state
 
@@ -36,7 +38,11 @@ class RevisionNode:
             "issues": "\n".join(issues),
             "content": affected_content,
         })
-        response = result.content if hasattr(result, "content") else str(result)
+        response = (
+            result.content
+            if isinstance(result.content, str)
+            else str(result)
+        )
 
         if response and response.strip():
             updated = dict(state.get("section_contents", {}))

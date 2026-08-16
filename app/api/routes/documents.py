@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +40,7 @@ def _get_workspace_id(request: Request) -> str:
     ws_id = request.scope.get(_SCOPE_WORKSPACE_ID)
     if not ws_id:
         raise HTTPException(status_code=400, detail="缺少工作空间上下文")
+    assert isinstance(ws_id, str)
     return ws_id
 
 
@@ -218,7 +221,7 @@ async def reindex_document(
     document_id: str,
     db: AsyncSession = Depends(get_db_session),
     svc: DocumentManagementService = Depends(lambda: document_service),
-) -> dict:
+) -> dict[str, Any]:
     """重索引文档。
 
     Args:

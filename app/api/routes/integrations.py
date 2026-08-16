@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +22,7 @@ def _get_workspace_id(request: Request) -> str:
     ws_id = request.scope.get(_SCOPE_WORKSPACE_ID)
     if not ws_id:
         raise HTTPException(status_code=400, detail="缺少工作空间上下文")
+    assert isinstance(ws_id, str)
     return ws_id
 
 
@@ -29,7 +32,7 @@ async def register_webhook(
     req: WebhookRegisterRequest,
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-) -> dict:
+) -> dict[str, Any]:
     """注册 Webhook。
 
     Args:
@@ -52,7 +55,7 @@ async def unregister_webhook(
     event: str = "task.completed",
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-) -> dict:
+) -> dict[str, Any]:
     """注销 Webhook。
 
     Args:
@@ -97,12 +100,12 @@ async def test_webhook(
     return WebhookTestResponse(**result)
 
 
-@router.get("/webhooks", response_model=list[dict])
+@router.get("/webhooks", response_model=list[dict[str, Any]])
 async def list_webhooks(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """列出已注册的 Webhook。
 
     Args:

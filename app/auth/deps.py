@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from fastapi import HTTPException, Request
 
 from app.auth.middleware import _SCOPE_ORG_ID, _SCOPE_PERMISSIONS, _SCOPE_USER_ID, _SCOPE_WS_ID
@@ -24,6 +27,7 @@ async def get_current_user(request: Request) -> str:
     user_id = request.scope.get(_SCOPE_USER_ID, "")
     if not user_id:
         raise AuthenticationError("请先登录")
+    assert isinstance(user_id, str)
     return user_id
 
 
@@ -42,10 +46,11 @@ async def get_current_workspace(request: Request) -> str:
     ws_id = request.scope.get(_SCOPE_WS_ID, "")
     if not ws_id:
         raise HTTPException(status_code=400, detail="请指定工作空间")
+    assert isinstance(ws_id, str)
     return ws_id
 
 
-def require_permission(permission: str):
+def require_permission(permission: str) -> Callable[[Request], Awaitable[None]]:
     """依赖注入工厂 — 检查用户是否拥有指定权限。
 
     Args:
@@ -62,7 +67,7 @@ def require_permission(permission: str):
     return _check
 
 
-async def get_user_context(request: Request) -> dict:
+async def get_user_context(request: Request) -> dict[str, Any]:
     """获取当前用户的完整上下文信息。
 
     Args:

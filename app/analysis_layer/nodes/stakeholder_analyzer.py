@@ -26,6 +26,7 @@ class StakeholderAnalyzerNode:
         self.chain = STAKEHOLDER_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行干系人分析节点逻辑。"""
         prd_text = state["prd_raw"][:4000]
         try:
             result: StakeholderList = await self.chain.ainvoke({

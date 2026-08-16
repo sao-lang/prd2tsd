@@ -18,6 +18,7 @@ class OutputValidatorGuardrail(Guardrail):
     stage = "post_llm"
 
     async def check(self, text: str, context: dict[str, Any]) -> GuardrailResult:
+        """执行输出格式校验护栏检查。"""
         # 仅当任务期望 JSON 输出时校验
         task_type = context.get("task_type", "")
         expected_json = context.get("expected_json", False)

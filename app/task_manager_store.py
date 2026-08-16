@@ -30,7 +30,7 @@ async def create_task_run(record: dict[str, Any]) -> None:
     try:
         pg = connection_manager.get("postgres")
         now = datetime.now(UTC)
-        async with pg.get_session() as db:  # type: ignore[attr-defined]
+        async with pg.get_session() as db:
             db.add(
                 TaskRun(
                     task_id=str(record.get("task_id", "")),
@@ -62,7 +62,7 @@ async def update_task_run(task_id: str, **fields: Any) -> None:
         from sqlalchemy import update
 
         pg = connection_manager.get("postgres")
-        async with pg.get_session() as db:  # type: ignore[attr-defined]
+        async with pg.get_session() as db:
             values: dict[str, Any] = {k: v for k, v in fields.items() if v is not None}
             if "result" in values:
                 values["result"] = _dump(values["result"])
@@ -79,7 +79,7 @@ async def load_task_run(task_id: str) -> dict[str, Any] | None:
     """按 task_id 加载任务记录（无记录或 DB 不可用时返回 None）。"""
     try:
         pg = connection_manager.get("postgres")
-        async with pg.get_session() as db:  # type: ignore[attr-defined]
+        async with pg.get_session() as db:
             result = await db.execute(select(TaskRun).where(TaskRun.task_id == task_id))
             row = result.scalar_one_or_none()
             if row is None:
@@ -109,7 +109,7 @@ async def load_paused_task_ids() -> list[str]:
     """加载所有 paused 任务 ID（人工审核恢复列表）。"""
     try:
         pg = connection_manager.get("postgres")
-        async with pg.get_session() as db:  # type: ignore[attr-defined]
+        async with pg.get_session() as db:
             result = await db.execute(
                 select(TaskRun.task_id).where(TaskRun.status == "paused").order_by(TaskRun.updated_at.desc())
             )

@@ -56,7 +56,9 @@ class SemanticCache:
             del self._cache[key]
             return None
 
-        return entry["content"]
+        content = entry["content"]
+        assert isinstance(content, str)
+        return content
 
     def set(self, key: str, content: str) -> None:
         """设置缓存。

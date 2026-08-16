@@ -10,7 +10,6 @@ from app.orchestrator.main_graph import build_and_compile
 from app.orchestrator.state import TenantContext, make_initial_state
 from app.task_manager import TaskManager
 
-
 # ── 样本 PRD ──
 
 SAMPLE_PRD = """# 用户服务系统设计
@@ -139,11 +138,11 @@ async def test_full_pipeline_with_mock_llm(mock_graphs, mock_pipeline):
 
     # 验证文档长度
     gen_result = result["generation_result"]
-    content = ""
-    if isinstance(gen_result, dict):
-        content = gen_result.get("content", "")
-    else:
-        content = getattr(gen_result, "content", "")
+    content = (
+        gen_result.get("content", "")
+        if isinstance(gen_result, dict)
+        else getattr(gen_result, "content", "")
+    )
     assert len(content) > 1000, f"文档内容不足: {len(content)}"
 
 

@@ -29,6 +29,7 @@ def _get_workspace_id(request: Request) -> str:
     ws_id = request.scope.get(_SCOPE_WORKSPACE_ID)
     if not ws_id:
         raise HTTPException(status_code=400, detail="缺少工作空间上下文")
+    assert isinstance(ws_id, str)
     return ws_id
 
 

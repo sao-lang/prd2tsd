@@ -125,6 +125,7 @@ class DocumentStorage:
         data = response.read()
         response.close()
         response.release_conn()
+        assert isinstance(data, bytes)
         return data
 
     async def delete(self, storage_path: str) -> bool:
@@ -156,7 +157,9 @@ class DocumentStorage:
             预签名 URL。
         """
         client = self._get_client()
-        return client.presigned_get_object("prd-docs", storage_path, expires=expires)
+        url = client.presigned_get_object("prd-docs", storage_path, expires=expires)
+        assert isinstance(url, str)
+        return url
 
 
 def _get_ext(filename: str) -> str:

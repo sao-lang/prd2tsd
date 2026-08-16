@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -170,7 +171,7 @@ async def health_check() -> HealthResponse:
         status=overall_status,
         connections=conn_health,
         gateway="ready",
-        model_config=model_config_status,
+        model_config_status=model_config_status,
     )
 
 
@@ -210,7 +211,7 @@ app.include_router(stream_generate_routes.router)  # Block E: SSE 流式任务�
 
 
 @app.get("/")
-async def root() -> dict:
+async def root() -> dict[str, Any]:
     """根路径。
 
     Returns:

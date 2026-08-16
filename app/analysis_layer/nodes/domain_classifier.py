@@ -26,6 +26,7 @@ class DomainClassifierNode:
         self.chain = DOMAIN_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行领域分类节点逻辑。"""
         prd_text = state["prd_raw"][:3000]
         try:
             result: DomainResult = await self.chain.ainvoke({

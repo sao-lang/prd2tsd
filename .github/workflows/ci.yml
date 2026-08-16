@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.12"]
 
     services:
       postgres:
@@ -49,6 +49,15 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -74,21 +83,32 @@ jobs:
 
       - name: 单元测试
         run: pytest tests/unit/ -v --tb=short
+        env:
+          REDIS_URL: redis://localhost:6379/0
+
+      - name: 数据库迁移
+        run: alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/prd2tsd
 
       - name: 集成测试
         run: pytest tests/integration/ -v --tb=short
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/prd2tsd
+          REDIS_URL: redis://localhost:6379/0
 
   tech-stack-compliance:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 检查禁止依赖
-        run: |
-          if grep -qi "langchain\|chromadb\|qdrant-client\|flask\|django\|redis\|celery" requirements.txt; then
-            echo "❌ 发现禁止的依赖包"
-            exit 1
-          fi
-          echo "✅ 技术栈合规检查通过"
+      - name: 设置 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 PyYAML
+        run: pip install pyyaml
+
+      - name: 技术栈合规检查（基于 tech-stack.yml 黑名单）
+        run: python scripts/check_tech_stack.py

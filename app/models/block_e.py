@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -135,8 +136,8 @@ class SessionMessage(UUIDMixin, Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_type: Mapped[str] = mapped_column(String(32), default="text")
-    attachments: Mapped[dict | None] = mapped_column(JSON, default=list)
-    msg_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, default=dict)
+    attachments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+    msg_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, default=dict)
     parent_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     turn_index: Mapped[int] = mapped_column(Integer, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, default=0)

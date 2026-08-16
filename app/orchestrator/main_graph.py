@@ -12,6 +12,7 @@ from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from app.core.config import Settings
 from app.core.logger import get_logger
@@ -27,6 +28,7 @@ from app.orchestrator.adapters import (
 from app.orchestrator.human_review import HumanReviewNode
 from app.orchestrator.iteration import IterationDecider
 from app.orchestrator.routing import needs_review
+from app.orchestrator.runtime import RuntimeInjector
 from app.orchestrator.state import OrchestratorConfig, OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator")
@@ -179,16 +181,17 @@ class FinalAssemblyNode:
 
 
 def build_orchestrator_graph(
-    analysis_graph: StateGraph,
-    planning_graph: StateGraph,
-    generation_graph: StateGraph,
-    evaluation_graph: StateGraph,
+    analysis_graph: CompiledStateGraph[Any, Any, Any, Any],
+    planning_graph: CompiledStateGraph[Any, Any, Any, Any],
+    generation_graph: CompiledStateGraph[Any, Any, Any, Any],
+    evaluation_graph: CompiledStateGraph[Any, Any, Any, Any],
     retrieval_pipeline: RetrievalPipeline | None = None,
     session_service: Any = None,
     context_compressor: Any = None,
     memory_retriever: Any = None,
     llm_gateway: Any = None,
-) -> StateGraph:
+    config: OrchestratorConfig | None = None,
+) -> StateGraph[OrchestratorState, Any, Any, Any]:
     """构建主编排 StateGraph。
 
     Phase 2 全链路：接入 classify / chat / knowledge_qa / clarify 节点，
@@ -205,6 +208,7 @@ def build_orchestrator_graph(
         context_compressor: ContextCompressor 实例（可选，用于记忆压缩）。
         memory_retriever: MemoryRetriever 实例（可选，用于记忆检索）。
         llm_gateway: LLM Gateway 实例（可选，用于 chat/qa 路径）。
+        config: 主编排静态配置（阈值/最大迭代数），缺省使用默认值。
 
     Returns:
         主编排 StateGraph（未编译）。
@@ -218,6 +222,8 @@ def build_orchestrator_graph(
     from app.orchestrator.nodes.save_session import SaveSessionNode
 
     pipeline = retrieval_pipeline or RetrievalPipeline()
+    # ── 运行时注入（入口节点，线程级注册表）──
+    runtime_injector = RuntimeInjector()
 
     # ── 意图路由节点 ──
     classify_node = IntentClassifyNode(llm_gateway=llm_gateway)
@@ -234,7 +240,7 @@ def build_orchestrator_graph(
     planning_review = HumanReviewNode("planning")
     generation_adapter = GenerationAdapter(generation_graph, recorder)
     evaluation_adapter = EvaluationAdapter(evaluation_graph, recorder)
-    iteration_decider = IterationDecider()
+    iteration_decider = IterationDecider(config=config)
     final_assembly = FinalAssemblyNode(recorder)
 
     # ── 记忆管理节点 ──
@@ -246,6 +252,7 @@ def build_orchestrator_graph(
     graph = StateGraph(OrchestratorState)
 
     # 意图路由层
+    graph.add_node("inject_runtime", trace_node("inject_runtime")(runtime_injector.inject))
     graph.add_node("classify", trace_node("classify")(classify_node.run))
     graph.add_node("chat_node", trace_node("chat_node")(chat_node.run))
     graph.add_node("retrieve_node", trace_node("retrieve_node")(retrieve_node.run))
@@ -267,7 +274,8 @@ def build_orchestrator_graph(
     graph.add_node("save_session", trace_node("save_session")(save_session_node.run))
 
     # ── 入口：意图分类 → 条件路由 ──
-    graph.set_entry_point("classify")
+    graph.set_entry_point("inject_runtime")
+    graph.add_edge("inject_runtime", "classify")
     graph.add_conditional_edges(
         "classify",
         route_by_intent,
@@ -338,19 +346,19 @@ def build_orchestrator_graph(
 
 
 def build_and_compile(
-    analysis_graph: StateGraph,
-    planning_graph: StateGraph,
-    generation_graph: StateGraph,
-    evaluation_graph: StateGraph,
+    analysis_graph: CompiledStateGraph[Any, Any, Any, Any],
+    planning_graph: CompiledStateGraph[Any, Any, Any, Any],
+    generation_graph: CompiledStateGraph[Any, Any, Any, Any],
+    evaluation_graph: CompiledStateGraph[Any, Any, Any, Any],
     retrieval_pipeline: RetrievalPipeline | None = None,
     use_checkpointer: bool = False,
-    checkpointer: BaseCheckpointSaver | None = None,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
     config: OrchestratorConfig | None = None,
     session_service: Any = None,
     context_compressor: Any = None,
     memory_retriever: Any = None,
     llm_gateway: Any = None,
-) -> StateGraph:
+) -> CompiledStateGraph[OrchestratorState, Any, Any, Any]:
     """构建并编译主编排 StateGraph。
 
     支持 MemorySaver（开发）和 PostgresSaver（生产）两种 checkpointer。
@@ -382,9 +390,10 @@ def build_and_compile(
         context_compressor=context_compressor,
         memory_retriever=memory_retriever,
         llm_gateway=llm_gateway,
+        config=config,
     )
 
-    effective_checkpointer: BaseCheckpointSaver | None = None
+    effective_checkpointer: BaseCheckpointSaver[Any] | None = None
     if checkpointer is not None:
         effective_checkpointer = checkpointer
     elif use_checkpointer:
@@ -398,7 +407,7 @@ def build_and_compile(
 
 async def create_postgres_checkpointer(
     db_url: str | None = None,
-) -> BaseCheckpointSaver:
+) -> BaseCheckpointSaver[Any]:
     """创建 PostgreSQL checkpointer 并自动建表。
 
     用于生产环境的断点持久化恢复。
@@ -423,7 +432,7 @@ async def create_postgres_checkpointer(
         return checkpointer
 
 
-async def create_memory_checkpointer() -> BaseCheckpointSaver:
+async def create_memory_checkpointer() -> BaseCheckpointSaver[Any]:
     """创建内存 checkpointer（开发/测试用）。
 
     Returns:

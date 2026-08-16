@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from contracts.interfaces import AnalysisResultDetail, EvaluationReportDetail, GenerationResultDetail, PlanningResultDetail
 from app.evaluation.agent_graph import evaluation_graph
+from contracts.interfaces import (
+    AnalysisResultDetail,
+    EvaluationReportDetail,
+    GenerationResultDetail,
+    PlanningResultDetail,
+)
 
 
 @pytest.mark.asyncio

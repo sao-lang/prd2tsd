@@ -163,7 +163,7 @@ python scripts/e2e_test.py
 
 ## 评测体系（Evaluation）
 
-提供 RAG 检索/回答质量评测（基于 ragas）与 Agent 端到端能力评测，形成
+提供 RAG 检索/回答质量评测（基于 deepeval）与 Agent 端到端能力评测，形成
 "评测 → 定位短板 → 优化 → 再评测"闭环。
 
 ### RAG 评测

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,15 +15,15 @@ from app.core.logger import get_logger
 from app.models.role import Role
 from app.models.team_member import TeamMember
 from app.models.user import User
+from app.models.workspace import Workspace
 
 logger = get_logger("prd2tsd.workspace")
 
 router = APIRouter(prefix="/api/v1/workspaces/{workspace_id}/members", tags=["workspaces"])
 
 
-async def _get_workspace_or_404(workspace_id: str, db: AsyncSession):
+async def _get_workspace_or_404(workspace_id: str, db: AsyncSession) -> Workspace:
     """获取工作空间，不存在则抛 404。"""
-    from app.models.workspace import Workspace
     result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
     ws = result.scalar_one_or_none()
     if not ws:
@@ -35,7 +37,7 @@ async def add_member(
     req: MemberAddRequest,
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-) -> dict:
+) -> dict[str, Any]:
     """添加团队成员。
 
     Args:
@@ -84,7 +86,7 @@ async def remove_member(
     member_user_id: str,
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-) -> dict:
+) -> dict[str, Any]:
     """移除团队成员。
 
     Args:

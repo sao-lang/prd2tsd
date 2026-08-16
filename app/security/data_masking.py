@@ -17,7 +17,7 @@ class DataMaskingEngine:
     def __init__(self) -> None:
         """初始化数据脱敏引擎。"""
         self._classifier = DataClassifier()
-        self._patterns: dict[str, re.Pattern] = {}
+        self._patterns: dict[str, re.Pattern[str]] = {}
         self._masks: dict[str, str] = {}
         # 可逆脱敏注册表：掩码 token → 原始文本
         self._registry: dict[str, str] = {}

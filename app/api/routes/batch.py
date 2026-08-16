@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.schemas.batch import (
@@ -21,6 +23,7 @@ def _get_workspace_id(request: Request) -> str:
     ws_id = request.scope.get(_SCOPE_WORKSPACE_ID)
     if not ws_id:
         raise HTTPException(status_code=400, detail="缺少工作空间上下文")
+    assert isinstance(ws_id, str)
     return ws_id
 
 
@@ -30,7 +33,7 @@ async def batch_reindex(
     req: BatchReindexRequest,
     user_id: str = Depends(get_current_user),
     svc: BatchTaskService = Depends(lambda: BatchTaskService()),
-) -> dict:
+) -> dict[str, Any]:
     """批量重索引文档。
 
     Args:
@@ -53,7 +56,7 @@ async def batch_regenerate(
     req: BatchRegenerateRequest,
     user_id: str = Depends(get_current_user),
     svc: BatchTaskService = Depends(lambda: BatchTaskService()),
-) -> dict:
+) -> dict[str, Any]:
     """批量重新生成方案。
 
     Args:
@@ -114,7 +117,7 @@ async def trigger_scheduled_task(
     task_name: str,
     user_id: str = Depends(get_current_user),
     scheduler: BatchScheduler = Depends(lambda: BatchScheduler()),
-) -> dict:
+) -> dict[str, Any]:
     """立即触发定时任务。
 
     Args:

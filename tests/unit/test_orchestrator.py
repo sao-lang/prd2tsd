@@ -22,13 +22,11 @@ from app.orchestrator.state import (
     make_initial_state,
 )
 from contracts.interfaces import (
-    AnalysisResult,
     AnalysisResultDetail,
     EvaluationReportDetail,
     GenerationResultDetail,
     PlanningResultDetail,
 )
-
 
 # ── Fixtures ──
 

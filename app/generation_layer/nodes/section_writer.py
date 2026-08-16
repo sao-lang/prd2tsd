@@ -5,6 +5,8 @@ Block E 增强：SSE 流式推送 — 逐 chunk 推送文档片段。
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.generation_layer.models import GenerationState
 from app.llm_gateway import gateway
 
@@ -52,7 +54,7 @@ class SectionWriterNode:
     - 通过 EventBus 推送 generation.section / generation.chunk 事件
     """
 
-    async def run(self, state: GenerationState) -> GenerationState:
+    async def run(self, state: GenerationState) -> dict[str, Any]:
         """执行单节撰写。
 
         Args:
@@ -133,7 +135,7 @@ class SectionWriterNode:
         }
 
 
-async def _emit_generation_event(task_id: str, event_type: str, payload: dict) -> None:
+async def _emit_generation_event(task_id: str, event_type: str, payload: dict[str, Any]) -> None:
     """向 EventBus 推送生成层事件。
 
     无 task_id 时静默跳过（非流式场景兼容）。

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.types import interrupt
 
 from app.orchestrator.state import OrchestratorState
@@ -68,7 +70,7 @@ class HumanReviewNode:
 
         return state
 
-    def _extract_review_data(self, state: OrchestratorState) -> dict:
+    def _extract_review_data(self, state: OrchestratorState) -> dict[str, Any]:
         """提取当前阶段需要审核的数据。
 
         Args:

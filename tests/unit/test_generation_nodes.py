@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from contracts.interfaces import AnalysisResultDetail, GenerationResultDetail, PlanningResultDetail, SectionOutline
 from app.generation_layer.models import GenerationState
-from app.generation_layer.nodes.outline_node import OutlineGeneratorNode
 from app.generation_layer.nodes.format_assembler import FormatAssemblerNode
+from app.generation_layer.nodes.outline_node import OutlineGeneratorNode
+from contracts.interfaces import AnalysisResultDetail, GenerationResultDetail, PlanningResultDetail, SectionOutline
 
 
 def _empty_gr() -> GenerationResultDetail:

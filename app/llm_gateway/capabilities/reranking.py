@@ -124,6 +124,7 @@ class UnifiedReranking:
             "API Rerank 完成: model=%s, docs=%d",
             model_name, len(docs),
         )
+        assert isinstance(response, RerankResponse)
         return response
 
     def _local_rerank(

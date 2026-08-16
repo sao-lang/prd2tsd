@@ -52,7 +52,7 @@ def _try_get_db_session() -> AsyncSession | None:
     """
     try:
         connector = connection_manager.get("postgres")
-        return connector.get_session()  # type: ignore[attr-defined, no-any-return]
+        return connector.get_session()
     except Exception:
         return None
 
@@ -582,6 +582,7 @@ def _single_message_stream(message: str) -> StreamingResponse:
         StreamingResponse 实例。
     """
     async def event_generator() -> AsyncGenerator[str, None]:
+        """生成澄清/问答 SSE 事件流。"""
         yield SseEvent(
             type="qna.status",
             payload={"phase": "complete", "message": message},
@@ -608,6 +609,7 @@ def _chat_qa_stream(
     workspace_id = req.workspace_id
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        """生成对话/知识问答 SSE 事件流。"""
         try:
             # 知识检索（knowledge_qa 意图）
             context = ""
@@ -702,6 +704,7 @@ def _generation_stream(
         StreamingResponse 实例。
     """
     async def event_generator() -> AsyncGenerator[str, None]:
+        """生成任务创建与订阅 SSE 事件流。"""
         try:
             task_id = await _create_generation_task(req, current_user, orchestrator)
             channel = f"task:{task_id}"
@@ -743,6 +746,7 @@ def _document_analysis_stream(
         StreamingResponse 实例。
     """
     async def event_generator() -> AsyncGenerator[str, None]:
+        """生成文档分析 SSE 事件流。"""
         try:
             if not req.url and not req.doc_id:
                 yield SseEvent.error(

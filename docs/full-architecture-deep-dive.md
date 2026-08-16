@@ -4,6 +4,7 @@
 > **日期**: 2026-08-14
 > **目标读者**: 系统架构理解、新成员 onboarding、全链路故障排查
 > **状态**: 基于 2026-08-13 代码库真实状态重写（含 WP1 观测 / WP2 评测 / Block E 整改 / 社区检测简化）
+> **2026-08-16 同步**: 已按 overview 条目 29-32 更新——18 项断点整改、观测/评测闭环、Block E 统一交互入口、ragas→deepeval 迁移、IterationDecider 阈值配置化、Runtime 线程级注册表接线、文档语义搜索、batch_tasks 落库。
 >
 > **注意**: 本文档为项目唯一全链路架构文档，覆盖**所有功能模块与运行时链路**。
 > 面试相关章节已迁移至 `docs/interview-questions.md`。
@@ -53,7 +54,7 @@
 | **可审核** | Human-in-the-Loop 机制，分析/规划节点人工确认 |
 | **可恢复** | PostgreSQL Checkpointer 持久化，崩溃后可断点续传 |
 | **可观测** | OpenTelemetry 全链路追踪（HTTP→节点→LLM）+ Prometheus 指标 + Grafana + SSE 实时推送 |
-| **可评测** | ragas RAG 评测（L1/L2 指标 + 反思 A/B）+ Agent 评测（L3 过程 + L4 结果 rubric） |
+| **可评测** | deepeval RAG 评测（L1/L2 指标 + 反思 A/B）+ Agent 评测（L3 过程 + L4 结果 rubric） |
 | **企业级** | RBAC/ABAC 权限、多租户隔离、数据脱敏、预算控制、审计日志、Webhook |
 
 ### 1.3 技术栈全景（以实际代码为准）
@@ -73,7 +74,7 @@ Rerank:         BAAI/bge-reranker-v2-m3（本地）/ cohere-rerank（API）
 文档入图:        multi_format_loader（pdf/csv/docx/md/txt/图片）
 追踪:           OpenTelemetry → Jaeger（OTLP gRPC）
 指标:           Prometheus → Grafana
-评测:           ragas 0.4.3（RAG）+ rubric judge（Agent）
+评测:           deepeval 4.x（RAG）+ rubric judge（Agent）
 LLM 模型:       DeepSeek-V3（主）/ GPT-4o-mini（降级/Judge）
 任务队列:        Celery 5.3+（worker + beat）
 测试/Lint:      Pytest + Ruff + Mypy
@@ -104,7 +105,7 @@ LLM 模型:       DeepSeek-V3（主）/ GPT-4o-mini（降级/Judge）
 │              Prompt版本管理 │ 行为回放 │ 数据脱敏 │ 审计日志   │
 ├──────────────────────────────────────────────────────────────┤
 │  观测评测:    OTel 全链路追踪 │ Prometheus/Grafana │          │
-│              ragas RAG 评测 │ Agent rubric 评测              │
+│              deepeval RAG 评测 │ Agent rubric 评测             │
 ├──────────────────────────────────────────────────────────────┤
 │  基础设施:    PostgreSQL+PGVector │ Neo4j │ Redis │ MinIO    │
 │              LLM Gateway │ Jaeger │ Prometheus │ Grafana     │
@@ -128,7 +129,7 @@ app/
 ├── auth/                    # Block A：认证授权（JWT + RBAC/ABAC + 多租户 Prompt）
 ├── security/                # Block A：数据安全（L1-L4 分类/脱敏/审计哈希链）
 ├── models/                  # SQLAlchemy ORM 模型
-├── core/                    # 基础设施（config/circuit_breaker/exceptions/logger/connections/prompt_registry）
+├── core/                    # 基础设施（config/circuit_breaker/exceptions/logger/connections）
 ├── streaming/               # Block E：SSE（event_bus/models/sse 工具）
 ├── session_history/         # Block E：会话历史（service/search/export/压缩/记忆检索）
 ├── document_management/     # Block E：文档管理（MinIO 存储/去重/预览/搜索/入图触发）
@@ -136,7 +137,7 @@ app/
 ├── integrations/            # Block E：Webhook
 ├── batch/                   # Block E：Celery 定时/批量任务
 ├── observability/           # WP1：观测（metrics/tracing/replay 行为回放）
-├── agents/tools/            # ⚠️ 已废弃（ToolRegistry 零调用，待 LangChain ToolNode 替代）
+├── agents/tools/            # ⚠️ 已删除（2026-08-15 条目 29：ToolRegistry 死代码清理）
 └── container.py             # 不存在（本项目无 container，依赖通过 api/deps 注入）
 contracts/                   # 跨层数据模型（interfaces.py + models.py）
 ```
@@ -149,18 +150,18 @@ contracts/                   # 跨层数据模型（interfaces.py + models.py）
 
 | 模块 | 目录 | 核心文件 |
 |------|------|---------|
-| 数据库模型 | `app/models/` | SQLAlchemy ORM（users/workspaces/roles/sessions/uploaded_documents 等 10 表） |
+| 数据库模型 | `app/models/` | SQLAlchemy ORM（users/workspaces/roles/sessions/uploaded_documents 等 14 表 + 3 张运行时向量表） |
 | 认证授权 | `app/auth/` | JWT 双 token、RBAC/ABAC 权限、FastAPI 中间件、多租户 Prompt |
 | 连接管理 | `app/core/connections/` | PostgreSQL/Redis/MinIO/Neo4j 生命周期管理 |
 | 配置中心 | `app/core/config.py` | pydantic-settings 三级优先级配置 |
 | LLM Gateway | `app/llm_gateway/` | Provider 抽象、模型路由、成本追踪、语义缓存、护栏、熔断、Failover |
 | 数据安全 | `app/security/` | 数据分级（L1-L4）、脱敏引擎、哈希链审计日志 |
 | 熔断器 | `app/core/circuit_breaker.py` | 通用异步熔断器（CLOSED/OPEN/HALF_OPEN） |
-| Prompt 版本管理 | `app/core/prompt_registry/` | Prompt 版本存储/回滚/A-B 测试配置 |
+| Prompt 三级隔离 | `app/auth/prompts/` | 组织自定义 → Agent 级通配 → 系统默认三级回退 |
 | Contracts | `contracts/` | 跨 Layer 接口和数据模型定义 |
-| 数据库迁移 | `alembic/` | 3 个版本化迁移 |
+| 数据库迁移 | `alembic/` | 6 个版本化迁移（至 `f3a4b5c6d7e8`） |
 
-### 2.2 数据库模型（10 张表）
+### 2.2 数据库模型（14 张 ORM 表 + 3 张运行时向量表）
 
 > 详见第十九章。核心表：`users / organizations / workspaces / roles / team_members / llm_call_logs / budget_configs / sessions / session_messages / uploaded_documents`。
 > **注意**：项目**没有**独立的 `documents` / `web_resources` / `image_chunks` 表——文档实体统一为 `uploaded_documents`；Web 资源不落 SQLAlchemy，抓取内容增量写入知识图谱（Neo4j + PGVector），URL 变更跟踪由 `WebSyncScheduler` 内存 dict 维护。
@@ -1025,7 +1026,7 @@ needs_review(state) -> str:
 | `CompressMemoryNode` | ContextCompressor.compress(_history_messages) → compressed_context |
 | `SaveSessionNode` | 提取 chat_response/generation_result.summary + overall_score；发布 task.saved 事件 |
 
-> **⚠️ 已知问题**：`RuntimeInjector` 未接入 `build_orchestrator_graph`（图中无节点调用 `inject`），`_runtime` 从未注入 → `chat_node`/`retrieve_node`/`clarify_node` 实际拿到的 `event_bus=None`（SSE 副作用在当前图运行路径上不生效，走全局 gateway）。详见第二十一章。
+> **⚠️ 已知问题（2026-08-16 条目 31 已修复）**：`RuntimeInjector` 原未接入主编排图；现已改为线程级注册表（入口节点 inject_runtime 注册、节点读取、任务结束注销），`_runtime` 不写入 checkpoint（实测 msgpack 不可序列化），节点仍保留全局 EventBus/Gateway 回退。
 
 ---
 
@@ -1248,11 +1249,10 @@ POST /api/v1/documents/upload（multipart 文件）
 
 ## 七、生产级加固层（Block F）
 
-### 7.1 ⚠️ 工具系统（已废弃）
+### 7.1 ⚠️ 工具系统（已删除）
 
-> **版本变更**：`app/agents/tools/`（ToolRegistry 生态）**已废弃**。`main.py` lifespan 明确注释：
-> "Agent 工具已废弃 — ToolRegistry 零调用，待 LangChain @tool + ToolNode 替代"，工具注册代码已注释。
-> 当前仅保留 `agents/{base,context,registry,result}.py` 与 `tools/{system_tools,llm_tool,knowledge,document,code}.py` 空壳文件，**不再是活跃能力**。
+> **2026-08-15 条目 29/30 已删除**：`app/agents/` 与 `ToolRegistry` 死代码已清理（提交 bb7b0a8）。
+> `main.py` lifespan 注释保留说明：如需启用 Agent 工具，请迁移到 LangChain @tool + ToolNode 后重新注册。
 
 ### 7.2 护栏系统（7 个可插拔护栏）
 
@@ -1313,12 +1313,12 @@ BudgetController: 月预算(默认 $100)，check_and_record；超 90% → should
 
 > 已在第六章 6.5 详述。MemoryRetriever 四策略（hybrid 权重 recency 0.3 + relevance 0.4 + importance 0.3）；ContextCompressor 三级压缩（summarize → rolling → truncate），保留 32000 token 保护区。
 
-### 7.7 Prompt 版本管理（app/core/prompt_registry/）
+### 7.7 Prompt 三级隔离（app/auth/prompts/，原 prompt_registry 已删除）
 
 ```text
-PromptRegistry:  版本化存储（PromptVersion: id/name/version/content/hash/author/changelog/is_active/tags）
-                 get/upsert/delete、按版本回滚、Diff 对比、A/B 测试配置（ABTestConfig）
-Storage:         内存实现（registry.py 内）
+PromptManager（app/auth/prompts/manager.py + renderer.py + store.py）:
+  三级回退: 组织自定义 Prompt → Agent 级通配 → 系统默认
+  渲染: Jinja2 模板 + extra_vars（公司名/行业等）；（原 core/prompt_registry 版本管理模块已删除）
 ```
 
 ### 7.8 Agent 行为回放（app/observability/replay/）
@@ -1417,12 +1417,12 @@ track_llm_call(model, layer, node) 上下文管理器:
 部署:  Prometheus(:9090) + Grafana(:3000, provisioning + dashboards，storage/grafana/)
 ```
 
-### 8.3 评测：RAG 评测（app/evaluation/rag/，基于 ragas 0.4.3）
+### 8.3 评测：RAG 评测（app/evaluation/rag/，基于 deepeval 4.x）
 
 ```text
-依赖: ragas==0.4.3（唯一精确锁版）
-  _compat.py: 兼容 shim——langchain-community>=0.4 拆分 vertexai，
-              ragas 0.4.x 顶层导入 ChatVertexAI 会报错 → import ragas 前向 sys.modules 注入占位模块
+依赖: deepeval>=4,<5
+  judge 模型: OpenAIModel 注入项目 judge 配置（api_key/base_url/default_model，temperature=0）
+              （原生 L1/L2 四指标不需要 embedding）
 
 数据模型: RagSample{id,query,reference_answer,reference_contexts,source_file,expected_mode}
          RagQueryScore{context_precision, context_recall, faithfulness,
@@ -1431,12 +1431,12 @@ track_llm_call(model, layer, node) 上下文管理器:
 
 RagEvaluator:
   L1 指标 = context_precision / context_recall（检索质量）
-  L2 指标 = faithfulness / answer_relevancy（回答质量，基于 ragas evaluate）
+  L2 指标 = faithfulness / answer_relevancy（回答质量，基于 deepeval evaluate）
   retrieve_and_answer:  pipeline.retrieve(mode=expected_mode, top_k=config.top_k)
                         → 严格基于上下文回答 prompt（temperature=0.2）
   反思 A/B: evaluate_ab_reflection() 分别以 reflection=false/true（max_reflection_rounds 0/2）
             跑两组完整评测 → reflection_off / reflection_on / diff
-  judge LLM / embedding 复用项目 judge / embedding 配置
+  judge 模型复用项目 judge 配置（原生四指标不需要 embedding）
 
 CLI: scripts/run_rag_eval.py（--dataset/--variant/--ab-reflection）
 数据集: tests/eval/datasets/rag_qa.json（12 条）
@@ -1466,7 +1466,7 @@ CLI: scripts/run_agent_eval.py
 
 ```text
 run_rag_eval.py:
-  load_rag_dataset → RagEvaluator.evaluate（逐 sample: retrieve_and_answer → ragas evaluate）
+  load_rag_dataset → RagEvaluator.evaluate（逐 sample: retrieve_and_answer → deepeval evaluate）
   → 汇总 RagEvalSummary → 写报告（tests/eval/reports/，.gitignore 忽略）
 
 run_agent_eval.py:
@@ -2305,7 +2305,7 @@ tech-stack.yml 黑名单: langchain / langchain-community / langchain-openai / l
 原则 3: Config / State / Runtime 三层分离
   - Config: 启动时加载只读（max_iterations=3）
   - State:  LangGraph checkpoint 自动持久化
-  - Runtime: 每次请求注入，不参与序列化（⚠️ 当前 RuntimeInjector 未接线，见 21）
+  - Runtime: 每次请求注入，不参与序列化（✅ 条目 31：线程级注册表接线，不写 checkpoint）
 
 原则 4: 4 层 Agent 100% 通过 contracts 解耦
   层与层之间不直接 import，通过 Adapter 做状态映射；每层可独立编译、独立测试。
@@ -2500,7 +2500,7 @@ tech-stack.yml 黑名单: langchain / langchain-community / langchain-openai / l
 
 ## 十九、数据模型与数据库
 
-### 19.1 SQLAlchemy ORM 模型（app/models/，10 张表）
+### 19.1 SQLAlchemy ORM 模型（app/models/，14 张表）
 
 | 模型 | 表 | 关键字段 |
 |------|-----|---------|
@@ -2517,6 +2517,8 @@ tech-stack.yml 黑名单: langchain / langchain-community / langchain-openai / l
 
 **base.py**：`Base(DeclarativeBase)`；`UUIDMixin.id`（String(36) 主键，uuid4）；`TimestampMixin`（created_at/updated_at）。
 
+**持久化增强表（条目 29/31）**：`task_runs`（任务运行，重启可恢复）、`webhook_subscriptions`（Webhook 订阅）、`evaluation_scores`（评测历史）、`batch_tasks`（批量任务）。另有三张运行时建表的向量表：`text_unit_embeddings` / `entity_embeddings` / `claim_embeddings`（含 `document_id` 文档关联列）。
+
 ### 19.2 Alembic 迁移历史
 
 | Revision | 文件名 | 内容 |
@@ -2524,6 +2526,9 @@ tech-stack.yml 黑名单: langchain / langchain-community / langchain-openai / l
 | `938e6d4dcfd6` | init_all_tables.py | 创建 10 张表 + 索引（sessions 5、messages 2、documents 6） |
 | `a1b2c3d4e5f6` | add_block_e_tables.py | 类型修复：sessions.tags / uploaded_documents.tags ARRAY(String)→JSONB |
 | `d4e5f6g7h8i9` | add_session_langgraph_fields.py | sessions 加 4 列：thread_id(索引)/checkpoint_ts/current_node/interrupt_stage |
+| `e1f2g3h4i5j6` | add_persistence_and_align_tables.py | task_runs / webhook_subscriptions / evaluation_scores + ORM 对齐 |
+| `e2f3g4h5i6j7` | add_timestamp_align.py | organizations/roles 补 updated_at |
+| `f3a4b5c6d7e8` | add_batch_tasks_and_doc_link.py | batch_tasks 表 + text_unit_embeddings.document_id 列 |
 
 ### 19.3 Contracts 数据模型（contracts/）
 
@@ -2585,7 +2590,7 @@ volumes:  pgdata
 | ORM/DB | sqlalchemy>=2.0, asyncpg, alembic, pgvector>=0.3.0 |
 | Auth | python-jose[cryptography], passlib[bcrypt], bcrypt>=4.0 |
 | LLM | openai>=1.0 |
-| 评测 | **ragas==0.4.3（唯一精确锁版）** |
+| 评测 | deepeval>=4,<5 |
 | 基础设施 | redis[hiredis]>=5.0, minio>=7.0, neo4j>=5.0 |
 | 知识层 | sentence-transformers>=3.0, torch>=2.0, transformers>=4.40.0, cohere>=5.0 |
 | 观测 | opentelemetry-api/sdk/exporter-otlp-proto-grpc>=1.20.0, prometheus-client>=0.19.0 |
@@ -2610,7 +2615,7 @@ volumes:  pgdata
 > **2026-08-15 整改状态**（overview 条目 29）：
 > - ✅ 已修复：**2**（SaveSessionNode 真正落库）、**3 部分**（IterationDecider 阈值硬编码未动，见下）、**4**（EVENT_TYPES 补全 7 项）、**5**（WebIndexer→WebSyncScheduler）、**6**（agents/tools 死代码已删除）、**7**（ScoringNode 显式加权）、**8**（ScoreCalibrator 历史落库）、**9**（BuildStats.claims）、**10**（MemoryRetriever 时间戳来源修复）、**11**（Implementability 改读 planning_result.metadata）、**12**（tech-stack.yml 对齐真实栈）、**13**（死配置清理/search_claims 接线确认）、**14**（DecisionRecorder 单例 + record_decision 调用点）、**16**（roles/team_members 迁移对齐）、**17 部分**（TaskManager 落库，BatchTaskService 仍内存）
 > - 🆕 本轮新增修复：Webhook 注册落库（webhook_subscriptions 表）、DataMaskingEngine 可逆脱敏接入 Gateway、core/prompt_registry 死模块删除
-> - ⚠️ 仍待处理：#1 RuntimeInjector 本身未接线（SSE 副作用已通过全局 EventBus 回退生效）、#3 IterationDecider 阈值硬编码、#15 TokenResponse 重复定义、#18 评测依赖有效 API key
+> - ⚠️ 仍待处理：#18 评测依赖有效 API key。✅ 2026-08-16 条目 31 已修：#1 RuntimeInjector（线程级注册表）、#3 IterationDecider 阈值配置化、#15 TokenResponse 去重，另修复：BatchTaskService 落库、文档搜索语义路、similarity_search 重复执行 bug
 
 | # | 问题 | 影响 | 建议 |
 |---|------|------|------|
@@ -2670,9 +2675,9 @@ volumes:  pgdata
 | Agent Layer 数 | 4（Analysis 11 / Planning 14 / Generation 8 / Evaluation 9） |
 | 主编排节点数 | 15 |
 | 路由模块数 | 15 |
-| 数据库表数 | 10 |
+| 数据库表数 | 14（ORM）+ 3（运行时向量表） |
 | 护栏插件数 | 7（pre_llm 3 + post_llm 4） |
-| SSE 事件类型 | 已登记 14 + 代码未登记 5（chat.* ×4 + task.saved） |
+| SSE 事件类型 | 15+（条目 29 补全登记） |
 | 评测维度数 | 10（含 completeness 无子节点） |
 | 迭代最大轮数 | 3 |
 | 评测通过分数 | ≥ 85 |
@@ -2697,7 +2702,7 @@ volumes:  pgdata
 原始设计:        prd2tsd.prd.md
 开发记录:        overview.md
 技术栈声明:      tech-stack.yml
-开发铁律:        DEVELOPMENT_GUIDE.md / VIBE_CODING_RULES.md
+开发铁律:        .github/skills/ai-coding-rules（原 DEVELOPMENT_GUIDE.md / VIBE_CODING_RULES.md 已移除）
 架构重构方案:    docs/deep-review-fix-plan.md
 企业功能整改:    docs/enterprise-feature-revamp-plan.md
 观测/评测/清理:  docs/plan-observability-eval-cleanup.md
@@ -2705,9 +2710,11 @@ volumes:  pgdata
 面试问答:        docs/interview-questions.md（本文档的面试部分已迁移至此）
 ```
 
-> **文档结束** — v3.0 全链路架构文档，基于 2026-08-13 代码库真实状态。
+> **文档结束** — v3.0 全链路架构文档，基于 2026-08-13 代码库真实状态重写，2026-08-16 按 overview 条目 29-32 同步。
 > 覆盖：全模块（Block A-G + 观测/评测）+ 全链路（主线/对话/问答/文档分析/URL/断点恢复/历史消息/SSE/LLM 调用/可追踪/认证/知识图谱构建/检索/文档上传入图）。
 > 面试相关章节见 `docs/interview-questions.md`。
+
+
 
 
 

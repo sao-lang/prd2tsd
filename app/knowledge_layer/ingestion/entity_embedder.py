@@ -77,7 +77,9 @@ class EntityEmbedder:
         try:
             resp = await gateway.embed(texts=[text], task_type="embedding")
             if resp.embeddings and len(resp.embeddings[0]) > 0:
-                return resp.embeddings[0]
+                vec = resp.embeddings[0]
+                assert isinstance(vec, list)
+                return vec
         except Exception as exc:
             logger.warning("API Embedding 失败，降级到本地模型: %s", exc)
 
@@ -108,7 +110,9 @@ class EntityEmbedder:
         try:
             resp = await gateway.embed(texts=texts, task_type="embedding")
             if resp.embeddings and len(resp.embeddings) > 0:
-                return resp.embeddings
+                vectors = resp.embeddings
+                assert isinstance(vectors, list)
+                return vectors
         except Exception as exc:
             logger.warning("API 批量 Embedding 失败，降级到本地模型: %s", exc)
 

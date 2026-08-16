@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -28,6 +30,7 @@ class PatternRecommendNode:
         self.chain = PATTERN_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行架构模式推荐节点逻辑。"""
         ar = state["analysis_result"]
 
         try:
@@ -43,7 +46,7 @@ class PatternRecommendNode:
                     match_score=p.match_score,
                     strengths=p.strengths,
                     weaknesses=p.weaknesses,
-                    complexity=p.complexity,
+                    complexity=cast(Literal["low", "medium", "high"], p.complexity),
                 )
                 for p in result.patterns
             ]

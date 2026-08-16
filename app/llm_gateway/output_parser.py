@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -43,7 +44,7 @@ class PydanticOutputParser:
         self.pydantic_model = pydantic_model
         self.schema = pydantic_model.model_json_schema()
 
-    def get_response_format(self) -> dict:
+    def get_response_format(self) -> dict[str, Any]:
         """获取 OpenAI response_format 参数。"""
         return {
             "type": "json_schema",

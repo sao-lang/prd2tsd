@@ -1,12 +1,30 @@
-"""RAG 评测器 — 检索质量（L1）+ 回答质量（L2），基于 ragas。"""
+"""RAG 评测器 — 检索质量（L1）+ 回答质量（L2），基于 deepeval。
+
+v0.4 起由 ragas 0.4.3 迁移至 deepeval 4.x（原生 RAG 指标），
+原因：ragas 0.4.3 与 langchain 1.x / Python 3.14 不兼容。
+"""
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, cast
+
+from deepeval.evaluate.configs import CacheConfig, DisplayConfig
+from deepeval.evaluate.evaluate import evaluate
+from deepeval.metrics import (
+    AnswerRelevancyMetric,
+    ContextualPrecisionMetric,
+    ContextualRecallMetric,
+    FaithfulnessMetric,
+)
+from deepeval.metrics.base_metric import BaseMetric
+from deepeval.models import OpenAIModel
+from deepeval.models.base_model import DeepEvalBaseLLM
+from deepeval.test_case import LLMTestCase
+from deepeval.test_case.llm_test_case import RetrievedContextData
 
 from app.core.config import settings
 from app.core.logger import get_logger
-from app.evaluation.rag._compat import install_ragas_shims
 from app.evaluation.rag.models import (
     RagEvalReport,
     RagEvalSummary,
@@ -18,22 +36,20 @@ from app.llm_gateway import gateway
 
 logger = get_logger("prd2tsd.eval.rag")
 
-# 导入 ragas 前安装 langchain-community vertexai 兼容 shim
-install_ragas_shims()
-from ragas import EvaluationDataset, SingleTurnSample, evaluate  # noqa: E402
-from ragas.metrics.collections import (  # noqa: E402
-    answer_relevancy,
-    context_precision,
-    context_recall,
-    faithfulness,
-)
+# deepeval MetricData.name 使用指标 __name__，此处映射到报告字段名
+_METRIC_FIELD_MAP = {
+    "Contextual Precision": "context_precision",
+    "Contextual Recall": "context_recall",
+    "Faithfulness": "faithfulness",
+    "Answer Relevancy": "answer_relevancy",
+}
 
 
 class RagEvaluator:
     """RAG 评测器。
 
-    流程：对每个样本执行「检索 + LLM 回答」→ 组装 ragas 数据集 →
-    计算 L1（context_precision / context_recall）+ L2（faithfulness / answer_relevancy）。
+    流程：对每个样本执行「检索 + LLM 回答」→ 组装 deepeval 数据集 →
+    计算 L1（Contextual Precision / Contextual Recall）+ L2（Faithfulness / Answer Relevancy）。
 
     Usage:
         evaluator = RagEvaluator()
@@ -112,13 +128,13 @@ class RagEvaluator:
         reflection_rounds = self._pipeline.max_reflection_rounds
         return ctx, resp.content, reflection_rounds
 
-    def to_ragas_dataset(
+    def to_deepeval_test_cases(
         self,
         samples: list[RagSample],
         contexts: list[list[str]],
         answers: list[str],
-    ) -> EvaluationDataset:
-        """组装 ragas 评测数据集。
+    ) -> list[LLMTestCase]:
+        """组装 deepeval 评测用例。
 
         Args:
             samples: RAG 样本。
@@ -126,54 +142,51 @@ class RagEvaluator:
             answers: 每个样本的 LLM 回答。
 
         Returns:
-            ragas EvaluationDataset。
+            deepeval LLMTestCase 列表。
         """
-        ragas_samples = [
-            SingleTurnSample(
-                user_input=sample.query,
-                retrieved_contexts=ctxs,
-                response=answer,
-                reference=sample.reference_answer,
+        return [
+            LLMTestCase(
+                name=sample.id,
+                input=sample.query,
+                actual_output=answer,
+                expected_output=sample.reference_answer,
+                retrieval_context=cast(list[str | RetrievedContextData], ctxs),
             )
             for sample, ctxs, answer in zip(samples, contexts, answers, strict=False)
         ]
-        return EvaluationDataset(samples=ragas_samples)
 
-    def _build_ragas_llm(self) -> Any | None:
-        """构建 ragas 内部 judge LLM（复用项目 judge 配置）。
+    def _build_judge_model(self) -> DeepEvalBaseLLM | None:
+        """构建 deepeval judge 模型（复用项目 judge 配置）。
 
         Returns:
-            ChatOpenAI 实例；未配置 API key 时返回 None（由 ragas 默认）。
+            OpenAIModel 实例；未配置 API key 时返回 None（由 deepeval 默认 LLM 兜底）。
         """
         cfg = settings.get_model_config_env("judge", "openai")
         if not cfg.get("api_key"):
-            logger.warning("未配置 judge API key，ragas 将使用默认 LLM")
+            logger.warning("未配置 judge API key，deepeval 将使用环境变量 OPENAI_API_KEY 默认模型")
             return None
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(
+        return OpenAIModel(
             model=cfg.get("default_model", "gpt-4o-mini"),
             api_key=cfg["api_key"],
             base_url=cfg.get("base_url") or None,
             temperature=0,
         )
 
-    def _build_ragas_embeddings(self) -> Any | None:
-        """构建 ragas 内部 embedding（复用项目 embedding 配置）。
+    def _build_metrics(self, model: DeepEvalBaseLLM | str | None) -> list[BaseMetric]:
+        """构建 deepeval L1+L2 四指标。
+
+        Args:
+            model: judge 模型（DeepEvalBaseLLM 实例或 OpenAI 模型名）。
 
         Returns:
-            OpenAIEmbeddings 实例；未配置 API key 时返回 None。
+            指标实例列表（faithfulness / answer_relevancy / context_precision / context_recall）。
         """
-        cfg = settings.get_model_config_env("embedding", "openai")
-        if not cfg.get("api_key"):
-            return None
-        from langchain_openai import OpenAIEmbeddings
-
-        return OpenAIEmbeddings(
-            model=cfg.get("default_model", "text-embedding-3-small"),
-            api_key=cfg["api_key"],
-            base_url=cfg.get("base_url") or None,
-        )
+        return [
+            FaithfulnessMetric(model=model, include_reason=False),
+            AnswerRelevancyMetric(model=model, include_reason=False),
+            ContextualPrecisionMetric(model=model, include_reason=False),
+            ContextualRecallMetric(model=model, include_reason=False),
+        ]
 
     def evaluate(
         self,
@@ -181,37 +194,35 @@ class RagEvaluator:
         contexts: list[list[str]],
         answers: list[str],
         config: dict[str, Any] | None = None,
-        llm: Any | None = None,
-        embeddings: Any | None = None,
+        llm: DeepEvalBaseLLM | str | None = None,
         dataset_version: str = "1.0",
         tokens: list[int] | None = None,
     ) -> RagEvalReport:
-        """执行 RAG 评测（同步包装 ragas evaluate）。
+        """执行 RAG 评测（同步包装 deepeval evaluate）。
 
         Args:
             samples: RAG 样本列表。
             contexts: 每个样本的检索上下文。
             answers: 每个样本的 LLM 回答。
             config: 检索配置（记录到报告）。
-            llm: ragas judge LLM（默认从项目配置构建）。
-            embeddings: ragas embedding（默认从项目配置构建）。
+            llm: deepeval judge 模型（DeepEvalBaseLLM 实例或 OpenAI 模型名，默认从项目配置构建）。
             dataset_version: 数据集版本。
             tokens: 每个样本的检索 token 数（默认全 0）。
 
         Returns:
             RagEvalReport。
         """
-        dataset = self.to_ragas_dataset(samples, contexts, answers)
+        test_cases = self.to_deepeval_test_cases(samples, contexts, answers)
+        metrics = self._build_metrics(llm or self._build_judge_model())
         result = evaluate(
-            dataset=dataset,
-            metrics=[
-                context_precision,
-                context_recall,
-                faithfulness,
-                answer_relevancy,
-            ],
-            llm=llm or self._build_ragas_llm(),
-            embeddings=embeddings or self._build_ragas_embeddings(),
+            test_cases=test_cases,
+            metrics=metrics,
+            display_config=DisplayConfig(
+                show_indicator=False,
+                print_results=False,
+                inspect_after_run=False,
+            ),
+            cache_config=CacheConfig(write_cache=False, use_cache=False),
         )
 
         score_rows = self._extract_scores(result, len(samples))
@@ -222,10 +233,10 @@ class RagEvaluator:
             query_scores.append(
                 RagQueryScore(
                     sample_id=sample.id,
-                    context_precision=self._to_float(row.get("context_precision")),
-                    context_recall=self._to_float(row.get("context_recall")),
-                    faithfulness=self._to_float(row.get("faithfulness")),
-                    answer_relevancy=self._to_float(row.get("answer_relevancy")),
+                    context_precision=self._to_float(row.get("Contextual Precision")),
+                    context_recall=self._to_float(row.get("Contextual Recall")),
+                    faithfulness=self._to_float(row.get("Faithfulness")),
+                    answer_relevancy=self._to_float(row.get("Answer Relevancy")),
                     retrieved_count=len(contexts[i]),
                     reflection_rounds=self._pipeline.max_reflection_rounds,
                     total_tokens=token_list[i],
@@ -245,7 +256,10 @@ class RagEvaluator:
         config: dict[str, Any] | None = None,
         dataset_version: str = "1.0",
     ) -> RagEvalReport:
-        """异步执行完整评测（检索 + 回答 + ragas 评分）。
+        """异步执行完整评测（检索 + 回答 + deepeval 评分）。
+
+        注意：deepeval 同步 evaluate 内部会获取/复用当前事件循环并打 nest_asyncio
+        补丁，Python 3.14 下 asyncio.run 收尾不稳定，故放入独立线程执行。
 
         Args:
             samples: RAG 样本列表。
@@ -264,7 +278,8 @@ class RagEvaluator:
             contexts.append([doc.text for doc in ctx.results])
             answers.append(answer)
             tokens.append(int(getattr(ctx, "total_tokens", 0) or 0))
-        return self.evaluate(
+        return await asyncio.to_thread(
+            self.evaluate,
             samples=samples,
             contexts=contexts,
             answers=answers,
@@ -282,7 +297,7 @@ class RagEvaluator:
         """反思 A/B 对比（只验证、不改逻辑）。
 
         对同一数据集分别以 reflection=true / false 跑两组完整评测
-        （各自独立检索 + 回答 + ragas 评分），输出指标对比摘要。
+        （各自独立检索 + 回答 + deepeval 评分），输出指标对比摘要。
 
         Args:
             samples: RAG 样本列表。
@@ -300,12 +315,9 @@ class RagEvaluator:
         on_report = await self.evaluate_async(samples, on_cfg, dataset_version)
 
         diff = {
-            "context_precision": on_report.summary.avg_context_precision
-            - off_report.summary.avg_context_precision,
-            "context_recall": on_report.summary.avg_context_recall
-            - off_report.summary.avg_context_recall,
-            "faithfulness": on_report.summary.avg_faithfulness
-            - off_report.summary.avg_faithfulness,
+            "context_precision": on_report.summary.avg_context_precision - off_report.summary.avg_context_precision,
+            "context_recall": on_report.summary.avg_context_recall - off_report.summary.avg_context_recall,
+            "faithfulness": on_report.summary.avg_faithfulness - off_report.summary.avg_faithfulness,
         }
         return {
             "reflection_off": off_report,
@@ -314,24 +326,25 @@ class RagEvaluator:
         }
 
     @staticmethod
-    def _extract_scores(result: Any, count: int) -> list[dict[str, Any]]:
-        """从 ragas EvaluationResult 提取每样本得分。
+    def _extract_scores(result: Any, count: int) -> list[dict[str, float]]:
+        """从 deepeval EvaluationResult 提取每样本得分。
 
         Args:
-            result: ragas evaluate 返回值。
+            result: deepeval evaluate 返回值。
             count: 样本数。
 
         Returns:
-            每样本得分 dict 列表。
+            每样本得分 dict 列表（键为指标名，如 "Faithfulness"）。
         """
-        scores = getattr(result, "scores", None)
-        if isinstance(scores, list):
-            return [dict(s) if isinstance(s, dict) else {} for s in scores]
-        try:
-            df = result.to_pandas()
-            return df.to_dict("records")  # type: ignore[no-any-return]
-        except Exception:
-            return [{}] * count
+        rows: list[dict[str, float]] = []
+        for test_result in getattr(result, "test_results", None) or []:
+            row: dict[str, float] = {}
+            for metric_data in getattr(test_result, "metrics_data", None) or []:
+                row[metric_data.name] = RagEvaluator._to_float(metric_data.score)
+            rows.append(row)
+        while len(rows) < count:
+            rows.append({})
+        return rows[:count]
 
     @staticmethod
     def _to_float(value: Any) -> float:

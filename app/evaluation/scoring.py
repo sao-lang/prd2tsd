@@ -66,7 +66,7 @@ class ScoringNode:
     def __init__(self) -> None:
         self.calibrator = ScoreCalibrator()
 
-    async def run(self, state: EvaluationState) -> EvaluationState:
+    async def run(self, state: EvaluationState) -> dict[str, Any]:
         """执行 10 维评分。
 
         优先使用各子节点已收集的 dimension_scores，

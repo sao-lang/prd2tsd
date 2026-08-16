@@ -38,6 +38,7 @@ class GuardrailManager:
         results: list[GuardrailResult] = []
         for guard in self._pre_guards:
             result = await guard.check(text, context)
+            result.name = guard.name
             results.append(result)
             if result.blocked:
                 logger.warning("输入被护栏拦截: %s — %s", guard.name, result.reason)
@@ -53,6 +54,7 @@ class GuardrailManager:
         results: list[GuardrailResult] = []
         for guard in self._post_guards:
             result = await guard.check(text, context)
+            result.name = guard.name
             results.append(result)
             if result.blocked and result.severity == "critical":
                 break

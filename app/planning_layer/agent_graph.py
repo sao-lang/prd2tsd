@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.graph import END, StateGraph
 
+from app.core.logger import get_logger
 from app.observability.tracing import trace_node
 from app.planning_layer.models import PlanningState
 from app.planning_layer.nodes import (
@@ -23,6 +26,11 @@ from app.planning_layer.nodes import (
     TimelinePlannerNode,
 )
 
+# 自检失败最多回退重规划的次数；超过后强制进入组装，避免无 LLM/持续失败时无限递归
+MAX_SELF_CHECK_ATTEMPTS = 3
+
+logger = get_logger("prd2tsd.planning.agent_graph")
+
 # 实例化 Node
 knowledge_augment = KnowledgeAugmentNode()
 pattern_recommend = PatternRecommendNode()
@@ -40,7 +48,7 @@ plan_self_check = PlanSelfCheckNode()
 plan_assembler = PlanAssemblerNode()
 
 
-def build_planning_graph() -> StateGraph:
+def build_planning_graph() -> StateGraph[PlanningState, Any, Any, Any]:
     """构建并编译 Planning Layer StateGraph。
 
     C2 链路：
@@ -99,6 +107,9 @@ def build_planning_graph() -> StateGraph:
 def _route_after_self_check(state: PlanningState) -> str:
     """根据 PlanSelfCheckNode 的自检结果决定路由。
 
+    自检通过 → assemble；失败但未超过重试上限 → pattern_recommend 回退重规划；
+    失败且超过重试上限 → 强制 assemble（防止无停止条件的无限递归）。
+
     Args:
         state: 当前 PlanningState。
 
@@ -107,6 +118,9 @@ def _route_after_self_check(state: PlanningState) -> str:
     """
     node_outputs = state.get("node_outputs", {})
     if node_outputs.get("self_check_passed", True):
+        return "assemble"
+    if state.get("self_check_attempts", 0) >= MAX_SELF_CHECK_ATTEMPTS:
+        logger.warning("自检连续失败 %d 次，强制进入组装", MAX_SELF_CHECK_ATTEMPTS)
         return "assemble"
     return "pattern_recommend"
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from app.core.logger import get_logger
 from app.orchestrator.nodes.memory_context import build_memory_context, get_event_bus
+from app.orchestrator.runtime import get_registered_runtime
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.chat_node")
@@ -34,7 +35,7 @@ class ChatNode:
         """
         user_input = state.get("prd_raw", "")
         task_id = state.get("task_id", "")
-        runtime = state.get("_runtime")
+        runtime = state.get("_runtime") or get_registered_runtime(task_id)
 
         logger.info("Chat 节点: task=%s, input_len=%d", task_id, len(user_input))
 

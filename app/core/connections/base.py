@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.logger import get_logger
 
 logger = get_logger("prd2tsd.connections")
@@ -67,3 +69,36 @@ class BaseConnector:
             connected=self._connected,
             enabled=self.enabled,
         )
+
+    def get_session(self) -> AsyncSession:
+        """获取数据库会话。子类必须实现。
+
+        Returns:
+            AsyncSession 实例。
+
+        Raises:
+            NotImplementedError: 基类未实现。
+        """
+        raise NotImplementedError
+
+    def get_client(self) -> Any:
+        """获取客户端实例。子类必须实现。
+
+        Returns:
+            客户端实例。
+
+        Raises:
+            NotImplementedError: 基类未实现。
+        """
+        raise NotImplementedError
+
+    def get_driver(self) -> Any:
+        """获取驱动实例。子类必须实现。
+
+        Returns:
+            驱动实例。
+
+        Raises:
+            NotImplementedError: 基类未实现。
+        """
+        raise NotImplementedError

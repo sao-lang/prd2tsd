@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from langgraph.graph import StateGraph
+from typing import Any, cast
+
+from langgraph.graph.state import CompiledStateGraph
 
 from app.observability.replay.recorder import DecisionRecorder, record_node_execution
 from app.orchestrator.state import OrchestratorState
+from contracts.interfaces import PlanningResultDetail
 
 
 class PlanningAdapter:
@@ -15,7 +18,11 @@ class PlanningAdapter:
     将 PlanningState 结果映射回 OrchestratorState。
     """
 
-    def __init__(self, planning_graph: StateGraph, recorder: DecisionRecorder | None = None) -> None:
+    def __init__(
+        self,
+        planning_graph: CompiledStateGraph[Any, Any, Any, Any],
+        recorder: DecisionRecorder | None = None,
+    ) -> None:
         """初始化 Adapter。
 
         Args:
@@ -35,7 +42,7 @@ class PlanningAdapter:
             更新后的 OrchestratorState。
         """
         # 1. 提取 Planning Layer 需要的输入
-        planning_input: dict = {
+        planning_input: dict[str, Any] = {
             "analysis_result": state.get("analysis_result"),
             "knowledge_context": state.get("knowledge_context"),
         }
@@ -43,24 +50,24 @@ class PlanningAdapter:
         # P0.1: 注入评测反馈（迭代循环时）
         eval_report = state.get("evaluation_report")
         if eval_report is not None:
-            if hasattr(eval_report, "critical_issues"):
-                planning_input["evaluation_feedback"] = {
-                    "issues": list(eval_report.critical_issues),
-                    "recommendations": list(eval_report.recommendations),
-                    "overall_score": float(eval_report.overall_score),
-                }
-            else:
+            if isinstance(eval_report, dict):
                 planning_input["evaluation_feedback"] = {
                     "issues": eval_report.get("critical_issues", []),
                     "recommendations": eval_report.get("recommendations", []),
                     "overall_score": float(eval_report.get("overall_score", 0.0)),
+                }
+            else:
+                planning_input["evaluation_feedback"] = {
+                    "issues": list(eval_report.critical_issues),
+                    "recommendations": list(eval_report.recommendations),
+                    "overall_score": float(eval_report.overall_score),
                 }
 
         # 2. 调用 Planning Layer
         result = await self.graph.ainvoke(planning_input)
 
         # 3. 映射回 OrchestratorState
-        state["planning_result"] = result.get("planning_result")
+        state["planning_result"] = cast(PlanningResultDetail, result.get("planning_result"))
         state["component_decomposition"] = result.get("component_decomposition", [])
         state["tech_stack_choices"] = result.get("tech_stack_choices", [])
         state["progress"] = 0.50

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+
+from neo4j import AsyncDriver, AsyncGraphDatabase
 
 from app.core.config import settings
 from app.core.connections.base import BaseConnector, ConnHealth
@@ -35,7 +36,7 @@ class Neo4jConnector(BaseConnector):
         self.user = user or settings.NEO4J_USER
         self.password = password or settings.NEO4J_PASSWORD
         self.database = database or settings.NEO4J_DATABASE
-        self._driver = None
+        self._driver: AsyncDriver | None = None
 
     async def connect(self) -> bool:
         """建立 Neo4j 连接。
@@ -44,15 +45,14 @@ class Neo4jConnector(BaseConnector):
             是否连接成功。
         """
         try:
-            from neo4j import AsyncGraphDatabase
-
-            self._driver = AsyncGraphDatabase.driver(
+            driver = AsyncGraphDatabase.driver(
                 self.uri,
                 auth=(self.user, self.password),
             )
-            async with self._driver.session(database=self.database) as session:
+            async with driver.session(database=self.database) as session:
                 result = await session.run("RETURN 1 AS val")
                 await result.single()
+            self._driver = driver
             self._connected = True
             self.enabled = True
             logger.info("Neo4j 连接成功: %s", self.uri)
@@ -71,7 +71,7 @@ class Neo4jConnector(BaseConnector):
             self.enabled = False
             logger.info("Neo4j 连接已关闭")
 
-    def get_driver(self) -> Any:
+    def get_driver(self) -> AsyncDriver:
         """获取 Neo4j 驱动。
 
         Returns:
@@ -95,7 +95,8 @@ class Neo4jConnector(BaseConnector):
         start = time.monotonic()
         try:
             if self._driver:
-                async with self._driver.session(database=self.database) as session:
+                driver = self._driver
+                async with driver.session(database=self.database) as session:
                     result = await session.run("RETURN 1 AS val")
                     await result.single()
                 latency = (time.monotonic() - start) * 1000

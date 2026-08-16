@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from app.core.logger import get_logger
 from app.orchestrator.nodes.memory_context import get_event_bus
+from app.orchestrator.runtime import get_registered_runtime, unregister_runtime
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.clarify_node")
@@ -31,7 +32,7 @@ class ClarifyNode:
         """
         task_id = state.get("task_id", "")
         user_input = state.get("prd_raw", "")
-        runtime = state.get("_runtime")
+        runtime = state.get("_runtime") or get_registered_runtime(task_id)
 
         logger.info("澄清节点: task=%s, input_preview=%.100s", task_id, user_input)
 
@@ -57,4 +58,5 @@ class ClarifyNode:
         state["progress"] = 1.0
         state["chat_response"] = "您的输入不够明确，请提供更多信息来描述您想要完成的具体任务。"
 
+        unregister_runtime(task_id)
         return state

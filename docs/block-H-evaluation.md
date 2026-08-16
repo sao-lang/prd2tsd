@@ -1,6 +1,6 @@
-# 块 H：RAG + Agent 评测体系（引入 ragas）
+# 块 H：RAG + Agent 评测体系（引入 deepeval）
 
-> **AI Summary**: 建立可复现的 RAG 检索/回答质量评测 + Agent 能力评测，形成"评测 → 定位短板 → 优化 → 再评测"闭环。RAG 用 ragas 四指标，Agent 用"离线基准 + rubric 化 LLM-judge + 过程指标"三层组合。
+> **AI Summary**: 建立可复现的 RAG 检索/回答质量评测 + Agent 能力评测，形成"评测 → 定位短板 → 优化 → 再评测"闭环。RAG 用 deepeval 四指标，Agent 用"离线基准 + rubric 化 LLM-judge + 过程指标"三层组合。
 
 ## 1. 背景与目标
 
@@ -9,7 +9,7 @@
 | 现状 | 缺口 |
 |------|------|
 | `app/evaluation/` 只对**生成方案**做 10 维评分 | 不是 RAG/Agent 评测 |
-| 无 `ragas`、无黄金数据集、无检索/回答质量指标 | 检索好坏无法量化 |
+| 无 `deepeval`、无黄金数据集、无检索/回答质量指标 | 检索好坏无法量化 |
 | 无任务完成率/迭代轮数/人工介入率等过程指标 | agent 行为无法量化 |
 | `observability/replay/` 只记录决策轨迹，不打分 | 有"数据"无"结论" |
 | `ReflectionJudge` 反思有无价值未验证 | 无 A/B 证据 |
@@ -40,8 +40,8 @@
 
 | 层 | 指标 | 计算方式 | 数据来源 | 回答的问题 |
 |----|------|---------|---------|-----------|
-| L1 检索质量 | `context_precision`、`context_recall` | ragas | 黄金上下文 | 检索对不对、全不全 |
-| L2 回答质量 | `faithfulness`、`answer_relevancy` | ragas | 黄金答案 | 答得忠不忠实、切不切题 |
+| L1 检索质量 | `context_precision`、`context_recall` | deepeval | 黄金上下文 | 检索对不对、全不全 |
+| L2 回答质量 | `faithfulness`、`answer_relevancy` | deepeval | 黄金答案 | 答得忠不忠实、切不切题 |
 | L3 Agent 过程 | 任务完成率、迭代轮数、是否需人工 review、检索/反思次数、token/成本/延迟 | 自定义（复用 `replay/` 轨迹） | 运行轨迹 | 卡在哪一步、贵不贵 |
 | L4 Agent 结果 | rubric 化 LLM-judge（P0 达成 / 可实施 / 完整性 / 一致性） | LLM-as-judge + 评分标准 | 生成结果 | 方案质量分 |
 
@@ -118,14 +118,14 @@ app/evaluation/rag/
 ├── __init__.py        # 导出 RagEvaluator / RagEvalReport
 ├── models.py          # RagSample / RagEvalReport / RagQueryScore
 ├── dataset_loader.py  # 加载 rag_qa.json → list[RagSample]
-└── evaluator.py       # RagEvaluator：跑检索+回答 → ragas 指标 → 报告
+└── evaluator.py       # RagEvaluator：跑检索+回答 → deepeval 指标 → 报告
 ```
 
 **`RagEvaluator` 职责：**
 1. 对每个 `RagSample`：调用 `RetrievalPipeline.retrieve(query)` 得到 `RetrievalContext`；用 LLM（`gateway.complete`，`task_type="knowledge_qa"`）生成回答
    - 注：`resolve_model` 对未配置路由的 `task_type` 降级到 deepseek-chat；若需用 judge 模型（gpt-4o-mini）评测回答质量，显式传 `model=`
-2. 组装 ragas 输入：`question=query`、`answer=LLM回答`、`contexts=[doc.text for doc in ctx.results]`、`ground_truth=reference_answer`
-3. 用 ragas `evaluate()` 计算 L1+L2 四指标
+2. 组装 deepeval 输入：`LLMTestCase(input=query, actual_output=LLM回答, retrieval_context=contexts, expected_output=reference_answer)`
+3. 用 deepeval `evaluate()` 计算 L1+L2 四指标
 4. 附带过程信息：`mode`、`results 数`、`反思轮数`、`total_tokens`
 5. 输出 `RagEvalReport`（汇总分 + 按 query 明细 + 配置）
 
@@ -209,12 +209,12 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 
 | 依赖 | 位置 | 说明 |
 |------|------|------|
-| `ragas` | `requirements.txt` + `pyproject.toml` | 评测框架（**实施第一步先验证与 `langchain-core>=0.3.0` / `langgraph>=1.2.0` 的版本兼容，选兼容版本**） |
+| `deepeval>=4,<5` | `requirements.txt` + `pyproject.toml` | 评测框架（2026-08 已与 langchain 1.x / langgraph 1.x / Python 3.14 实测兼容） |
 
 - judge 模型复用现有配置：`MODEL_CONFIG__JUDGE__OPENAI__DEFAULT_MODEL=gpt-4o-mini`
 - embedding 复用现有配置：`MODEL_CONFIG__EMBEDDING__OPENAI__DEFAULT_MODEL=text-embedding-3-small`
-- ragas 具体 API（`evaluate` / `Metrics` / `EvaluationDataset`）以安装版本官方文档为准
-- **ragas 内部 judge LLM 不经过项目 gateway**：需按 ragas 的 `metrics.LLM` / `metrics.Embeddings` 独立配置 judge 模型与 embedding（可复用项目的 OpenAI 兼容 base_url 与 API key）
+- deepeval 具体 API（`evaluate` / `Metrics` / `LLMTestCase`）以安装版本官方文档为准
+- **deepeval judge 模型不经过项目 gateway**：通过 `OpenAIModel` 注入 judge 配置（`api_key` / `base_url` / `default_model`），复用项目 OpenAI 兼容端点；原生 L1/L2 四指标不需要 embedding
 
 ---
 
@@ -224,7 +224,7 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 |------|------|----------|
 | `tests/unit/test_rag_eval.py` | `RagEvaluator` 指标计算与报告结构（mock LLM/检索） | Mock |
 | `tests/unit/test_agent_eval.py` | `AgentEvaluator` 过程指标与 judge 解析（mock 图/LLM） | Mock |
-| 冒烟 | 用 `rag_qa.json` 真实跑通 ragas `evaluate()` | 真实 LLM |
+| 冒烟 | 用 `rag_qa.json` 真实跑通 deepeval `evaluate()` | 真实 LLM |
 | E2E（可选） | 完整评测脚本跑通 | 真实 |
 
 ---
@@ -233,8 +233,8 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 
 ### A. 依赖
 
-- [ ] **`requirements.txt`**：新增 `ragas`（验证兼容版本后）
-- [ ] **`pyproject.toml`**：`dependencies` 同步新增 `ragas`
+- [x] **`requirements.txt`**：新增 `deepeval>=4,<5`
+- [x] **`pyproject.toml`**：`dependencies` 同步新增 `deepeval>=4,<5`
 
 ### B. 新增 RAG 评测模块
 
@@ -246,7 +246,7 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 - [ ] **`app/evaluation/rag/dataset_loader.py`**（新增）：`load_rag_dataset(path) -> list[RagSample]`
 - [ ] **`app/evaluation/rag/evaluator.py`**（新增）：
   - `RagEvaluator.retrieve_and_answer(sample) -> RetrievalContext + answer`
-  - `RagEvaluator.to_ragas_dataset(samples, contexts, answers) -> ragas EvaluationDataset`
+  - `RagEvaluator.to_deepeval_test_cases(samples, contexts, answers) -> list[LLMTestCase]`
   - `RagEvaluator.evaluate(samples, config) -> RagEvalReport`（含反思轮数记录）
   - `RagEvaluator.evaluate_ab_reflection(samples) -> dict`（反思开/关对比）
 
@@ -300,8 +300,8 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 
 ## 12. 潜在影响与风险
 
-- **依赖风险**：ragas 依赖较重，需验证与 langchain-core 0.3 / langgraph 1.2 兼容，可能需锁版本；在 docker/venv 中安装确认
-- **成本**：评测需真实 LLM 调用（judge + 回答 + ragas 内置 LLM 评判），有 token 成本；用 `--variant` 控制次数
+- **依赖风险**：deepeval 4.x 将 `click` 钉在 `<8.4.0`，与 `huggingface-hub>=8.4.2` 冲突（实测运行时不受影响，`pip check` 会告警）；升级 deepeval 时需复核
+- **成本**：评测需真实 LLM 调用（judge + 回答 + deepeval 评判），有 token 成本；用 `--variant` 控制次数
 - **隔离**：评测模块独立，不改现有检索/生成主逻辑，不接入运行时 API
 - **数据质量**：黄金数据集是评测可信度上限，标注需谨慎；起步量小、后续可扩充
 - **兼容**：`RetrievalContext` 字段稳定（`query/mode/results/total_tokens` 等），评测器只读取不修改；`community_summary` 字段名以 WP3 定稿为准（可能更名 `global_summary`）
@@ -313,4 +313,4 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 1. ✅ 评测入口：CLI 脚本（不加 API）— 已确认
 2. ✅ 反思 A/B：只验证不改逻辑 — 已确认
 3. ✅ 数据集起步量：RAG 10-20 条 / Agent 3-5 条 — 已确认
-4. ⏳ ragas 兼容版本：实施第一步验证后锁定
+4. ✅ 评测框架：deepeval 4.1.8（2026-08 迁移，替代 ragas 0.4.3）

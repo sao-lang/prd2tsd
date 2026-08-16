@@ -10,6 +10,7 @@ from typing import Any
 
 from app.core.logger import get_logger
 from app.orchestrator.nodes.memory_context import build_memory_context, get_event_bus
+from app.orchestrator.runtime import get_registered_runtime
 from app.orchestrator.state import OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.retrieve_node")
@@ -46,7 +47,7 @@ class KnowledgeQANode:
         user_input = state.get("prd_raw", "")
         task_id = state.get("task_id", "")
         workspace_id = state.get("workspace_id", "")
-        runtime = state.get("_runtime")
+        runtime = state.get("_runtime") or get_registered_runtime(task_id)
 
         logger.info("KnowledgeQA 节点: task=%s, query_len=%d", task_id, len(user_input))
 

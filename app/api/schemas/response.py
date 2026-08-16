@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TokenResponse(BaseModel):
@@ -40,8 +40,15 @@ class WorkspaceResponse(BaseModel):
 class HealthResponse(BaseModel):
     """健康检查响应。"""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     status: str
     version: str = "0.1.0"
     connections: dict[str, Any] = {}
     gateway: str = "ready"
-    model_config: dict[str, bool] = {}
+    # Pydantic v2 保留 model_config 作为配置属性，字段改名并用别名保持 API 形状不变
+    model_config_status: dict[str, bool] = Field(
+        default_factory=dict,
+        validation_alias="model_config",
+        serialization_alias="model_config",
+    )

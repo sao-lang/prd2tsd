@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -16,7 +18,7 @@ class Organization(UUIDMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     plan: Mapped[str] = mapped_column(String(32), nullable=False, default="free")
-    settings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
     # 关系
     workspaces = relationship("Workspace", back_populates="organization", lazy="selectin")

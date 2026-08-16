@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.graph import END, StateGraph
 
 from app.analysis_layer.models import AnalysisState
@@ -38,7 +40,7 @@ clarity_checker = ClarityCheckerNode(llm=_analysis_llm)
 result_assembler = AnalysisResultAssemblerNode()
 
 
-def build_analysis_graph() -> StateGraph:
+def build_analysis_graph() -> StateGraph[AnalysisState, Any, Any, Any]:
     """构建并编译 Analysis Layer StateGraph。
 
     C1 链路：

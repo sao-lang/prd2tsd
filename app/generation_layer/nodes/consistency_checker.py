@@ -22,13 +22,18 @@ class ConsistencyCheckerNode:
         self.chain = CONSISTENCY_PROMPT | llm
 
     async def run(self, state: GenerationState) -> GenerationState:
+        """执行文档一致性检查节点逻辑。"""
         contents = state.get("section_contents", {})
         if not contents:
             return state
 
         content_text = "\n\n".join(f"=== {k} ===\n{v[:500]}" for k, v in contents.items())
         result = await self.chain.ainvoke({"contents": content_text})
-        response = result.content if hasattr(result, "content") else str(result)
+        response = (
+            result.content
+            if isinstance(result.content, str)
+            else str(result)
+        )
 
         issues: list[str] = []
         if response and response.strip() not in ("", "通过"):

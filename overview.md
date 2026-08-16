@@ -1,5 +1,61 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-08-16
+
+#### 32. RAG 评测框架迁移：ragas 0.4.3 → deepeval 4.x
+
+- **时间：** 2026-08-16
+- **发起人：** user（"使用DeepEval"）
+- **依据：** ragas 0.4.3 与 langchain 1.x / Python 3.14 不兼容（import 需 shim、metrics 导入为模块导致 TypeError、事件循环内 nest_asyncio 收尾崩溃）；PyPI ragas 最新版仍为 0.4.3，无可用升级路径
+- **修改内容：**
+  1. **依赖替换**：`requirements.txt` / `pyproject.toml` 中 `ragas==0.4.3` → `deepeval>=4,<5`（实测安装 4.1.8，Python 3.14 可用）
+  2. **evaluator.py 重写**：`to_ragas_dataset` → `to_deepeval_test_cases`（LLMTestCase：input/actual_output/expected_output/retrieval_context）；四指标映射 Contextual Precision/Recall ↔ context_precision/recall、Faithfulness/Answer Relevancy；judge 用 OpenAIModel 注入项目 judge 配置；`evaluate_async` 改用 `asyncio.to_thread` 规避 nest_asyncio 收尾崩溃
+  3. **删除** `_compat.py`（ragas vertexai shim）及相关 `install_ragas_shims` 调用
+  4. **测试更新**：test_rag_eval.py 适配 deepeval（7 例全过）
+  5. **文档同步**：block-H 设计文档、README、tech-stack.yml、full-architecture、interview-questions、plan-observability-eval-cleanup、.gitignore（.deepeval/）
+- **复盘结果：** 冒烟验证两条路径（同步 evaluate / 异步 to_thread）均打通到真实 API 调用；因 .env judge key 为占位符（sk-your-…）停在 401，配置有效 key 后可跑通
+- **潜在风险：** deepeval 4.x 将 click 钉在 <8.4.0，与 huggingface-hub >=8.4.2 冲突（实测导入/运行正常，pip check 告警）；评测报告依赖有效 LLM API key
+#### 31. 全量断点/硬编码整改（IterationDecider 配置化 + Runtime 接线 + 语义搜索 + 批量任务落库等 11 项）
+
+- **时间：** 2026-08-16
+- **发起人：** user（"把所有发现的问题全部修复完"）
+- **依据：** 代码审计（硬编码/占位实现/功能断点扫描）+ 架构文档第 21 章
+- **修改内容：**
+  1. **IterationDecider 阈值配置化**：注入 OrchestratorConfig（pass=85/replan=70/max_iterations=3），顺带修复中段维度判断第 3 个硬编码 70；`build_and_compile` 的 config 死参数打通；`make_initial_state` 的 max_iterations 默认值改从 Config 取（显式传参仍可覆盖）。
+  2. **RuntimeInjector 安全接线**：`OrchestratorRuntime` 实测不可被 checkpoint 序列化（msgpack），改为线程级注册表（register/get/unregister），主编排图新增入口节点 inject_runtime；chat/retrieve/clarify 节点读取注册表（保留全局兜底）；save_session/clarify 节点任务结束注销。
+  3. **文档搜索语义路实现**（原占位）：向量块表加 document_id 列（运行时建表 + Alembic 迁移 f3a4b5c6d7e8）；build_from_text/build_from_bytes 透传 document_id；上传入图任务写入文档 ID；DocumentSearchService 增加语义检索（查询向量→块相似度→按文档聚合）+ FTS/语义融合去重。
+  4. **修复 similarity_search 重复执行 bug**：同一查询 execute 两次（第二次无参数必报错），删除冗余执行。
+  5. **BatchTaskService 落库**：新增 batch_tasks 表 + ORM BatchTask，DB 不可用降级内存（与 TaskManager 同策略）。
+  6. **死配置清理**：OrchestratorConfig 删除 max_llm_retries/keepalive_interval/session_ttl_days（零消费；keepalive 由 sse.py 常量负责、会话 TTL 由 SessionCleanupPolicy 负责）。
+  7. **TokenResponse 去重**：统一由 api/schemas/response 定义，auth/models 复用导出。
+  8. **熔断默认值对齐**：failure_threshold 默认 5→3（与 gateway 调用与文档一致）。
+  9. **反思轮数占位修复**：RetrievalPipeline 记录 last_reflection_rounds，ragas 评测读取实际轮数。
+- **修改文件：** 17 个 app 文件 + 1 个迁移（f3a4b5c6d7e8）+ 3 个新测试
+- **Lint/类型：** ✅ ruff All checks passed；mypy 17 文件 Success: no issues found
+- **测试：** ✅ 全量单元 380 过 / 1 败（test_batch 需 Redis broker，既有环境依赖）；新增 11 例（迭代决策 5 + Runtime 注册表 3 + 语义搜索 3）
+- **复盘结果：** 审计再确认"初始化≠被调用"仍是主要病根（OrchestratorConfig 全字段零消费、similarity_search 重复执行）；Runtime 注入必须先验证序列化能力再接线
+- **潜在风险：** 迁移需在真实 Postgres 执行 `alembic upgrade head`；batch_tasks/document_id 为增量列（既有数据 document_id 为空，需重跑入图才可被语义搜索命中）；文档搜索语义路依赖 embedding API key
+
+### 2026-08-15
+
+#### 30. CR 防回归机制 Phase 0-1：四道闸门基线清零 + 存量清剿
+
+- **时间：** 2026-08-15
+- **发起人：** user（"按照文档开始任务"）
+- **依据：** docs/plan-cr-mechanism.md（四道机器闸门 + 基线清单 + 闭环约定）
+- **修改内容：**
+  - **Phase 0 基线采集**：ruff 6 条、mypy 205 条（72 文件）、单元 359 过 1 败 2 错、集成 47 过 7 败，生成 docs/known-issues.md
+  - **ruff 清零**：未用导入、SIM108 三元、行超长、冗余同步测试
+  - **mypy 清零（205→0）**：dict/StateGraph/BaseCheckpointSaver 泛型参数、no-any-return、no-untyped-def、未用 type:ignore、连接器 None 类型、TypedDict 部分返回、SQLAlchemy CursorResult rowcount、result 变量复用推断错乱等
+  - **真实 bug 修复（均带回归测试）**：Evaluation 并行扇出 InvalidUpdateError（只返回增量）；Planning 自检无限递归（attempts 上限=3）；GuardrailResult 缺 name 字段；HealthResponse.model_config 被 Pydantic 吞掉（alias 保持 API 形状）；KnowledgeGraphBuilder.get_stats/cleanup_expired 不存在（实现 + 重写清理任务）；BuildStats 缺 relations；SessionMessage.attachments 类型标注错误
+  - **测试修复**：IntegrationHub 5 项 async 未 await；test_lint 46 处缺 docstring；新增 scripts/check_tech_stack.py（基于 tech-stack.yml 黑名单）替代 grep 式 CI job；CI 补 redis service、alembic upgrade、Python 3.12 对齐
+  - **环境验证**：Postgres(5433)/Redis(6379)/Neo4j(7701)/MinIO(9002 验证容器) 真实冒烟全绿；E2E 待 LLM key 按约定跳过
+- **修改文件：** app/ 约 100 文件 + tests/ 约 15 文件 + scripts/ + .github/workflows/ci.yml + docs/known-issues.md（新增）
+- **Lint/类型：** ✅ ruff `All checks passed!`；mypy `Success: no issues found in 266 source files`
+- **测试：** ✅ 单元 368 过 / 集成 54 过 / test_lint + tech-stack 7 过 / 真实环境 Smoke 4/4 通过
+- **复盘结果：** 根因符合方案 R1-R4（审查靠自觉、问题不沉淀、修复无回归、门禁与现状脱节）；mypy 需清缓存后全量重跑，增量缓存会产生假错误
+- **潜在风险：** E2E 需 LLM key；prd2tsd-minio 未发布端口（验证用独立容器）；docs/known-issues.md 后续需脚本化校验（Phase 2 cr_toolkit）；BatchTaskService 仍内存存储
+
 ### 2026-08-14
 
 #### 29. 功能断点全量整改（18 项：记忆/SSE/回放/评分/脱敏/持久化）

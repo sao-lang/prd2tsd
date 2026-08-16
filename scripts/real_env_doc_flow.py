@@ -65,7 +65,7 @@ async def main() -> None:
     from app.document_management.service import DocumentManagementService
 
     svc = DocumentManagementService()
-    md_content = "# 真实环境测试文档\n\n这是一个用于验证上传链路的 Markdown 文档。".encode("utf-8")
+    md_content = "# 真实环境测试文档\n\n这是一个用于验证上传链路的 Markdown 文档。".encode()
     upload = await svc.upload(
         session, workspace_id, user_id, md_content, "real-env-test.md",
     )

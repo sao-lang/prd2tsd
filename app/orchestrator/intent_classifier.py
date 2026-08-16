@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from app.llm_gateway import LLMGateway
 
@@ -31,7 +32,7 @@ class IntentResult:
     intent: IntentType
     confidence: float  # 置信度 0.0 ~ 1.0
     sub_intent: str = ""
-    params: dict = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     explanation: str = ""
 
 
@@ -133,7 +134,7 @@ class IntentClassifier:
     async def classify(
         self,
         user_input: str,
-        session_history: list[dict] | None = None,
+        session_history: list[dict[str, Any]] | None = None,
     ) -> IntentResult:
         """分类用户输入。
 
@@ -225,7 +226,7 @@ class IntentClassifier:
     async def _llm_classify(
         self,
         user_input: str,
-        session_history: list[dict] | None = None,
+        session_history: list[dict[str, Any]] | None = None,
     ) -> IntentResult:
         """使用 LLM 进行意图分类。"""
         if not self._llm_gateway:

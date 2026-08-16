@@ -31,6 +31,7 @@ class TechStackSelectNode:
         self.chain = TECH_STACK_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行技术栈选择节点逻辑。"""
         ar = state["analysis_result"]
 
         try:

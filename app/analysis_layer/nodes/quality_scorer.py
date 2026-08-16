@@ -26,6 +26,7 @@ class RequirementQualityNode:
         self.chain = QUALITY_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行需求质量评分节点逻辑。"""
         reqs_text = "\n".join(
             f"{r.id} [{r.priority}] {r.description[:100]}" for r in state["extracted_requirements"]
         )

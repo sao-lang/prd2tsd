@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from contracts.interfaces import AnalysisResultDetail, PatternEval, PlanningResultDetail, ComponentDetail
 from app.planning_layer.models import PlanningState
 from app.planning_layer.nodes.pattern_confirm import PatternConfirmNode
 from app.planning_layer.nodes.plan_assembler import PlanAssemblerNode
+from contracts.interfaces import AnalysisResultDetail, ComponentDetail, PatternEval, PlanningResultDetail
 
 
 def _empty_pr() -> PlanningResultDetail:

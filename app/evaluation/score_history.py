@@ -25,7 +25,7 @@ async def load_recent_scores(limit: int = 10) -> list[dict[str, float]]:
     """
     try:
         pg = connection_manager.get("postgres")
-        async with pg.get_session() as db:  # type: ignore[attr-defined]
+        async with pg.get_session() as db:
             result = await db.execute(
                 select(EvaluationScore)
                 .order_by(EvaluationScore.created_at.desc())
@@ -62,7 +62,7 @@ async def save_evaluation_score(
     """
     try:
         pg = connection_manager.get("postgres")
-        async with pg.get_session() as db:  # type: ignore[attr-defined]
+        async with pg.get_session() as db:
             db.add(
                 EvaluationScore(
                     workspace_id=workspace_id or None,

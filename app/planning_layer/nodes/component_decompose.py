@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -28,6 +30,7 @@ class ComponentDecomposeNode:
         self.chain = DECOMPOSE_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行组件分解节点逻辑。"""
         ar = state["analysis_result"]
         reqs = ar.requirements[:10] if hasattr(ar, "requirements") else []
         reqs_text = "\n".join(f"- {r.id}: {r.description[:100]}" for r in reqs)
@@ -41,7 +44,7 @@ class ComponentDecomposeNode:
             components = [
                 ComponentDetail(
                     name=c.name,
-                    type=c.type,
+                    type=cast(Literal["service", "module", "library"], c.type),
                     responsibility=c.responsibility,
                     key_functions=c.key_functions,
                     dependencies=c.dependencies,

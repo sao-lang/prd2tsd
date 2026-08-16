@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from typing import Any
 
 from fastapi import Request, Response
@@ -19,7 +20,7 @@ _SCOPE_WS_ID = "auth.ws_id"
 _SCOPE_PERMISSIONS = "auth.permissions"
 
 
-def _init_scope(scope: dict) -> None:
+def _init_scope(scope: MutableMapping[str, Any]) -> None:
     """初始化 scope 中的认证上下文。
 
     Args:
@@ -61,6 +62,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.scope[_SCOPE_PERMISSIONS] = payload.get("permissions", [])
 
         response = await call_next(request)
+        assert isinstance(response, Response)
         return response
 
 
@@ -93,4 +95,5 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
             request.scope[_SCOPE_WS_ID] = ws_id
 
         response = await call_next(request)
+        assert isinstance(response, Response)
         return response

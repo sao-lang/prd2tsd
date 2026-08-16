@@ -35,9 +35,6 @@ class OrchestratorConfig(BaseModel):
     max_iterations: int = 3
     evaluation_pass_threshold: float = 85.0
     evaluation_replan_threshold: float = 70.0
-    max_llm_retries: int = 3
-    keepalive_interval: int = 30
-    session_ttl_days: dict[str, int] = Field(default_factory=lambda: {"free": 30, "pro": 180})
 
 
 class OrchestratorRuntime:
@@ -159,7 +156,7 @@ def make_initial_state(
     user_id: str = "",
     user_role: str = "",
     permissions: list[str] | None = None,
-    max_iterations: int = 3,
+    max_iterations: int | None = None,
     tenant_context: TenantContext | None = None,
     history_messages: list[dict[str, str]] | None = None,
     session_id: str = "",
@@ -174,7 +171,7 @@ def make_initial_state(
         user_id: 用户 ID。
         user_role: 用户角色。
         permissions: 用户权限列表。
-        max_iterations: 最大迭代次数。
+        max_iterations: 最大迭代次数（缺省取 OrchestratorConfig.max_iterations）。
         tenant_context: 多租户上下文。
         history_messages: 历史会话消息列表（Phase 3: 记忆增强输入）。
         session_id: 关联会话 ID（可选，用于记忆检索与会话持久化绑定）。
@@ -205,7 +202,7 @@ def make_initial_state(
         "evaluation_report": EvaluationReportDetail(),
         "chat_response": "",
         "iteration_count": 0,
-        "max_iterations": max_iterations,
+        "max_iterations": max_iterations if max_iterations is not None else OrchestratorConfig().max_iterations,
         "status": "running",
         "error_message": "",
         "progress": 0.0,

@@ -208,7 +208,7 @@ class TaskManager:
                     return False
                 from app.api.deps import get_orchestrator
 
-                record = {**stored, "orchestrator": get_orchestrator()}  # type: ignore[no-untyped-call]
+                record = {**stored, "orchestrator": get_orchestrator()}
                 self._tasks[task_id] = record
             if record["status"] != "paused":
                 return False

@@ -35,7 +35,7 @@ async def load_history_messages(state: OrchestratorState) -> list[dict[str, str]
 
     try:
         pg_connector = connection_manager.get("postgres")
-        async with pg_connector.get_session() as db:  # type: ignore[attr-defined]
+        async with pg_connector.get_session() as db:
             page = await SessionRepository().get_messages(db, session_id, page=1, page_size=50)
             loaded = [
                 {

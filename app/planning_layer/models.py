@@ -26,5 +26,6 @@ class PlanningState(TypedDict):
     component_decomposition: list[ComponentDetail]
     planning_result: PlanningResultDetail
     node_outputs: dict[str, Any]  # 各子节点的 LLM 输出缓存
+    self_check_attempts: int  # 自检失败回退重规划的次数（防无限递归）
     # 以下字段由 Orchestrator Adapter 注入（迭代反馈）
     evaluation_feedback: dict[str, Any]  # {issues, recommendations, overall_score}

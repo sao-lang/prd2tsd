@@ -153,11 +153,20 @@ class KnowledgeGraphBuilder:
         )
         return stats
 
+    async def get_stats(self) -> BuildStats:
+        """获取知识图谱构建统计（实体/关系数量）。
+
+        Returns:
+            BuildStats（实体/关系计数来自图存储）。
+        """
+        return await self.graph_store.get_stats()
+
     async def build_from_text(
         self,
         text: str,
         source_name: str = "",
         workspace_id: str = "",
+        document_id: str = "",
     ) -> BuildStats:
         """从文本内容构建实体索引（无需文件路径，适用于 Web 抓取内容）。
 
@@ -165,6 +174,7 @@ class KnowledgeGraphBuilder:
             text: 文本内容。
             source_name: 来源名称（如 URL 或文档标题）。
             workspace_id: 工作空间 ID。
+            document_id: 所属文档 ID（文档语义搜索关联用）。
 
         Returns:
             构建统计。
@@ -197,7 +207,7 @@ class KnowledgeGraphBuilder:
         await self.vector_store.ensure_extensions()
         for chunk in chunks:
             chunk_emb = await self.entity_embedder.embed_text(chunk.text)
-            await self.vector_store.upsert_chunk(chunk, chunk_emb)
+            await self.vector_store.upsert_chunk(chunk, chunk_emb, document_id=document_id)
         for entity in resolved_entities:
             if entity.embedding:
                 await self.vector_store.upsert_entity_embedding(
@@ -227,6 +237,7 @@ class KnowledgeGraphBuilder:
         content: bytes,
         filename: str,
         workspace_id: str = "",
+        document_id: str = "",
     ) -> BuildStats:
         """从文件字节内容构建实体索引（多格式自动提取文本）。
 
@@ -237,6 +248,7 @@ class KnowledgeGraphBuilder:
             content: 文件字节数据。
             filename: 原始文件名。
             workspace_id: 工作空间 ID。
+            document_id: 所属文档 ID（文档语义搜索关联用）。
 
         Returns:
             构建统计。
@@ -249,7 +261,12 @@ class KnowledgeGraphBuilder:
         text = extract_text(content, filename)
         if not text.strip():
             raise ValueError(f"文件 {filename} 无可提取文本内容")
-        return await self.build_from_text(text, source_name=filename, workspace_id=workspace_id)
+        return await self.build_from_text(
+            text,
+            source_name=filename,
+            workspace_id=workspace_id,
+            document_id=document_id,
+        )
 
 
 class RetrievalPipeline:
@@ -278,6 +295,7 @@ class RetrievalPipeline:
         self.reranker = ReRanker()
         self.compressor = Compressor()
         self.max_reflection_rounds = 2
+        self.last_reflection_rounds: int = 0
 
     async def retrieve(
         self,
@@ -312,6 +330,7 @@ class RetrievalPipeline:
         current_query = query
         all_results: list[ScoredDoc] = []
 
+        self.last_reflection_rounds = 0
         for round_idx in range(self.max_reflection_rounds + 1):
             # 4a. 多路检索
             local_docs: list[ScoredDoc] = []
@@ -356,6 +375,7 @@ class RetrievalPipeline:
             else:
                 logger.info("反思达到最大轮数(%d)，采用当前结果", self.max_reflection_rounds)
 
+        self.last_reflection_rounds = round_idx + 1
         # 5. 重排
         reranked = self.reranker.rerank(current_query, all_results, top_k)
 

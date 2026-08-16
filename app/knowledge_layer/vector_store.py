@@ -37,7 +37,7 @@ class PGVectorStore:
         if self._session is not None:
             return self._session
         connector = connection_manager.get("postgres")
-        return connector.get_session()  # type: ignore[attr-defined,no-any-return]
+        return connector.get_session()
 
     async def ensure_extensions(self) -> None:
         """确保 pgvector 扩展已启用且表已创建。"""
@@ -52,6 +52,7 @@ class PGVectorStore:
                 embedding vector({self._dimension}),
                 section_path VARCHAR(512) DEFAULT '',
                 entity_ids TEXT DEFAULT '[]',
+                document_id VARCHAR(64) DEFAULT ',
                 workspace_id VARCHAR(64) DEFAULT '',
                 created_at TIMESTAMP DEFAULT NOW()
             )
@@ -98,25 +99,28 @@ class PGVectorStore:
         self,
         chunk: Chunk,
         embedding: list[float] | None = None,
+        document_id: str = "",
     ) -> None:
         """写入 Chunk 向量。
 
         Args:
             chunk: Chunk 对象。
             embedding: 向量。为 None 时不写入向量。
+            document_id: 所属文档 ID（文档语义搜索关联用）。
         """
         session = await self._get_session()
         vec_str = json.dumps(embedding) if embedding else None
         await session.execute(
             text(
                 """
-            INSERT INTO text_unit_embeddings (id, text, embedding, section_path, entity_ids, workspace_id)
-            VALUES (:id, :text, :embedding::vector, :section_path, :entity_ids, :workspace_id)
+            INSERT INTO text_unit_embeddings (id, text, embedding, section_path, entity_ids, workspace_id, document_id)
+            VALUES (:id, :text, :embedding::vector, :section_path, :entity_ids, :workspace_id, :document_id)
             ON CONFLICT (id) DO UPDATE SET
                 text = EXCLUDED.text,
                 embedding = EXCLUDED.embedding,
                 section_path = EXCLUDED.section_path,
-                entity_ids = EXCLUDED.entity_ids
+                entity_ids = EXCLUDED.entity_ids,
+                document_id = EXCLUDED.document_id
             """
             ),
             {
@@ -126,6 +130,7 @@ class PGVectorStore:
                 "section_path": chunk.section_path or "",
                 "entity_ids": "[]",
                 "workspace_id": chunk.metadata.get("workspace_id", "") if chunk.metadata else "",
+                "document_id": document_id,
             },
         )
         await session.commit()
@@ -198,9 +203,12 @@ class PGVectorStore:
 
         session = await self._get_session()
         vec_str = json.dumps(embedding)
+        select_cols = "id, text, content, name, description"
+        if table == "text_unit_embeddings":
+            select_cols += ", document_id"
         query = text(
             f"""
-            SELECT id, text, content, name, description,
+            SELECT {select_cols},
                    1 - (embedding <=> :vec::vector) AS similarity
             FROM {table}
             WHERE (:workspace_id = '' OR workspace_id = :workspace_id)
@@ -213,14 +221,15 @@ class PGVectorStore:
             "workspace_id": workspace_id,
             "top_k": top_k,
         }
-        query = text(query.text)
         result = await session.execute(query, params)
-        result = await session.execute(query)
         rows = result.fetchall()
 
         docs: list[ScoredDoc] = []
         for row in rows:
             row_dict = dict(row._mapping)
+            metadata: dict[str, Any] = {"table": table}
+            if table == "text_unit_embeddings":
+                metadata["document_id"] = row_dict.get("document_id", "")
             text_content = (
                 row_dict.get("text")
                 or row_dict.get("content")
@@ -233,7 +242,7 @@ class PGVectorStore:
                     text=str(text_content),
                     score=float(row_dict.get("similarity", 0.0)),
                     source="vector",
-                    metadata={"table": table},
+                    metadata=metadata,
                 )
             )
         return docs

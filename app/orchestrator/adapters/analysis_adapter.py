@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from langgraph.graph import StateGraph
+from typing import Any, cast
+
+from langgraph.graph.state import CompiledStateGraph
 
 from app.observability.replay.recorder import DecisionRecorder, record_node_execution
 from app.orchestrator.state import OrchestratorState
+from contracts.interfaces import AnalysisResultDetail
 
 
 class AnalysisAdapter:
@@ -15,7 +18,11 @@ class AnalysisAdapter:
     将 AnalysisState 结果映射回 OrchestratorState。
     """
 
-    def __init__(self, analysis_graph: StateGraph, recorder: DecisionRecorder | None = None) -> None:
+    def __init__(
+        self,
+        analysis_graph: CompiledStateGraph[Any, Any, Any, Any],
+        recorder: DecisionRecorder | None = None,
+    ) -> None:
         """初始化 Adapter。
 
         Args:
@@ -37,7 +44,7 @@ class AnalysisAdapter:
             更新后的 OrchestratorState。
         """
         # 1. 提取 Analysis Layer 需要的输入
-        analysis_input: dict = {
+        analysis_input: dict[str, Any] = {
             "prd_raw": state["prd_raw"],
         }
 
@@ -82,7 +89,7 @@ class AnalysisAdapter:
         result = await self.graph.ainvoke(analysis_input)
 
         # 4. 映射回 OrchestratorState
-        state["analysis_result"] = result.get("analysis_result")
+        state["analysis_result"] = cast(AnalysisResultDetail, result.get("analysis_result"))
         state["extracted_requirements"] = result.get("extracted_requirements", [])
         state["extracted_constraints"] = result.get("extracted_constraints", [])
         state["progress"] = 0.25

@@ -6,6 +6,8 @@ Outline → FanOutSections → [SectionWriter × n（并行）] → DiagramGener
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.constants import Send
 from langgraph.graph import END, StateGraph
 
@@ -63,7 +65,7 @@ def fan_out_sections(state: GenerationState) -> list[Send]:
     return sends
 
 
-def build_generation_graph() -> StateGraph:
+def build_generation_graph() -> StateGraph[GenerationState, Any, Any, Any]:
     """构建并编译 Generation Layer StateGraph（Send 并行版）。
 
     C3 链路：

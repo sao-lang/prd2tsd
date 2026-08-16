@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from jose import JWTError, jwt
 
@@ -66,7 +67,9 @@ class TokenManager:
             "type": "access",
         }
 
-        return jwt.encode(payload, self._secret_key, algorithm=self._algorithm)
+        token = jwt.encode(payload, self._secret_key, algorithm=self._algorithm)
+        assert isinstance(token, str)
+        return token
 
     def create_refresh_token(self, user_id: str) -> str:
         """签发 Refresh Token。
@@ -88,9 +91,11 @@ class TokenManager:
             "type": "refresh",
         }
 
-        return jwt.encode(payload, self._secret_key, algorithm=self._algorithm)
+        token = jwt.encode(payload, self._secret_key, algorithm=self._algorithm)
+        assert isinstance(token, str)
+        return token
 
-    def verify_token(self, token: str) -> dict | None:
+    def verify_token(self, token: str) -> dict[str, Any] | None:
         """验证 JWT Token 并解析 Payload。
 
         Args:
@@ -101,6 +106,7 @@ class TokenManager:
         """
         try:
             payload = jwt.decode(token, self._secret_key, algorithms=[self._algorithm])
+            assert isinstance(payload, dict)
             return payload
         except JWTError:
             return None

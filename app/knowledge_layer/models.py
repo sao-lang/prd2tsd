@@ -107,6 +107,7 @@ class BuildStats(BaseModel):
     """知识图谱构建统计。"""
 
     entities: int = 0
+    relations: int = 0
     chunks: int = 0
     claims: int = 0
     file_path: str = ""

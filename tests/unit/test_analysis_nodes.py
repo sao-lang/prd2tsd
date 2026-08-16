@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from contracts.interfaces import AnalysisResultDetail, DependencyGraph, DocumentSection
 from app.analysis_layer.models import AnalysisState
 from app.analysis_layer.nodes.parse_node import DocumentParserNode
 from app.analysis_layer.nodes.result_assembler import AnalysisResultAssemblerNode
+from contracts.interfaces import AnalysisResultDetail, DependencyGraph, DocumentSection
 
 
 def _empty_ar() -> AnalysisResultDetail:

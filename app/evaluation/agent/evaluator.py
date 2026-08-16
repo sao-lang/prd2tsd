@@ -58,6 +58,8 @@ class AgentEvaluator:
         Returns:
             执行摘要 dict（completed/iterations/human_review_required/result）。
         """
+        from langchain_core.runnables import RunnableConfig
+
         from app.api.deps import get_orchestrator
         from app.orchestrator.state import make_initial_state
 
@@ -68,7 +70,7 @@ class AgentEvaluator:
             prd_file_type="md",
             workspace_id="",
         )
-        config = {"configurable": {"thread_id": f"eval_{task.id}"}}
+        config: RunnableConfig = {"configurable": {"thread_id": f"eval_{task.id}"}}
         final_state: dict[str, Any] = {}
         async for step in orchestrator.astream(initial, config):
             final_state = step if isinstance(step, dict) else {}

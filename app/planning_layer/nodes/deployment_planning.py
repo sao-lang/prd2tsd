@@ -23,6 +23,7 @@ class DeploymentPlanningNode:
         self.chain = DEPLOY_PROMPT | llm
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行部署规划节点逻辑。"""
         ar = state["analysis_result"]
         result = await self.chain.ainvoke({
             "project": ar.project_name,

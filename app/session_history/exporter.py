@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -45,12 +46,12 @@ class SessionExporter:
             raise ValueError(f"会话不存在: {session_id}")
 
         # 获取消息
-        result = await db.execute(
+        message_result = await db.execute(
             select(SessionMessage)
             .where(SessionMessage.session_id == session_id)
             .order_by(SessionMessage.turn_index.asc()),
         )
-        messages = result.scalars().all()
+        messages = message_result.scalars().all()
 
         if fmt == "markdown":
             return self._to_markdown(session, messages)
@@ -61,7 +62,7 @@ class SessionExporter:
     def _to_markdown(
         self,
         session: Session,
-        messages: list[SessionMessage],
+        messages: Sequence[SessionMessage],
     ) -> str:
         """导出为 Markdown。
 
@@ -105,7 +106,7 @@ class SessionExporter:
     def _to_json(
         self,
         session: Session,
-        messages: list[SessionMessage],
+        messages: Sequence[SessionMessage],
     ) -> str:
         """导出为 JSON。
 

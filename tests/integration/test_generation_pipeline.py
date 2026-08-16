@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from contracts.interfaces import AnalysisResultDetail, GenerationResultDetail, PlanningResultDetail
 from app.generation_layer.agent_graph import generation_graph
+from contracts.interfaces import AnalysisResultDetail, GenerationResultDetail, PlanningResultDetail
 
 
 @pytest.mark.asyncio

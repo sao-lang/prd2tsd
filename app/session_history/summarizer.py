@@ -54,7 +54,7 @@ class SessionSummarizer:
                 title += "..."
             return title
 
-    async def generate_summary(self, messages: list[dict]) -> str:
+    async def generate_summary(self, messages: list[dict[str, Any]]) -> str:
         """根据消息内容生成会话摘要。
 
         Args:

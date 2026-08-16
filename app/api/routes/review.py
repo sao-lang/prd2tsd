@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -42,7 +44,7 @@ async def submit_review(
     stage: str,
     req: ReviewRequest,
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, Any]:
     """提交审核结果。
 
     Args:

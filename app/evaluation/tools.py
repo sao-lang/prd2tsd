@@ -49,7 +49,7 @@ async def call_llm(prompt: str, model: str | None = None, **kwargs: Any) -> str:
             default_model=model or "deepseek-chat",
         )
         resp = await llm.ainvoke(prompt)
-        return resp.content if hasattr(resp, "content") else str(resp)
+        return resp.content if isinstance(resp.content, str) else str(resp)
     except Exception as exc:
         logger.warning("LLM 调用失败（evaluation）: %s", exc)
         return ""

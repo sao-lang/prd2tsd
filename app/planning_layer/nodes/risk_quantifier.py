@@ -27,6 +27,7 @@ class RiskQuantifierNode:
         self.chain = RISK_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行风险量化节点逻辑。"""
         ar = state["analysis_result"]
         stack_names = ", ".join(t.recommendation for t in state.get("tech_stack_choices", []))
         node_outputs = dict(state.get("node_outputs", {}))

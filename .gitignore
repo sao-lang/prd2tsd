@@ -20,10 +20,14 @@ env/
 .coverage
 htmlcov/
 .ruff_cache
+.tmp/
 
 # Database
 *.db
 *.sqlite
+
+# Evaluation framework local store
+.deepeval/
 
 # Evaluation reports
 # 评测报告为运行产物，不入库（保留 .gitkeep）
@@ -37,3 +41,6 @@ Thumbs.db
 # Docker
 pgdata/
 redis-data/
+
+# Local Codex workspace metadata
+.agents/

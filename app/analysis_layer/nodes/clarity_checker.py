@@ -26,6 +26,7 @@ class ClarityCheckerNode:
         self.chain = CLARITY_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行需求清晰度检查。"""
         reqs_text = "\n".join(
             f"{r.id}: {r.description[:150]}" for r in state["extracted_requirements"]
         )

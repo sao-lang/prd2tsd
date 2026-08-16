@@ -23,6 +23,7 @@ class SkillGapAnalyzerNode:
         self.chain = SKILL_GAP_PROMPT | llm
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行技能缺口分析节点逻辑。"""
         stack_names = ", ".join(t.recommendation for t in state.get("tech_stack_choices", []))
         if not stack_names:
             return state

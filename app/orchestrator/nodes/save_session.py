@@ -13,6 +13,7 @@ from typing import Any
 
 from app.core.connections import connection_manager
 from app.core.logger import get_logger
+from app.orchestrator.runtime import unregister_runtime
 from app.orchestrator.state import OrchestratorState
 from app.session_history.models import MessageCreate, SessionCreate, SessionUpdate
 
@@ -76,7 +77,7 @@ class SaveSessionNode:
         # 不再依赖 state["_runtime"] 注入（该字段可能未被设置）。
         try:
             pg_connector = connection_manager.get("postgres")
-            async with pg_connector.get_session() as _db_session:  # type: ignore[attr-defined]
+            async with pg_connector.get_session() as _db_session:
                 repo = self._session_service.repository
 
                 # 提取结果摘要（支持复杂生成和简单对话两种路径）
@@ -190,4 +191,5 @@ class SaveSessionNode:
         except Exception as exc:
             logger.warning("会话保存失败（不影响主流程）: task=%s, error=%s", task_id, exc)
 
+        unregister_runtime(task_id)
         return state

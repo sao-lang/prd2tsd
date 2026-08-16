@@ -30,13 +30,6 @@ class TestContextCompressor:
         # 11个英文字符 * 0.25 = 2.75, int = 2
         assert tokens == 2
 
-    def test_no_compression_needed(self, compressor: ContextCompressor) -> None:
-        """验证未超限时不压缩。"""
-        msgs = [ChatMessage(role="user", content="短消息")]
-        result = compressor.compress(msgs, max_tokens=1000)
-        # 实际上是 async 生成器，需要 await
-        # 先同步测 _estimate_tokens
-
     @pytest.mark.asyncio
     async def test_compress_under_limit_returns_original(
         self, compressor: ContextCompressor,

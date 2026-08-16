@@ -38,6 +38,7 @@ class DocumentOut(BaseModel):
     workspace_id: str
     user_id: str
     original_filename: str
+    storage_path: str = ""
     file_size: int
     file_type: str
     mime_type: str | None = None

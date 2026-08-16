@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from langgraph.graph import StateGraph
+from typing import Any, cast
+
+from langgraph.graph.state import CompiledStateGraph
 
 from app.observability.replay.recorder import DecisionRecorder, record_node_execution
 from app.orchestrator.state import OrchestratorState
+from contracts.interfaces import GenerationResultDetail
 
 
 class GenerationAdapter:
@@ -15,7 +18,11 @@ class GenerationAdapter:
     将 GenerationState 结果映射回 OrchestratorState。
     """
 
-    def __init__(self, generation_graph: StateGraph, recorder: DecisionRecorder | None = None) -> None:
+    def __init__(
+        self,
+        generation_graph: CompiledStateGraph[Any, Any, Any, Any],
+        recorder: DecisionRecorder | None = None,
+    ) -> None:
         """初始化 Adapter。
 
         Args:
@@ -37,7 +44,7 @@ class GenerationAdapter:
             更新后的 OrchestratorState。
         """
         # 1. 提取 Generation Layer 需要的输入
-        generation_input: dict = {
+        generation_input: dict[str, Any] = {
             "planning_result": state.get("planning_result"),
             "analysis_result": state.get("analysis_result"),
             # P0.1: 保留已有章节内容（迭代续写时用）
@@ -51,17 +58,17 @@ class GenerationAdapter:
         # P0.1: 注入评测反馈（迭代循环时）
         eval_report = state.get("evaluation_report")
         if eval_report is not None:
-            if hasattr(eval_report, "critical_issues"):
-                generation_input["evaluation_feedback"] = {
-                    "issues": list(eval_report.critical_issues),
-                    "recommendations": list(eval_report.recommendations),
-                    "overall_score": float(eval_report.overall_score),
-                }
-            else:
+            if isinstance(eval_report, dict):
                 generation_input["evaluation_feedback"] = {
                     "issues": eval_report.get("critical_issues", []),
                     "recommendations": eval_report.get("recommendations", []),
                     "overall_score": float(eval_report.get("overall_score", 0.0)),
+                }
+            else:
+                generation_input["evaluation_feedback"] = {
+                    "issues": list(eval_report.critical_issues),
+                    "recommendations": list(eval_report.recommendations),
+                    "overall_score": float(eval_report.overall_score),
                 }
 
         # Block F: 加载租户自定义 Prompt
@@ -102,8 +109,12 @@ class GenerationAdapter:
             if workspace_id:
                 from app.knowledge_layer.vector_store import PGVectorStore
                 vs = PGVectorStore()
-                planning_result = state.get("planning_result", {})
-                query = str(planning_result.get("summary", ""))[:200] if planning_result else ""
+                planning_result = state.get("planning_result")
+                query = (
+                    str(planning_result.get("summary", ""))[:200]
+                    if isinstance(planning_result, dict)
+                    else ""
+                )
                 if query:
                     claim_results = await vs.search_claims(query=query, top_k=5)
                     if claim_results:
@@ -117,7 +128,7 @@ class GenerationAdapter:
         result = await self.graph.ainvoke(generation_input)
 
         # 3. 映射回 OrchestratorState
-        state["generation_result"] = result.get("generation_result")
+        state["generation_result"] = cast(GenerationResultDetail, result.get("generation_result"))
         state["section_contents"] = result.get("section_contents", {})
         state["export_formats"] = result.get("export_formats", {})
         state["progress"] = 0.75

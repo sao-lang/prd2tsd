@@ -2,7 +2,7 @@
 
 > **AI Summary**: 三个工作包的整体实施计划与逐文件 Checklist。
 > - **WP1**：OpenTelemetry 全链路追踪 + Prometheus 指标完善（让链路可观测、指标真实记录）
-> - **WP2**：RAG + Agent 评测体系（引入 ragas，详见 `docs/block-H-evaluation.md`）
+> - **WP2**：RAG + Agent 评测体系（引入 deepeval，详见 `docs/block-H-evaluation.md`）
 > - **WP3**：社区检测/社区报告逻辑简化删除（Global Search 保留轻量实现）
 >
 > 实施顺序：**WP1 → WP3 → WP2**（先让观测可用、检索行为干净，再做评测闭环）。
@@ -99,13 +99,13 @@
 
 ---
 
-# WP2：RAG + Agent 评测（引入 ragas）
+# WP2：RAG + Agent 评测（引入 deepeval）
 
 > 完整详细设计见 **`docs/block-H-evaluation.md`**（指标分层 / 数据集 schema / 模块设计 / 脚本 / 反思 A/B / 优化闭环）。
 
 ## 2.1 Checklist 摘要（详见 block-H §11）
 
-- [ ] **依赖**：`requirements.txt` + `pyproject.toml` 加 `ragas`（先验证与 langchain-core 0.3 / langgraph 1.2 兼容，锁版本）
+- [ ] **依赖**：`requirements.txt` + `pyproject.toml` 加 `deepeval>=4,<5`
 - [ ] **RAG 评测模块**：新增 `app/evaluation/rag/{__init__,models,dataset_loader,evaluator}.py`
 - [ ] **Agent 评测模块**：新增 `app/evaluation/agent/{__init__,models,evaluator}.py`
 - [ ] **CLI**：新增 `scripts/run_rag_eval.py`（`--variant`/`--ab-reflection`）、`scripts/run_agent_eval.py`
@@ -195,5 +195,5 @@ WP1 追踪+指标（观测地基）
 2. ✅ 评测入口 CLI、不加 API
 3. ✅ 反思只做 A/B 验证、不改逻辑
 4. ✅ 数据集起步量：RAG 10-20 / Agent 3-5
-5. ⏳ `ragas` 兼容版本：实施 WP2 第一步实测后锁定
+5. ✅ 评测框架：deepeval 4.1.8（2026-08 迁移完成）
 6. ⏳ WP1 中 `RetrievalContext.community_summary` 是否改名为 `global_summary`：默认改；**影响 4 个代码文件**（`models.py` / `pipeline.py` / `orchestrator/nodes/retrieve_node.py` / `api/routes/stream_qna.py`），WP3 一并处理

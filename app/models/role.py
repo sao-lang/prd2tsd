@@ -20,7 +20,7 @@ class Role(UUIDMixin, TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    permissions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    permissions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     # 关系
     organization = relationship("Organization", back_populates="roles")

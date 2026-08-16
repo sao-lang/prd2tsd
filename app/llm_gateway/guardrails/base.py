@@ -12,6 +12,7 @@ class GuardrailResult:
     """护栏检查结果。"""
 
     passed: bool
+    name: str = ""  # 触发该结果的护栏名（由 GuardrailManager 填充）
     blocked: bool = False
     reason: str = ""
     severity: str = "info"  # info / warning / critical

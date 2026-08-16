@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -204,7 +206,7 @@ async def delete_workspace(
     workspace_id: str,
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-) -> dict:
+) -> dict[str, Any]:
     """删除（归档）工作空间。
 
     Args:

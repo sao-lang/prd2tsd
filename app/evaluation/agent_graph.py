@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.constants import Send
 from langgraph.graph import END, StateGraph
 
@@ -71,7 +73,7 @@ def fan_out_evaluators(state: EvaluationState) -> list[Send]:
     return sends
 
 
-def build_evaluation_graph() -> StateGraph:
+def build_evaluation_graph() -> StateGraph[EvaluationState, Any, Any, Any]:
     """构建并行评测 StateGraph。
 
     C4 链路：

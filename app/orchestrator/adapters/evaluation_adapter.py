@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from langgraph.graph import StateGraph
+from typing import Any, cast
+
+from langgraph.graph.state import CompiledStateGraph
 
 from app.observability.replay.recorder import DecisionRecorder, record_node_execution
 from app.orchestrator.state import OrchestratorState
+from contracts.interfaces import EvaluationReportDetail
 
 
 class EvaluationAdapter:
@@ -15,7 +18,11 @@ class EvaluationAdapter:
     将 EvaluationState 结果映射回 OrchestratorState。
     """
 
-    def __init__(self, evaluation_graph: StateGraph, recorder: DecisionRecorder | None = None) -> None:
+    def __init__(
+        self,
+        evaluation_graph: CompiledStateGraph[Any, Any, Any, Any],
+        recorder: DecisionRecorder | None = None,
+    ) -> None:
         """初始化 Adapter。
 
         Args:
@@ -45,7 +52,7 @@ class EvaluationAdapter:
         result = await self.graph.ainvoke(evaluation_input)
 
         # 3. 映射回 OrchestratorState
-        state["evaluation_report"] = result.get("evaluation_report")
+        state["evaluation_report"] = cast(EvaluationReportDetail, result.get("evaluation_report"))
         state["iteration_count"] = state.get("iteration_count", 0) + 1
         state["progress"] = 0.90
 

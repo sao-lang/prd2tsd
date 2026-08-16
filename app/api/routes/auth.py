@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import bcrypt as _bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -170,12 +172,12 @@ async def login(
         raise HTTPException(status_code=403, detail="账号已被禁用")
 
     # 获取用户的工作空间和角色（取最新加入的）
-    result = await db.execute(
+    member_result = await db.execute(
         select(TeamMember)
         .where(TeamMember.user_id == user.id)
         .order_by(TeamMember.created_at.desc())
     )
-    members = result.scalars().all()
+    members = member_result.scalars().all()
     member = members[0] if members else None
 
     org_id = ""
@@ -237,7 +239,7 @@ async def refresh(
 
 
 @router.post("/logout")
-async def logout() -> dict:
+async def logout() -> dict[str, Any]:
     """登出（客户端清除 Token）。
 
     Returns:

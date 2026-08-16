@@ -26,6 +26,7 @@ class ConstraintAnalyzerNode:
         self.chain = CONSTRAINT_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行约束提取节点逻辑。"""
         prd_text = state["prd_raw"][:6000]
         try:
             result: ConstraintList = await self.chain.ainvoke({

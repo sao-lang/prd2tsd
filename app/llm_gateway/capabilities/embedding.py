@@ -114,6 +114,7 @@ class UnifiedEmbedding:
             "API Embedding 完成: model=%s, texts=%d, dim=%d",
             model_name, len(texts), len(response.embeddings[0]) if response.embeddings else 0,
         )
+        assert isinstance(response, EmbeddingResponse)
         return response
 
     def _local_embed(self, texts: list[str]) -> EmbeddingResponse:

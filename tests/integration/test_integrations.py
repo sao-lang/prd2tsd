@@ -89,42 +89,46 @@ class TestWebhookSender:
 class TestIntegrationHub:
     """IntegrationHub 集成测试。"""
 
-    def test_register_and_list(self) -> None:
+    @pytest.mark.asyncio
+    async def test_register_and_list(self) -> None:
         """验证 Webhook 注册和列表。"""
         hub = IntegrationHub()
-        hub.register_webhook("ws-1", "https://example.com/hook1", "task.completed")
-        hub.register_webhook("ws-1", "https://example.com/hook2", "task.started")
+        await hub.register_webhook("ws-1", "https://example.com/hook1", "task.completed")
+        await hub.register_webhook("ws-1", "https://example.com/hook2", "task.started")
 
-        hooks = hub.list_webhooks("ws-1")
+        hooks = await hub.list_webhooks("ws-1")
         assert len(hooks) == 2
         assert any(h["event"] == "task.completed" for h in hooks)
         assert any(h["event"] == "task.started" for h in hooks)
 
-    def test_list_empty_workspace(self) -> None:
+    @pytest.mark.asyncio
+    async def test_list_empty_workspace(self) -> None:
         """验证未注册的工作空间返回空列表。"""
         hub = IntegrationHub()
-        assert hub.list_webhooks("ws-nonexistent") == []
+        assert await hub.list_webhooks("ws-nonexistent") == []
 
-    def test_unregister_success(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unregister_success(self) -> None:
         """验证注销已注册的 Webhook。"""
         hub = IntegrationHub()
-        hub.register_webhook("ws-1", "https://example.com/hook", "task.completed")
-        assert hub.unregister_webhook("ws-1", "task.completed") is True
-        assert hub.get_webhook_url("ws-1", "task.completed") is None
+        await hub.register_webhook("ws-1", "https://example.com/hook", "task.completed")
+        assert await hub.unregister_webhook("ws-1", "task.completed") is True
+        assert await hub.get_webhook_url("ws-1", "task.completed") is None
 
-    def test_unregister_nonexistent(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unregister_nonexistent(self) -> None:
         """验证注销不存在的 Webhook 返回 False。"""
         hub = IntegrationHub()
-        assert hub.unregister_webhook("ws-x", "task.completed") is False
+        assert await hub.unregister_webhook("ws-x", "task.completed") is False
 
     @pytest.mark.asyncio
     async def test_notify_triggers_all_matching_webhooks(self) -> None:
         """验证 notify 触发所有匹配的 Webhook。"""
         hub = IntegrationHub()
-        hub.register_webhook("ws-1", "https://example.com/hook1", "task.completed")
-        hub.register_webhook("ws-2", "https://example.com/hook2", "task.completed")
+        await hub.register_webhook("ws-1", "https://example.com/hook1", "task.completed")
+        await hub.register_webhook("ws-2", "https://example.com/hook2", "task.completed")
         # 不同事件类型不应触发
-        hub.register_webhook("ws-1", "https://example.com/hook3", "task.started")
+        await hub.register_webhook("ws-1", "https://example.com/hook3", "task.started")
 
         mock_sender = MagicMock()
         mock_sender.send = AsyncMock(return_value={"success": True, "status_code": 200, "error": None})

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from neo4j import AsyncDriver
 
 from app.core.connections import connection_manager
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
-from app.knowledge_layer.models import KGEntity
+from app.knowledge_layer.models import BuildStats, KGEntity
 
 logger = get_logger("prd2tsd.knowledge.graph_store")
 
@@ -36,7 +36,7 @@ class Neo4jGraphStore:
         if self._driver is not None:
             return self._driver
         connector = connection_manager.get("neo4j")
-        return connector.get_driver()  # type: ignore[attr-defined,no-any-return]
+        return cast(AsyncDriver, connector.get_driver())
 
     async def upsert_entity(self, entity: KGEntity) -> str:
         """创建或更新实体节点。
@@ -75,6 +75,23 @@ class Neo4jGraphStore:
             )
         logger.debug("实体已保存: %s (%s)", entity.name, entity_id)
         return entity_id
+
+    async def get_stats(self) -> BuildStats:
+        """统计当前图谱中的实体与关系数量。
+
+        Returns:
+            BuildStats（entities/relations 为全库计数，chunks/claims 为 0）。
+        """
+        driver = await self._get_driver()
+        async with driver.session(database=self._database) as session:
+            entity_result = await session.run("MATCH (e:KGEntity) RETURN count(e) AS c")
+            entity_row = await entity_result.single()
+            entity_count = int(entity_row["c"]) if entity_row else 0
+
+            relation_result = await session.run("MATCH ()-[r]->() RETURN count(r) AS c")
+            relation_row = await relation_result.single()
+            relation_count = int(relation_row["c"]) if relation_row else 0
+        return BuildStats(entities=entity_count, relations=relation_count)
 
     async def upsert_entities(self, entities: list[KGEntity]) -> list[str]:
         """批量创建或更新实体。

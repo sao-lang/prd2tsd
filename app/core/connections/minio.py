@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+
+from minio import Minio
 
 from app.core.config import settings
 from app.core.connections.base import BaseConnector, ConnHealth
@@ -38,7 +39,7 @@ class MinIOConnector(BaseConnector):
         self.secret_key = secret_key or settings.MINIO_SECRET_KEY
         self.bucket = bucket or settings.MINIO_BUCKET
         self.secure = secure or settings.MINIO_SECURE
-        self._client = None
+        self._client: Minio | None = None
 
     async def connect(self) -> bool:
         """建立 MinIO 连接。
@@ -47,17 +48,16 @@ class MinIOConnector(BaseConnector):
             是否连接成功。
         """
         try:
-            from minio import Minio
-
-            self._client = Minio(
+            client = Minio(
                 self.endpoint,
                 access_key=self.access_key,
                 secret_key=self.secret_key,
                 secure=self.secure,
             )
-            self._client.list_buckets()
-            if not self._client.bucket_exists(self.bucket):
-                self._client.make_bucket(self.bucket)
+            client.list_buckets()
+            if not client.bucket_exists(self.bucket):
+                client.make_bucket(self.bucket)
+            self._client = client
             self._connected = True
             self.enabled = True
             logger.info("MinIO 连接成功: %s", self.endpoint)
@@ -74,7 +74,7 @@ class MinIOConnector(BaseConnector):
         self.enabled = False
         logger.info("MinIO 连接已关闭")
 
-    def get_client(self) -> Any:
+    def get_client(self) -> Minio:
         """获取 MinIO 客户端。
 
         Returns:
@@ -98,7 +98,8 @@ class MinIOConnector(BaseConnector):
         start = time.monotonic()
         try:
             if self._client:
-                self._client.list_buckets()
+                client = self._client
+                client.list_buckets()
                 latency = (time.monotonic() - start) * 1000
                 return ConnHealth(
                     name=self.name,

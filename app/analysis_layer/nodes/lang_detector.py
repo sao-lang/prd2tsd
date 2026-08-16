@@ -30,6 +30,7 @@ class LanguageDetectorNode:
         self.translate_llm = GatewayChatModel(task_type="analysis", layer="analysis", node="translate")
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行语言检测与英文翻译节点逻辑。"""
         sample = state["prd_raw"][:200]
         try:
             result: LanguageResult = await self.detect_chain.ainvoke({
@@ -48,7 +49,8 @@ class LanguageDetectorNode:
                     SystemMessage(content="将以下英文 PRD 内容翻译为中文，保留 Markdown 格式。"),
                     HumanMessage(content=state["prd_raw"][:8000]),
                 ])
-                return {**state, "prd_raw": resp.content}
+                translated = resp.content if isinstance(resp.content, str) else str(resp.content)
+                return {**state, "prd_raw": translated}
             except Exception as exc:
                 logger.warning("英文 PRD 翻译失败，将使用原文继续: %s", exc)
 

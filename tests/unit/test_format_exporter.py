@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from contracts.interfaces import AnalysisResultDetail, GenerationResultDetail, PlanningResultDetail
 from app.generation_layer.models import GenerationState
 from app.generation_layer.nodes.format_exporter import FormatExporterNode
+from contracts.interfaces import AnalysisResultDetail, GenerationResultDetail, PlanningResultDetail
 
 
 def test_format_exporter_placeholder():

@@ -52,7 +52,7 @@ class CircuitBreaker:
     def __init__(
         self,
         name: str,
-        failure_threshold: int = 5,
+        failure_threshold: int = 3,
         recovery_timeout: float = 30.0,
         half_open_max_requests: int = 1,
     ) -> None:
@@ -165,7 +165,7 @@ class CircuitBreaker:
 
 def with_circuit_breaker(
     name: str | None = None,
-    failure_threshold: int = 5,
+    failure_threshold: int = 3,
     recovery_timeout: float = 30.0,
 ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """熔断器装饰器。
@@ -182,6 +182,7 @@ def with_circuit_breaker(
     """
 
     def decorator(fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+        """装饰器：为函数绑定独立熔断器。"""
         cb = CircuitBreaker(
             name=name or fn.__name__,
             failure_threshold=failure_threshold,
@@ -190,6 +191,7 @@ def with_circuit_breaker(
 
         @wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            """执行被装饰函数并经过熔断器保护。"""
             return await cb.call(fn, *args, **kwargs)
 
         wrapper.circuit_breaker = cb  # type: ignore[attr-defined]

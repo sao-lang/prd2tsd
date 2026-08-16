@@ -26,6 +26,7 @@ class DependencyAnalyzerNode:
         self.chain = DEPENDENCY_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行依赖分析节点逻辑。"""
         req_summary = "\n".join(
             f"{r.id}: {r.description[:100]}" for r in state["extracted_requirements"]
         )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -26,7 +28,8 @@ class PRDCoverageCheckNode:
             llm = GatewayChatModel(task_type="evaluation", layer="evaluation", node="prd_coverage")
         self.chain = COVERAGE_PROMPT | llm | _PARSER
 
-    async def run(self, state: EvaluationState) -> EvaluationState:
+    async def run(self, state: EvaluationState) -> dict[str, Any]:
+        """执行 PRD 覆盖率评估节点逻辑。"""
         ar = state["analysis_result"]
         reqs_text = "\n".join(f"{r.id}: {r.description[:100]}" for r in ar.requirements)
         content = state["generation_result"].content[:2000]
@@ -43,4 +46,5 @@ class PRDCoverageCheckNode:
 
         dim_scores = dict(state.get("dimension_scores", {}))
         dim_scores["prd_coverage"] = score
-        return {**state, "dimension_scores": dim_scores}
+        # 只返回增量：并行扇出时其余键会并发写冲突（InvalidUpdateError）
+        return {"dimension_scores": dim_scores}

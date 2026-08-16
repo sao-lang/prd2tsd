@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, String, Text
+from sqlalchemy import JSON, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDMixin
@@ -46,6 +46,26 @@ class WebhookSubscription(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False)
     secret: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+
+
+class BatchTask(Base):
+    """批量任务记录（BatchTaskService 持久化，重启可恢复）。"""
+
+    __tablename__ = "batch_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    task_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
     )
 

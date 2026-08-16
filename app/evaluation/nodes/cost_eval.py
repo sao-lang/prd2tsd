@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -26,7 +28,8 @@ class CostEvalNode:
             llm = GatewayChatModel(task_type="evaluation", layer="evaluation", node="cost_eval")
         self.chain = COST_EVAL_PROMPT | llm | _PARSER
 
-    async def run(self, state: EvaluationState) -> EvaluationState:
+    async def run(self, state: EvaluationState) -> dict[str, Any]:
+        """执行成本合理性评估节点逻辑。"""
         pr = state["planning_result"]
         stack_text = ", ".join(t.recommendation for t in pr.tech_stack)
 
@@ -42,4 +45,5 @@ class CostEvalNode:
 
         dim_scores = dict(state.get("dimension_scores", {}))
         dim_scores["cost"] = score
-        return {**state, "dimension_scores": dim_scores}
+        # 只返回增量：并行扇出时其余键会并发写冲突（InvalidUpdateError）
+        return {"dimension_scores": dim_scores}

@@ -9,7 +9,7 @@ from app.models.block_e import (
     UploadedDocument,
 )
 from app.models.organization import Organization
-from app.models.persistence import EvaluationScore, TaskRun, WebhookSubscription
+from app.models.persistence import BatchTask, EvaluationScore, TaskRun, WebhookSubscription
 from app.models.role import Role
 from app.models.team_member import TeamMember
 from app.models.user import User
@@ -31,5 +31,6 @@ __all__ = [
     "UploadedDocument",
     "TaskRun",
     "WebhookSubscription",
+    "BatchTask",
     "EvaluationScore",
 ]

@@ -23,6 +23,7 @@ class APIPlanningNode:
         self.chain = API_PROMPT | llm
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行 API 规划节点逻辑。"""
         comps = state.get("component_decomposition", [])
         comp_names = ", ".join(c.name for c in comps[:5])
         ar = state["analysis_result"]

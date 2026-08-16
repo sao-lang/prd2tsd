@@ -6,14 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-
-class TokenResponse(BaseModel):
-    """Token 响应。"""
-
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    expires_in: int = 900  # 15分钟
+from app.api.schemas.response import TokenResponse  # noqa: F401 — 统一复用 api.schemas.response 定义，避免重复
 
 
 class TokenRefreshRequest(BaseModel):

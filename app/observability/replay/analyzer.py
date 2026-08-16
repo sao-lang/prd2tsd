@@ -31,9 +31,9 @@ class DecisionAnalyzer:
         for node in trace.nodes:
             if node.agent_name not in agent_stats:
                 agent_stats[node.agent_name] = {"calls": 0, "duration_ms": 0.0, "tokens": 0}
-            agent_stats[node.agent_name]["calls"] += 1  # type: ignore[operator]
-            agent_stats[node.agent_name]["duration_ms"] += node.duration_ms  # type: ignore[operator]
-            agent_stats[node.agent_name]["tokens"] += node.tokens_consumed  # type: ignore[operator]
+            agent_stats[node.agent_name]["calls"] += 1
+            agent_stats[node.agent_name]["duration_ms"] += node.duration_ms
+            agent_stats[node.agent_name]["tokens"] += node.tokens_consumed
 
         # 耗时最长的节点
         sorted_by_duration = sorted(trace.nodes, key=lambda n: n.duration_ms, reverse=True)

@@ -23,6 +23,7 @@ class DataArchDesignNode:
         self.chain = DATA_ARCH_PROMPT | llm
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行数据架构设计节点逻辑。"""
         comps = state.get("component_decomposition", [])
         comp_names = ", ".join(c.name for c in comps[:5])
         ar = state["analysis_result"]

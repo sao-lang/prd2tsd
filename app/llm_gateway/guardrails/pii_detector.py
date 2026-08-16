@@ -27,6 +27,7 @@ class PIIDetectorGuardrail(Guardrail):
     ACTION: str = "mask"  # mask / block / warn
 
     async def check(self, text: str, context: dict[str, Any]) -> GuardrailResult:
+        """执行 PII 脱敏护栏检查。"""
         masked = text
         found_pii = []
 

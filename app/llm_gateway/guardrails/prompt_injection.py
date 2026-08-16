@@ -29,6 +29,7 @@ class PromptInjectionGuardrail(Guardrail):
     ]
 
     async def check(self, text: str, context: dict[str, Any]) -> GuardrailResult:
+        """执行 Prompt 注入检测护栏检查。"""
         for pattern in self.INJECTION_PATTERNS:
             if re.search(pattern, text):
                 return GuardrailResult(

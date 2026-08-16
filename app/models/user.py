@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +21,7 @@ class User(UUIDMixin, TimestampMixin, Base):
     auth_provider: Mapped[str] = mapped_column(String(32), nullable=False, default="jwt")
     auth_id: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
-    preferences: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    preferences: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
     __table_args__ = (
         UniqueConstraint("auth_provider", "auth_id", name="uq_user_auth"),

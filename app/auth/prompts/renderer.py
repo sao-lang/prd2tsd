@@ -26,4 +26,6 @@ class PromptRenderer:
         ```
         """
         template = Template(template_str)
-        return template.render(**variables)
+        rendered = template.render(**variables)
+        assert isinstance(rendered, str)
+        return rendered

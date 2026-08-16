@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from app.llm_gateway.guardrails.base import Guardrail, GuardrailResult

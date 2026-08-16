@@ -113,7 +113,7 @@ async def _run(dataset_path: str, variant: dict, ab: bool) -> None:
 
 def main() -> None:
     """CLI 入口。"""
-    parser = argparse.ArgumentParser(description="RAG 检索/回答质量评测（基于 ragas）")
+    parser = argparse.ArgumentParser(description="RAG 检索/回答质量评测（基于 deepeval）")
     parser.add_argument("--dataset", default="tests/eval/datasets/rag_qa.json", help="数据集路径")
     parser.add_argument("--variant", default="", help='检索配置覆盖，如 \'{"top_k": 5, "reflection": true}\'')
     parser.add_argument("--ab-reflection", action="store_true", help="反思开/关 A/B 对比")

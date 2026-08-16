@@ -1,5 +1,7 @@
 """Planning Layer — LangChain 结构化输出模型。"""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -73,7 +75,7 @@ class TechStackItem(BaseModel):
     dimension: str = Field(description="维度 (backend_framework/database_primary 等)")
     recommendation: str = Field(description="推荐方案")
     reason: str = Field(description="推荐理由")
-    alternatives: list[dict] = Field(default_factory=list, description="备选方案")
+    alternatives: list[dict[str, Any]] = Field(default_factory=list, description="备选方案")
     risks: list[str] = Field(default_factory=list, description="风险")
 
 

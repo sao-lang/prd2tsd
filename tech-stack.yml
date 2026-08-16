@@ -80,7 +80,7 @@ allowed:
   - torch
   - transformers
   - cohere
-  - ragas
+  - deepeval
   - weasyprint
   - fpdf2
   - python_docx

@@ -23,7 +23,7 @@ class PromptBuilder:
         user_prompt: str,
         output_parser: PydanticOutputParser | None = None,
         use_response_format: bool = False,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """构建完整的 Prompt（含 system message）。
 
         Args:

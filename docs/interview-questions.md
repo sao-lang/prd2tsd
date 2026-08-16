@@ -31,7 +31,7 @@
 | 6 | **SSE 流式推送** | "EventBus 基于 asyncio.Queue 的非阻塞 Pub/Sub（queue maxsize=128 防内存爆炸），15+ 种事件类型覆盖全生命周期。用户看到实时进度、流式文档生成（SectionWriter 逐 token + 每 200 字符推送）、审核通知、30s 心跳。" |
 | 7 | **迭代闭环** | "评测层给方案打分，低于 85 分自动回退重规划/重生成，最多 3 轮迭代。Evaluation 用 LangGraph Send() 并行扇出 9 个评测节点（总耗时=max 而非 sum），评分合并 + 历史校准。" |
 | 8 | **统一交互入口** | "/chat、/generate、/qna/stream 等 6 个端点全部收敛到 POST /api/v1/interact，IntentClassifier（规则 + LLM 两级）判定 chat/knowledge_qa/document_analysis/complex_generation/clarification 后分流。消除双实现——路由层预写意图，图内 classify 幂等跳过。" |
-| 9 | **评测闭环（WP2）** | "引入 ragas 0.4.3 做 RAG 评测（L1: context_precision/recall，L2: faithfulness/relevancy）+ 反思 A/B 对比；Agent 评测分 L3 过程指标（完成率/迭代/人工介入率）和 L4 结果 rubric judge。评测报告反哺检索参数与 Agent 流程优化。" |
+| 9 | **评测闭环（WP2）** | "引入 deepeval 4.x 做 RAG 评测（L1: context_precision/recall，L2: faithfulness/relevancy）+ 反思 A/B 对比；Agent 评测分 L3 过程指标（完成率/迭代/人工介入率）和 L4 结果 rubric judge。评测报告反哺检索参数与 Agent 流程优化。" |
 | 10 | **多租户 + RBAC/ABAC** | "资源级权限（workspace:/prd:/model_config:），工作空间级别隔离。三级 Prompt 隔离（组织自定义 → Agent 级通配 → 系统默认）。数据分级脱敏（L1-L4，API Key/Token 替换为 [MASKED_XXX]）+ 哈希链审计日志。" |
 
 ### 1.2 技术深度的体现（可展开点）
@@ -60,7 +60,7 @@
    - Adapter 模式做 Layer 解耦
    - EventBus 的 asyncio.Queue 非阻塞设计
    - 统一交互入口的意图分流 + 幂等化
-   - 评测闭环（ragas + rubric judge）如何反哺优化
+   - 评测闭环（deepeval + rubric judge）如何反哺优化
 ```
 
 ---
@@ -81,7 +81,7 @@
 | **知识检索** | ✅ Neo4j+PGVector 双路 + Reflection | ⚠️ 基础 RAG | ⚠️ 基础向量 | ⚠️ 基础 | ⚠️ 基础 |
 | **迭代自评** | ✅ 10 维评分 + 校准 + 自动回退 | ❌ | ❌ | ❌ | ❌ |
 | **多模型路由** | ✅ Gateway 统一管理多 Provider | ⚠️ 单一 Provider | ⚠️ 单一 | ⚠️ 单一 | ⚠️ 单一 |
-| **评测闭环** | ✅ ragas RAG 评测 + Agent rubric 评测 | ❌ | ❌ | ❌ | ❌ |
+| **评测闭环** | ✅ deepeval RAG 评测 + Agent rubric 评测 | ❌ | ❌ | ❌ | ❌ |
 | **统一交互入口** | ✅ 对话/提问/文档分析/生成单一入口 | ❌ | ❌ | ❌ | ❌ |
 
 ---
@@ -259,7 +259,7 @@ interrupt() 是一个特殊调用，会：
 ### Q9: 评测体系是怎么做的？（WP2）
 
 ```text
-RAG 评测（app/evaluation/rag/，基于 ragas 0.4.3）:
+RAG 评测（app/evaluation/rag/，基于 deepeval 4.x）:
   L1 指标（检索质量）: context_precision / context_recall
   L2 指标（回答质量）: faithfulness / answer_relevancy
   retrieve_and_answer: pipeline.retrieve → 严格基于上下文回答（temperature=0.2）
@@ -273,8 +273,8 @@ Agent 评测（app/evaluation/agent/）:
   _default_runner: 通过主编排图 astream 跑真实任务
   CLI: scripts/run_agent_eval.py
 
-兼容坑: langchain-community>=0.4 拆分 vertexai，ragas 0.4.x 顶层导入 ChatVertexAI
-会报错 → _compat.py 在 import ragas 前向 sys.modules 注入占位模块
+兼容坑: deepeval 4.x 将 click 钉在 <8.4.0，与 huggingface-hub >=8.4.2 冲突
+（运行时已验证正常，pip check 会告警）
 ```
 
 ### Q10: 数据脱敏和审计怎么做？（企业级）

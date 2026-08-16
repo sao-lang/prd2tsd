@@ -20,10 +20,10 @@ class DecisionRecord(BaseModel):
     iteration_count: int = 0
     input_state_snapshot: dict[str, Any] = Field(default_factory=dict)
     input_prompt: str = ""
-    input_tools: list[dict] = Field(default_factory=list)
+    input_tools: list[dict[str, Any]] = Field(default_factory=list)
     llm_response: str = ""
-    tool_calls: list[dict] = Field(default_factory=list)
-    tool_results: list[dict] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    tool_results: list[dict[str, Any]] = Field(default_factory=list)
     output_state_diff: dict[str, Any] = Field(default_factory=dict)
     duration_ms: float = 0.0
     tokens_consumed: int = 0

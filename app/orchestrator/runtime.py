@@ -13,13 +13,32 @@ from app.orchestrator.state import OrchestratorRuntime, OrchestratorState
 
 logger = get_logger("prd2tsd.orchestrator.runtime")
 
+# 线程级运行时注册表：thread_id → OrchestratorRuntime
+_runtime_registry: dict[str, OrchestratorRuntime] = {}
+
+
+def register_runtime(thread_id: str, runtime: OrchestratorRuntime) -> None:
+    """注册线程运行时。"""
+    _runtime_registry[thread_id] = runtime
+
+
+def get_registered_runtime(thread_id: str) -> OrchestratorRuntime | None:
+    """获取线程运行时；未注册返回 None。"""
+    return _runtime_registry.get(thread_id)
+
+
+def unregister_runtime(thread_id: str) -> None:
+    """注销线程运行时。"""
+    _runtime_registry.pop(thread_id, None)
+
+
 
 class RuntimeInjector:
-    """Runtime 注入器 — 在每个节点执行前注入运行时上下文。
+    """Runtime 注入器 — 入口节点为 thread_id 注册运行时上下文。
 
-    通过 LangGraph 的 per-node 中间件机制工作。
-    从外部工厂函数重建 Runtime（新 DB 会话、新 EventBus 引用），
-    注入到 State 的 _runtime 字段，仅当前节点可见，不进 checkpoint。
+    Runtime（DB 会话 / EventBus / LLM Gateway）不可被 checkpoint 序列化，
+    因此通过线程级注册表按 thread_id 注入：入口节点注册、消费节点读取、
+    任务结束（save_session / clarify 节点）注销。
     """
 
     def __init__(self, runtime_factory: Any = None) -> None:
@@ -39,15 +58,16 @@ class RuntimeInjector:
         self._runtime_factory = factory
 
     async def inject(self, state: OrchestratorState) -> OrchestratorState:
-        """注入 Runtime 到 State。
+        """为 thread_id 注册 Runtime 上下文。
 
-        从 config 中提取 thread_id / user_id，重建 Runtime 上下文。
+        从 state 提取 thread_id / user_id，重建 Runtime 并写入线程级注册表；
+        不修改 State，避免不可序列化对象进入 checkpoint。
 
         Args:
             state: 当前 OrchestratorState。
 
         Returns:
-            注入了 _runtime 字段的 OrchestratorState。
+            原样返回的 OrchestratorState。
         """
         thread_id = state.get("task_id", "")
         user_id = state.get("user_id", "")
@@ -55,12 +75,25 @@ class RuntimeInjector:
         if self._runtime_factory is not None:
             runtime = await self._runtime_factory(thread_id, user_id)
         else:
+            # 默认注入全局 EventBus / LLM Gateway；节点内仍有兜底，双保险
+            gateway: Any = None
+            event_bus: Any = None
+            try:
+                from app.llm_gateway import gateway
+                from app.streaming import event_bus
+            except Exception:
+                gateway = None
+                event_bus = None
             runtime = OrchestratorRuntime(
+                db_session=None,
+                event_bus=event_bus,
+                llm_gateway=gateway,
                 current_user_id=user_id,
                 current_workspace_id=state.get("workspace_id", ""),
             )
 
-        state["_runtime"] = runtime  # type: ignore[typeddict-unknown-key]
+        register_runtime(thread_id, runtime)
+        return state
         return state
 
     @staticmethod

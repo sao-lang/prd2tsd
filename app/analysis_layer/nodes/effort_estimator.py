@@ -26,6 +26,7 @@ class EffortEstimatorNode:
         self.chain = EFFORT_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行工作量估算节点逻辑。"""
         reqs_text = "\n".join(
             f"{r.id} [{r.priority}] {r.category}: {r.description[:120]}"
             for r in state["extracted_requirements"]

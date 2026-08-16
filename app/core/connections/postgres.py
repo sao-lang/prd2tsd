@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
 from app.core.connections.base import BaseConnector, ConnHealth
@@ -34,8 +34,8 @@ class PostgreSQLConnector(BaseConnector):
         self.database_url = database_url or settings.DATABASE_URL
         self.pool_size = pool_size or settings.DATABASE_POOL_SIZE
         self.max_overflow = max_overflow or settings.DATABASE_MAX_OVERFLOW
-        self._engine = None
-        self._session_factory = None
+        self._engine: AsyncEngine | None = None
+        self._session_factory: async_sessionmaker[AsyncSession] | None = None
 
     async def connect(self) -> bool:
         """建立 PostgreSQL 连接池。
@@ -44,16 +44,17 @@ class PostgreSQLConnector(BaseConnector):
             是否连接成功。
         """
         try:
-            self._engine = create_async_engine(
+            engine = create_async_engine(
                 self.database_url,
                 pool_size=self.pool_size,
                 max_overflow=self.max_overflow,
                 echo=False,
             )
-            async with self._engine.connect() as conn:
+            async with engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
+            self._engine = engine
             self._session_factory = async_sessionmaker(
-                self._engine, class_=AsyncSession, expire_on_commit=False
+                engine, class_=AsyncSession, expire_on_commit=False
             )
             self._connected = True
             logger.info("PostgreSQL 连接成功: %s", self.database_url)

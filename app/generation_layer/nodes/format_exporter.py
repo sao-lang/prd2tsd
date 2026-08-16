@@ -15,10 +15,12 @@ def _md_to_html(md_text: str) -> str:
     try:
         import markdown as md_lib
 
-        return md_lib.markdown(
+        rendered = md_lib.markdown(
             md_text,
             extensions=["fenced_code", "tables", "codehilite", "toc"],
         )
+        assert isinstance(rendered, str)
+        return rendered
     except ImportError:
         logger.warning("markdown 库未安装，HTML 导出跳过")
         return f"<pre>{md_text}</pre>"
@@ -69,7 +71,7 @@ def _md_to_docx(md_text: str) -> bytes | None:
         import re
 
         from docx import Document
-        from docx.shared import Inches, Pt
+        from docx.shared import Pt
 
         doc = Document()
 

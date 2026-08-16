@@ -4,13 +4,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from app.orchestrator.state import OrchestratorState
+from app.orchestrator.state import OrchestratorConfig, OrchestratorState
 
 RouteDecision = Literal["accept", "replan", "regenerate", "human_intervention"]
 
 
 class IterationDecider:
     """评估决策：根据评分决定后续路由。"""
+    def __init__(self, config: OrchestratorConfig | None = None) -> None:
+        """初始化迭代决策器。
+
+        Args:
+            config: 主编排静态配置；缺省使用默认值（pass=85 / replan=70 / max_iterations=3）。
+        """
+        self.config = config or OrchestratorConfig()
 
     ROUTE_MAP: dict[str, str] = {
         "accept": "final_assembly",
@@ -30,7 +37,8 @@ class IterationDecider:
         """
         report = state.get("evaluation_report")
         iteration_count = state.get("iteration_count", 0)
-        max_iterations = state.get("max_iterations", 3)
+        state_max_iterations = state.get("max_iterations")
+        max_iterations = state_max_iterations if state_max_iterations is not None else self.config.max_iterations
 
         # 达到最大迭代次数 → 强制接受
         if iteration_count >= max_iterations:
@@ -51,18 +59,21 @@ class IterationDecider:
             dimension_scores = getattr(report, "dimension_scores", {})
             critical_issues = getattr(report, "critical_issues", [])
 
-        # 评分 >= 85 → 通过
-        if overall_score >= 85:
+        pass_threshold = self.config.evaluation_pass_threshold
+        replan_threshold = self.config.evaluation_replan_threshold
+
+        # 评分 >= 通过阈值 → 通过
+        if overall_score >= pass_threshold:
             return self.ROUTE_MAP["accept"]
 
-        # 评分 >= 70 → 根据维度决定
-        if overall_score >= 70:
+        # 评分 >= 重规划阈值 → 根据维度决定
+        if overall_score >= replan_threshold:
             consistency = dimension_scores.get("consistency", 100)
             feasibility = dimension_scores.get("feasibility", 100)
 
-            if consistency < 70:
+            if consistency < replan_threshold:
                 return self.ROUTE_MAP["regenerate"]
-            if feasibility < 70:
+            if feasibility < replan_threshold:
                 return self.ROUTE_MAP["replan"]
 
             return self.ROUTE_MAP["accept"]

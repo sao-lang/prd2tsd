@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.block_e import Session, SessionMessage
@@ -189,10 +189,13 @@ class SessionRepository:
         Returns:
             是否删除成功。
         """
-        result = await db.execute(
-            update(Session)
-            .where(Session.id == session_id, Session.deleted_at.is_(None))
-            .values(deleted_at=datetime.now(UTC), status="deleted"),
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                update(Session)
+                .where(Session.id == session_id, Session.deleted_at.is_(None))
+                .values(deleted_at=datetime.now(UTC), status="deleted"),
+            ),
         )
         await db.flush()
         return result.rowcount > 0
@@ -310,14 +313,17 @@ class SessionRepository:
         Returns:
             清理的会话数。
         """
-        result = await db.execute(
-            update(Session)
-            .where(
-                Session.workspace_id == workspace_id,
-                Session.deleted_at.is_(None),
-                Session.last_message_at < before,
-            )
-            .values(deleted_at=datetime.now(UTC), status="deleted"),
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                update(Session)
+                .where(
+                    Session.workspace_id == workspace_id,
+                    Session.deleted_at.is_(None),
+                    Session.last_message_at < before,
+                )
+                .values(deleted_at=datetime.now(UTC), status="deleted"),
+            ),
         )
         await db.flush()
         return result.rowcount or 0

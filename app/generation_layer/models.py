@@ -39,3 +39,4 @@ class GenerationState(TypedDict):
     code_scaffold: str  # CodeScaffoldGeneratorNode 写入
     consistency_issues: list[str]  # ConsistencyCheckerNode 写入，RevisionNode 消费
     export_formats: dict[str, str]  # FormatExporterNode 写入各格式导出内容/路径
+    _section_target: SectionOutline | None  # Send() 注入的单节目标（非公开通道）

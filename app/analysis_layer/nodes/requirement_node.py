@@ -26,6 +26,7 @@ class RequirementExtractorNode:
         self.chain = REQUIREMENT_PROMPT | llm | _PARSER
 
     async def run(self, state: AnalysisState) -> AnalysisState:
+        """执行需求提取节点逻辑。"""
         prd_text = state["prd_raw"][:8000]
         try:
             result: RequirementList = await self.chain.ainvoke({

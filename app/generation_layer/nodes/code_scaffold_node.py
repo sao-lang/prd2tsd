@@ -25,6 +25,7 @@ class CodeScaffoldGeneratorNode:
         self.chain = CODE_PROMPT | llm
 
     async def run(self, state: GenerationState) -> GenerationState:
+        """执行代码脚手架生成节点逻辑。"""
         pr = state["planning_result"]
         ar = state["analysis_result"]
 
@@ -37,5 +38,5 @@ class CodeScaffoldGeneratorNode:
             "components": comp_text,
             "stack": stack_text,
         })
-        code = result.content if hasattr(result, "content") else str(result)
+        code = result.content if isinstance(result.content, str) else str(result)
         return {**state, "code_scaffold": code}

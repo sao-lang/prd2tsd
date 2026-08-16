@@ -15,12 +15,24 @@ def test_template_engine_select_default():
 def test_template_engine_render_section():
     """验证模板引擎能渲染章节模板。"""
     engine = TemplateEngine()
-    result = engine.render_section("background", project_name="Test", domain="tech", summary="", requirements=[], constraints=[])
+    result = engine.render_section(
+        "background",
+        project_name="Test",
+        domain="tech",
+        summary="",
+        requirements=[],
+        constraints=[],
+    )
     assert "项目背景" in result
 
 
 def test_template_engine_render_architecture():
     """验证模板引擎能渲染架构章节。"""
     engine = TemplateEngine()
-    result = engine.render_section("architecture", architecture_pattern="微服务", component_diagram="graph TD", components=[])
+    result = engine.render_section(
+        "architecture",
+        architecture_pattern="微服务",
+        component_diagram="graph TD",
+        components=[],
+    )
     assert "总体架构" in result

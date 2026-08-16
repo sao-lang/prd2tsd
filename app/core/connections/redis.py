@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+
+import redis.asyncio as aioredis
 
 from app.core.config import settings
 from app.core.connections.base import BaseConnector, ConnHealth
@@ -25,7 +26,7 @@ class RedisConnector(BaseConnector):
         super().__init__(name="redis", enabled=False)
         self.redis_url = redis_url or settings.REDIS_URL
         self.pool_size = pool_size or settings.REDIS_POOL_SIZE
-        self._client = None
+        self._client: aioredis.Redis | None = None
 
     async def connect(self) -> bool:
         """建立 Redis 连接。
@@ -34,15 +35,14 @@ class RedisConnector(BaseConnector):
             是否连接成功。
         """
         try:
-            import redis.asyncio as aioredis
-
-            self._client = aioredis.from_url(
+            client = aioredis.from_url(
                 self.redis_url,
                 encoding="utf-8",
                 decode_responses=True,
                 max_connections=self.pool_size,
             )
-            await self._client.ping()
+            await client.ping()
+            self._client = client
             self._connected = True
             self.enabled = True
             logger.info("Redis 连接成功: %s", self.redis_url)
@@ -61,7 +61,7 @@ class RedisConnector(BaseConnector):
             self.enabled = False
             logger.info("Redis 连接已关闭")
 
-    def get_client(self) -> Any:
+    def get_client(self) -> aioredis.Redis:
         """获取 Redis 客户端。
 
         Returns:
@@ -85,7 +85,8 @@ class RedisConnector(BaseConnector):
         start = time.monotonic()
         try:
             if self._client:
-                await self._client.ping()
+                client = self._client
+                await client.ping()
                 latency = (time.monotonic() - start) * 1000
                 return ConnHealth(
                     name=self.name,

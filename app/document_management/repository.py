@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.document_management.models import (
@@ -217,13 +217,16 @@ class DocumentRepository:
         Returns:
             是否删除成功。
         """
-        result = await db.execute(
-            update(UploadedDocument)
-            .where(
-                UploadedDocument.id == document_id,
-                UploadedDocument.is_deleted.is_(False),
-            )
-            .values(is_deleted=True, deleted_at=datetime.now(UTC)),
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                update(UploadedDocument)
+                .where(
+                    UploadedDocument.id == document_id,
+                    UploadedDocument.is_deleted.is_(False),
+                )
+                .values(is_deleted=True, deleted_at=datetime.now(UTC)),
+            ),
         )
         await db.flush()
         return result.rowcount > 0
@@ -266,7 +269,9 @@ class DocumentRepository:
                 func.count(UploadedDocument.id),
             ).where(*base_filter).group_by(UploadedDocument.file_type),
         )
-        by_type = dict(type_result.all())
+        by_type: dict[str, int] = {
+            row[0]: row[1] for row in type_result.all() if row[0] is not None
+        }
 
         # 按状态分布
         status_result = await db.execute(
@@ -275,7 +280,9 @@ class DocumentRepository:
                 func.count(UploadedDocument.id),
             ).where(*base_filter).group_by(UploadedDocument.processing_status),
         )
-        by_status = dict(status_result.all())
+        by_status: dict[str, int] = {
+            row[0]: row[1] for row in status_result.all() if row[0] is not None
+        }
 
         return DocumentStats(
             total_documents=total,
@@ -285,15 +292,14 @@ class DocumentRepository:
         )
 
     @staticmethod
-    def _to_out(doc: UploadedDocument | None) -> DocumentOut | None:
+    def _to_out(doc: UploadedDocument) -> DocumentOut:
         """ORM 转 Pydantic。"""
-        if doc is None:
-            return None
         return DocumentOut(
             id=str(doc.id),
             workspace_id=str(doc.workspace_id),
             user_id=str(doc.user_id),
             original_filename=doc.original_filename,
+            storage_path=doc.storage_path or "",
             file_size=doc.file_size,
             file_type=doc.file_type,
             mime_type=doc.mime_type,

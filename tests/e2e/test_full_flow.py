@@ -57,10 +57,10 @@ async def test_full_flow():
     from app.analysis_layer.agent_graph import analysis_graph
     from app.evaluation.agent_graph import evaluation_graph
     from app.generation_layer.agent_graph import generation_graph
-    from app.planning_layer.agent_graph import planning_graph
     from app.knowledge_layer.pipeline import RetrievalPipeline
     from app.orchestrator.main_graph import build_and_compile
     from app.orchestrator.state import make_initial_state
+    from app.planning_layer.agent_graph import planning_graph
 
     pipeline = RetrievalPipeline()
 
@@ -91,11 +91,11 @@ async def test_full_flow():
     assert gen_result is not None, "生成结果为空"
 
     # 获取文档内容
-    content = ""
-    if isinstance(gen_result, dict):
-        content = gen_result.get("content", "")
-    else:
-        content = getattr(gen_result, "content", "")
+    content = (
+        gen_result.get("content", "")
+        if isinstance(gen_result, dict)
+        else getattr(gen_result, "content", "")
+    )
 
     assert len(content) > 3000, f"文档长度不足: {len(content)} 字（要求 > 3000）"
 

@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from typing import Any
+
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph.state import CompiledStateGraph
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.connections import connection_manager
-from app.llm_gateway import config_manager, gateway
+from app.llm_gateway import LLMGateway, config_manager, gateway
+from app.llm_gateway.config_manager import ModelConfigManager
 from app.orchestrator.main_graph import build_and_compile
-from app.security.audit_logger import audit_logger
+from app.orchestrator.state import OrchestratorState
+from app.security.audit_logger import AuditLogger, audit_logger
 from app.security.data_masking import DataMaskingEngine
+from app.session_history.service import SessionHistoryService
 
 # 缓存编译后的 Orchestrator 和 DataMaskingEngine（懒加载）
 _orchestrator_instance = None
 _masking_engine_instance = None
-_checkpointer_instance: BaseCheckpointSaver | None = None
+_checkpointer_instance: BaseCheckpointSaver[Any] | None = None
 
 
-def set_checkpointer(checkpointer: BaseCheckpointSaver) -> None:
+def set_checkpointer(checkpointer: BaseCheckpointSaver[Any]) -> None:
     """注入 Checkpointer 实例（在 lifespan 中调用）。
 
     Args:
@@ -26,7 +34,7 @@ def set_checkpointer(checkpointer: BaseCheckpointSaver) -> None:
     _checkpointer_instance = checkpointer
 
 
-async def get_db_session():
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """获取数据库会话。
 
     Yields:
@@ -37,7 +45,7 @@ async def get_db_session():
         yield session
 
 
-def get_gateway():
+def get_gateway() -> LLMGateway:
     """获取 LLM Gateway 实例。
 
     Returns:
@@ -46,7 +54,7 @@ def get_gateway():
     return gateway
 
 
-def get_config_manager():
+def get_config_manager() -> ModelConfigManager:
     """获取模型配置管理器。
 
     Returns:
@@ -55,7 +63,7 @@ def get_config_manager():
     return config_manager
 
 
-def get_masking_engine():
+def get_masking_engine() -> DataMaskingEngine:
     """获取数据脱敏引擎（单例缓存）。
 
     Returns:
@@ -67,7 +75,7 @@ def get_masking_engine():
     return _masking_engine_instance
 
 
-def get_audit_logger():
+def get_audit_logger() -> AuditLogger:
     """获取审计日志记录器。
 
     Returns:
@@ -76,7 +84,7 @@ def get_audit_logger():
     return audit_logger
 
 
-def get_orchestrator():
+def get_orchestrator() -> CompiledStateGraph[OrchestratorState, Any, Any, Any]:
     """获取编译后的主编排 StateGraph（懒加载）。
 
     组装块 C 的 4 个 Layer Graph 到 Orchestrator。
@@ -116,7 +124,7 @@ def get_orchestrator():
     return _orchestrator_instance
 
 
-def get_session_service():
+def get_session_service() -> SessionHistoryService:
     """获取 SessionHistoryService 实例（懒加载）。
 
     Returns:

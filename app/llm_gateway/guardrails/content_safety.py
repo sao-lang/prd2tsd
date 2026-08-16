@@ -23,6 +23,7 @@ class ContentSafetyGuardrail(Guardrail):
     ]
 
     async def check(self, text: str, context: dict[str, Any]) -> GuardrailResult:
+        """执行内容安全护栏检查。"""
         for pattern in self.BLOCKED_CONTENT:
             if re.search(pattern, text):
                 return GuardrailResult(

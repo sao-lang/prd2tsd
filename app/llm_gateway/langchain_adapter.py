@@ -12,10 +12,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import Any
 
-from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -88,7 +88,7 @@ class GatewayChatModel(BaseChatModel):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self._agenerate(messages, stop, run_manager, **kwargs))
+            return asyncio.run(self._agenerate(messages, stop, **kwargs))
 
         # 如果已经在事件循环中运行（通常是被 LangChain 回调管理器调用），
         # 通过新线程执行以避免嵌套事件循环冲突
@@ -97,7 +97,7 @@ class GatewayChatModel(BaseChatModel):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(
                 asyncio.run,
-                self._agenerate(messages, stop, run_manager, **kwargs),
+                self._agenerate(messages, stop, **kwargs),
             )
             return future.result()
 
@@ -105,7 +105,7 @@ class GatewayChatModel(BaseChatModel):
         self,
         messages: list[BaseMessage],
         stop: list[str] | None = None,
-        run_manager: CallbackManagerForLLMRun | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         """异步生成 — 将 LangChain messages 转为 Gateway prompt 调用。
@@ -143,9 +143,9 @@ class GatewayChatModel(BaseChatModel):
         self,
         messages: list[BaseMessage],
         stop: list[str] | None = None,
-        run_manager: CallbackManagerForLLMRun | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
-    ) -> Iterator[ChatGenerationChunk]:
+    ) -> AsyncIterator[ChatGenerationChunk]:
         """异步流式生成 — 通过 Gateway.stream_complete() 实现。
 
         Args:

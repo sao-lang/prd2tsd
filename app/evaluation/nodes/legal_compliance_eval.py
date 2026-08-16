@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -26,7 +28,8 @@ class LegalComplianceEvalNode:
             llm = GatewayChatModel(task_type="evaluation", layer="evaluation", node="legal_compliance")
         self.chain = LEGAL_PROMPT | llm | _PARSER
 
-    async def run(self, state: EvaluationState) -> EvaluationState:
+    async def run(self, state: EvaluationState) -> dict[str, Any]:
+        """执行法律合规评估节点逻辑。"""
         ar = state["analysis_result"]
         domain = ", ".join(ar.domain_tags) if hasattr(ar, "domain_tags") else "通用"
 
@@ -41,4 +44,5 @@ class LegalComplianceEvalNode:
 
         dim_scores = dict(state.get("dimension_scores", {}))
         dim_scores["legal_compliance"] = score
-        return {**state, "dimension_scores": dim_scores}
+        # 只返回增量：并行扇出时其余键会并发写冲突（InvalidUpdateError）
+        return {"dimension_scores": dim_scores}

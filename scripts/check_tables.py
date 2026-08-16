@@ -1,5 +1,6 @@
 """检查数据库表。"""
 import asyncio
+
 import asyncpg
 
 

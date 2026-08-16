@@ -30,6 +30,7 @@ class PlanSelfCheckNode:
         self.chain = SELF_CHECK_PROMPT | llm | _PARSER
 
     async def run(self, state: PlanningState) -> PlanningState:
+        """执行规划结果自检节点逻辑。"""
         stack_names = ", ".join(t.recommendation for t in state.get("tech_stack_choices", []))
 
         try:
@@ -50,4 +51,8 @@ class PlanSelfCheckNode:
         node_outputs["self_check_passed"] = passed
         node_outputs["self_check_result"] = {"passed": passed, "issues": issues}
 
-        return {**state, "node_outputs": node_outputs}
+        return {
+            **state,
+            "node_outputs": node_outputs,
+            "self_check_attempts": state.get("self_check_attempts", 0) + 1,
+        }

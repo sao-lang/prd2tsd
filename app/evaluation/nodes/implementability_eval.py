@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -26,12 +28,13 @@ class ImplementabilityEvalNode:
             llm = GatewayChatModel(task_type="evaluation", layer="evaluation", node="implementability")
         self.chain = IMPL_PROMPT | llm | _PARSER
 
-    async def run(self, state: EvaluationState) -> EvaluationState:
+    async def run(self, state: EvaluationState) -> dict[str, Any]:
+        """执行可实施性评估节点逻辑。"""
         try:
             # 从 planning_result.metadata 提取技能和时间线信息
             # （规划层各节点将 node_outputs 汇总写入 planning_result.metadata）
             planning_result = state.get("planning_result")
-            metadata: dict = {}
+            metadata: dict[str, Any] = {}
             if planning_result is not None:
                 if hasattr(planning_result, "metadata"):
                     metadata = planning_result.metadata or {}
@@ -51,4 +54,5 @@ class ImplementabilityEvalNode:
 
         dim_scores = dict(state.get("dimension_scores", {}))
         dim_scores["implementability"] = score
-        return {**state, "dimension_scores": dim_scores}
+        # 只返回增量：并行扇出时其余键会并发写冲突（InvalidUpdateError）
+        return {"dimension_scores": dim_scores}

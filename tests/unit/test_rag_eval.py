@@ -1,8 +1,9 @@
-"""RAG 评测模块单元测试（mock 检索/LLM/ragas）。"""
+"""RAG 评测模块单元测试（mock 检索/LLM/deepeval）。"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,11 @@ from app.evaluation.rag import RagEvaluator, load_rag_dataset
 from app.evaluation.rag.models import RagSample
 
 DATASET = Path(__file__).resolve().parent.parent / "eval" / "datasets" / "rag_qa.json"
+
+
+def _metric_data(name: str, score: float) -> SimpleNamespace:
+    """构造 deepeval MetricData 的最小替身。"""
+    return SimpleNamespace(name=name, score=score)
 
 
 def test_load_rag_dataset() -> None:
@@ -22,27 +28,43 @@ def test_load_rag_dataset() -> None:
     assert samples[0].reference_answer
 
 
-def test_to_ragas_dataset() -> None:
-    """验证 ragas 数据集组装。"""
+def test_to_deepeval_test_cases() -> None:
+    """验证 deepeval 测试用例组装。"""
     samples = [RagSample(id="s1", query="q", reference_answer="a")]
     evaluator = RagEvaluator()
-    dataset = evaluator.to_ragas_dataset(samples, [["ctx1"]], ["ans"])
-    assert len(dataset.samples) == 1
-    assert dataset.samples[0].user_input == "q"
-    assert dataset.samples[0].retrieved_contexts == ["ctx1"]
-    assert dataset.samples[0].response == "ans"
+    cases = evaluator.to_deepeval_test_cases(samples, [["ctx1"]], ["ans"])
+    assert len(cases) == 1
+    assert cases[0].name == "s1"
+    assert cases[0].input == "q"
+    assert cases[0].actual_output == "ans"
+    assert cases[0].expected_output == "a"
+    assert cases[0].retrieval_context == ["ctx1"]
 
 
 def test_evaluate_report_structure() -> None:
-    """验证 evaluate 生成报告结构（mock ragas 分数）。"""
+    """验证 evaluate 生成报告结构（mock deepeval 分数）。"""
     samples = [
         RagSample(id="s1", query="q1", reference_answer="a1"),
         RagSample(id="s2", query="q2", reference_answer="a2"),
     ]
     fake_result = MagicMock()
-    fake_result.scores = [
-        {"context_precision": 0.8, "context_recall": 0.7, "faithfulness": 0.9, "answer_relevancy": 0.85},
-        {"context_precision": 0.6, "context_recall": 0.5, "faithfulness": 0.8, "answer_relevancy": 0.75},
+    fake_result.test_results = [
+        MagicMock(
+            metrics_data=[
+                _metric_data("Contextual Precision", 0.8),
+                _metric_data("Contextual Recall", 0.7),
+                _metric_data("Faithfulness", 0.9),
+                _metric_data("Answer Relevancy", 0.85),
+            ]
+        ),
+        MagicMock(
+            metrics_data=[
+                _metric_data("Contextual Precision", 0.6),
+                _metric_data("Contextual Recall", 0.5),
+                _metric_data("Faithfulness", 0.8),
+                _metric_data("Answer Relevancy", 0.75),
+            ]
+        ),
     ]
 
     evaluator = RagEvaluator()
@@ -62,6 +84,29 @@ def test_evaluate_report_structure() -> None:
     assert report.summary.avg_faithfulness == pytest.approx(0.85)
     assert report.config["top_k"] == 5
     assert report.dataset_version == "1.0"
+
+
+def test_evaluate_missing_scores_default_zero() -> None:
+    """验证缺分样本默认 0.0（边界）。"""
+    samples = [RagSample(id="s1", query="q", reference_answer="a")]
+    fake_result = MagicMock()
+    fake_result.test_results = [MagicMock(metrics_data=[])]
+
+    evaluator = RagEvaluator()
+    with patch("app.evaluation.rag.evaluator.evaluate", return_value=fake_result):
+        report = evaluator.evaluate(samples, [["c"]], ["ans"])
+
+    assert report.queries[0].faithfulness == 0.0
+    assert report.queries[0].answer_relevancy == 0.0
+
+
+def test_build_judge_model_none_without_key() -> None:
+    """验证未配置 judge key 时返回 None（异常分支）。"""
+    evaluator = RagEvaluator()
+    with patch("app.core.config.Settings.get_model_config_env",
+        return_value={"api_key": "", "base_url": "", "default_model": "gpt-4o-mini"},
+    ):
+        assert evaluator._build_judge_model() is None
 
 
 async def test_evaluate_async_retrieves_and_answers() -> None:
@@ -99,3 +144,4 @@ def test_apply_config_toggles_reflection() -> None:
     assert evaluator._pipeline.max_reflection_rounds == 2
     evaluator._apply_config({"reflection": False})
     assert evaluator._pipeline.max_reflection_rounds == 0
+

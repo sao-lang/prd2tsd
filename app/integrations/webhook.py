@@ -295,7 +295,7 @@ class IntegrationHub:
             return _Ctx(db)
         from app.core.connections import connection_manager
 
-        return connection_manager.get("postgres").get_session()  # type: ignore[attr-defined]
+        return connection_manager.get("postgres").get_session()
 
     async def _persist_upsert(
         self,

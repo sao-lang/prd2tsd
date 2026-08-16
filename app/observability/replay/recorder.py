@@ -21,15 +21,19 @@ class ReplayStorage:
         self._traces: dict[str, TraceTree] = {}
 
     async def save(self, record: DecisionRecord) -> None:
+        """保存单条决策记录。"""
         self._records[record.id] = record
 
     async def save_trace(self, trace: TraceTree) -> None:
+        """保存全链路追踪树。"""
         self._traces[trace.task_id] = trace
 
     async def get_trace(self, task_id: str) -> TraceTree | None:
+        """获取指定任务的追踪树。"""
         return self._traces.get(task_id)
 
     async def get_record(self, record_id: str) -> DecisionRecord | None:
+        """获取单条决策记录。"""
         return self._records.get(record_id)
 
 
@@ -71,10 +75,10 @@ class DecisionRecorder:
         node_name: str,
         input_state: dict[str, Any],
         input_prompt: str,
-        input_tools: list[dict],
+        input_tools: list[dict[str, Any]],
         llm_response: str,
-        tool_calls: list[dict],
-        tool_results: list[dict],
+        tool_calls: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
         output_state: dict[str, Any],
         duration_ms: float,
         tokens: int,
@@ -149,7 +153,7 @@ class DecisionRecorder:
         return trace
 
     @staticmethod
-    def _compute_diff(before: dict, after: dict) -> dict[str, Any]:
+    def _compute_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         """计算 State 的变化（只保留变化字段）。"""
         diff: dict[str, Any] = {}
         for key in after:
@@ -170,7 +174,7 @@ class DecisionRecorder:
         return prompt[:half] + "\n...(中间省略)...\n" + prompt[-half:]
 
     @staticmethod
-    def _summarize_state(state: dict) -> dict[str, Any]:
+    def _summarize_state(state: dict[str, Any]) -> dict[str, Any]:
         """摘要化 State。"""
         summary: dict[str, Any] = {}
         for key, val in state.items():

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 
 async def smoke_postgres() -> None:
     """PostgreSQL 连通性。"""
     import asyncpg
 
-    conn = await asyncpg.connect("postgresql://postgres:postgres@localhost:5432/prd2tsd")
+    url = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/prd2tsd")
+    # asyncpg 不接受 +asyncpg 驱动前缀
+    url = url.replace("+asyncpg", "")
+    conn = await asyncpg.connect(url)
     version = await conn.fetchval("SELECT version()")
     tables = await conn.fetchval(
         "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname='public'",
@@ -30,8 +34,9 @@ async def smoke_minio() -> None:
     """MinIO 连通性。"""
     from minio import Minio
 
+    endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000").replace("http://", "").replace("https://", "")
     client = Minio(
-        "localhost:9000",
+        endpoint,
         access_key="minioadmin",
         secret_key="minioadmin",
         secure=False,

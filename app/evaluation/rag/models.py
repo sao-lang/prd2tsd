@@ -33,10 +33,10 @@ class RagQueryScore(BaseModel):
 
     Attributes:
         sample_id: 样本 ID。
-        context_precision: 上下文精确率（ragas L1）。
-        context_recall: 上下文召回率（ragas L1）。
-        faithfulness: 忠实度（ragas L2）。
-        answer_relevancy: 回答相关性（ragas L2）。
+        context_precision: 上下文精确率（deepeval L1）。
+        context_recall: 上下文召回率（deepeval L1）。
+        faithfulness: 忠实度（deepeval L2）。
+        answer_relevancy: 回答相关性（deepeval L2）。
         retrieved_count: 检索结果数。
         reflection_rounds: 反思轮数（当前 pipeline 未暴露，默认 0）。
         total_tokens: 检索消耗 token 数。
