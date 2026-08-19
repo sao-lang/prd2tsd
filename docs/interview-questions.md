@@ -1,9 +1,10 @@
 # PRD2TSD Agents — 面试要点与问答
 
-> **版本**: v1.0
-> **日期**: 2026-08-14
+> **版本**: v1.1
+> **日期**: 2026-08-18
 > **说明**: 本文档为 `docs/full-architecture-deep-dive.md`（全链路架构文档）的面试专题部分迁移而成，
-> 内容基于 2026-08-13 代码库真实状态更新（含 Block E 统一交互入口 / WP1 观测 / WP2 评测 / 社区检测简化）。
+> 内容基于 2026-08-16 代码库状态更新（含 Block E 统一交互入口 / WP1 观测 / WP2 评测 / 条目 31 整改），
+> 2026-08-18 同步主编排 16 节点与已修复项状态。
 > 系统架构细节请阅读主文档。
 
 ---
@@ -23,7 +24,7 @@
 
 | # | 亮点 | 适合面试展开的点 |
 |---|------|----------------|
-| 1 | **LangGraph + LangChain 混合架构** | "为什么不用纯 LangChain AgentExecutor？因为我们需要精确控制每个步骤、支持 Human-in-the-Loop、支持 checkpoint 持久化。LangGraph 做图编排（主编排图 15 节点 + 4 个 Layer 子图），LangChain 做节点内部的 LLM 调用和结构化输出（ChatPromptTemplate + PydanticOutputParser）。" |
+| 1 | **LangGraph + LangChain 混合架构** | "为什么不用纯 LangChain AgentExecutor？因为我们需要精确控制每个步骤、支持 Human-in-the-Loop、支持 checkpoint 持久化。LangGraph 做图编排（主编排图 16 节点 + 4 个 Layer 子图），LangChain 做节点内部的 LLM 调用和结构化输出（ChatPromptTemplate + PydanticOutputParser）。" |
 | 2 | **PostgreSQL Checkpointer** | "传统的 Agent 系统崩溃后状态全丢。我们用 PostgresSaver 把每一步状态持久化到 PG（lifespan 初始化，失败降级 MemorySaver），崩溃后可从最近 checkpoint 恢复续跑。thread_id 绑定 sessions 表，会话续接自动恢复图状态。" |
 | 3 | **自研 LLM Gateway** | "封装的不是简单 API 调用，而是整套生产级能力：7 个护栏插件（pre_llm 3 + post_llm 4）、Provider Failover 链（deepseek-chat → gpt-4o-mini）、Circuit Breaker 熔断（每 Provider 独立，3 次失败熔断 30s）、语义缓存、成本追踪、速率限制（RPM/TPM 滑动窗口）、预算控制（90% 自动降级）。" |
 | 4 | **实体增强双路检索 + 反思** | "不是简单 RAG。做了 Neo4j 知识图谱（实体 + 关系子图遍历） + PGVector 向量双路检索，还有 ReflectionJudge 自我纠偏——检索结果不好就修正查询重新检索（最多 3 轮），最后 Cross-encoder 精排 + token 预算压缩。" |
@@ -300,6 +301,8 @@ DataMaskingEngine.mask(text, level):
   ✅ Send() 并行扇出 → Evaluation 9 节点并行（Block G）
   ✅ Generation section_writer Send 并行（fan_out_sections）
   ✅ PostgresSaver 生产级持久化（Block G 8.5）
+  ✅ IterationDecider 阈值配置化（条目 31：OrchestratorConfig 85/70，含回归测试）
+  ✅ RuntimeInjector 线程级注册表接线（条目 31：入口节点注册、不写 checkpoint）
 
 仍可扩展:
   1. 多模态输入（图片架构图 → 直接分析）——CLIP 多模态已删除，可重新规划
@@ -308,9 +311,7 @@ DataMaskingEngine.mask(text, level):
   4. 方案 A/B 测试（同一 PRD → 不同方案对比评估）
   5. LangGraph 原生 Subgraph（4 个 Layer 作为原生子图，替代手工 Adapter）
   6. Multi-Agent Supervisor 模式（Supervisor + Worker 协商）
-  7. Web 同步子图化（修复 sync_web_resources 的 WebIndexer 悬空引用）
-  8. 运行时配置化阈值（IterationDecider 85/70 硬编码 → OrchestratorConfig）
-  9. RuntimeInjector 接线（恢复 SSE 节点副作用）
+  7. Web 同步子图化（悬空引用已修复，子图化仍未做）
 ```
 
 ---

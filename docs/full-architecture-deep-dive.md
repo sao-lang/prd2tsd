@@ -5,6 +5,7 @@
 > **目标读者**: 系统架构理解、新成员 onboarding、全链路故障排查
 > **状态**: 基于 2026-08-13 代码库真实状态重写（含 WP1 观测 / WP2 评测 / Block E 整改 / 社区检测简化）
 > **2026-08-16 同步**: 已按 overview 条目 29-32 更新——18 项断点整改、观测/评测闭环、Block E 统一交互入口、ragas→deepeval 迁移、IterationDecider 阈值配置化、Runtime 线程级注册表接线、文档语义搜索、batch_tasks 落库。
+> **2026-08-18 勘误**: 主编排节点数修正为 16（补入口节点 inject_runtime）；测试数字按 2026-08-18 本机实测更新；文档语义搜索 / save_session 落库描述与代码对齐。
 >
 > **注意**: 本文档为项目唯一全链路架构文档，覆盖**所有功能模块与运行时链路**。
 > 面试相关章节已迁移至 `docs/interview-questions.md`。
@@ -866,7 +867,10 @@ class OrchestratorRuntime:
 ### 5.2 主编排图完整拓扑（app/orchestrator/main_graph.py）
 
 ```text
-classify（入口，IntentClassifyNode，幂等）
+inject_runtime（入口，线程级注册表 register 运行时，不写 checkpoint）
+    │
+    ▼
+classify（IntentClassifyNode，幂等）
     │  route_by_intent 条件路由
     ├─ chat → chat_node → save_session → END
     ├─ knowledge_qa → retrieve_node → save_session → END
@@ -904,7 +908,7 @@ classify（入口，IntentClassifyNode，幂等）
                             END
 ```
 
-**节点清单（15 个，全部 trace_node 包装）**：`classify / chat_node / retrieve_node / clarify_node / knowledge_retrieval / analysis / analysis_human_review / planning / planning_human_review / generation / evaluation / final_assembly / retrieve_memory / compress_memory / save_session`。
+**节点清单（16 个，全部 trace_node 包装）**：`inject_runtime / classify / chat_node / retrieve_node / clarify_node / knowledge_retrieval / analysis / analysis_human_review / planning / planning_human_review / generation / evaluation / final_assembly / retrieve_memory / compress_memory / save_session`。
 
 **编译**：
 
@@ -1017,6 +1021,7 @@ needs_review(state) -> str:
 
 | 节点 | 职责 |
 |------|------|
+| `InjectRuntimeNode` | 线程级注册表 register 当前请求的 EventBus / Gateway / DB 会话（不写 checkpoint）；各节点读取，任务结束注销 |
 | `KnowledgeRetrievalNode` | pipeline.retrieve(query=prd_raw[:500], mode="hybrid", top_k=10)；空 PRD 跳过；失败降级 None；DecisionRecorder.start_trace；progress=0.10 |
 | `FinalAssemblyNode` | status=complete、progress=1.0、DecisionRecorder.end_trace、integration_hub.notify("task.completed") |
 | `ChatNode` | gateway.stream_complete(task_type="chat")，SSE: chat.status→chat.chunk→chat.done |
@@ -1024,7 +1029,7 @@ needs_review(state) -> str:
 | `ClarifyNode` | 不调 LLM；SSE: chat.clarify；status=clarification_needed |
 | `RetrieveMemoryNode` | MemoryRetriever.retrieve(query=prd_raw[:500], strategy="hybrid", top_k=10) → retrieved_memories |
 | `CompressMemoryNode` | ContextCompressor.compress(_history_messages) → compressed_context |
-| `SaveSessionNode` | 提取 chat_response/generation_result.summary + overall_score；发布 task.saved 事件 |
+| `SaveSessionNode` | 经 connection_manager 自建 DB 会话，写入 sessions/session_messages（用户消息 / 响应 / 摘要 / 评分，thread_id 绑定 task_id）；发布 task.saved 事件 |
 
 > **⚠️ 已知问题（2026-08-16 条目 31 已修复）**：`RuntimeInjector` 原未接入主编排图；现已改为线程级注册表（入口节点 inject_runtime 注册、节点读取、任务结束注销），`_runtime` 不写入 checkpoint（实测 msgpack 不可序列化），节点仍保留全局 EventBus/Gateway 回退。
 
@@ -1074,7 +1079,7 @@ _interact():
 | 读取正文 | `get_document_content` 返回原始字节 + 文件名（供 multi_format_loader 提取真实内容） |
 | 删除 | MinIO 删 + DB 软删 |
 | 预览 | `_preview_docx` / `_preview_pdf`（复用 extract_text）/ csv 前 20 行 / 图片占位；MAX_PREVIEW_CHARS=5000 |
-| 搜索 | `to_tsvector('simple', title+description+original_filename)` + `ts_rank`；语义向量为 docstring 占位未实现 |
+| 搜索 | FTS + 语义混合：`to_tsvector('simple', ...)` + `ts_rank`；语义路 = 查询向量 → text_unit_embeddings 相似度 → 按文档聚合（2026-08-16 实现，语义失败降级仅 FTS） |
 | 统计 | `get_stats`：总量/大小/按类型/按状态 |
 | 重索引 | `reindex` |
 
@@ -1378,7 +1383,7 @@ HTTP 根 Span:  http_tracing_middleware（@app.middleware("http")）
   根据 inspect.iscoroutinefunction 自动选 wrap_node（同步）或 wrap_async_node（异步）
   span name: "node.{node_name}"，kind=INTERNAL
   attributes: task_id / workspace_id / layer / iteration / duration_ms
-  已应用到: 主编排 15 节点 + Analysis 11 + Planning 14 + Generation 8 + Evaluation 9（条件入口函数不包装）
+  已应用到: 主编排 16 节点 + Analysis 11 + Planning 14 + Generation 8 + Evaluation 10（9 维 + scoring；条件入口函数不包装）
 
 LLM Span:  gateway.complete → "gateway.complete.{task_type}"（kind=CLIENT）
            gateway.stream_complete → "gateway.stream_complete.{task_type}"
@@ -1508,7 +1513,7 @@ run_agent_eval.py:
    - attributes: http.method / http.path / http.user_id / http.status_code
    - 异常 → record_exception；同时记录 http_requests_total / http_request_duration_seconds
 
-② 节点 span（trace_node 包装器，覆盖主编排 15 节点 + 各 Layer 全部节点）
+② 节点 span（trace_node 包装器，覆盖主编排 16 节点 + 各 Layer 全部节点）
    - span name: "node.{node_name}"，kind=INTERNAL
    - 因与 HTTP 处理在同一 OTel context 中执行 → 自动成为 http span 的子级
    - attributes: task_id / workspace_id / layer / iteration / duration_ms
@@ -1819,8 +1824,9 @@ CompressMemoryNode.run(state):
 SaveSessionNode.run(state):
   提取摘要: 优先 chat_response[:200]，否则 generation_result.summary
   提取分数: evaluation_report.overall_score
-  副作用: 发布 task.saved 事件（task_id/status/score/summary）
-  ⚠️ 注: 实际代码仅发 SSE 事件，未看到调用 session_service 持久化 DB（见 21）
+  副作用: 经 connection_manager 自建 DB 会话写入 sessions/session_messages
+           （用户消息 / 响应 / 摘要 / 评分，thread_id 绑定 task_id）
+           再发布 task.saved 事件（task_id/status/score/summary）；EventBus 不可用时静默跳过
   checkpoint
 ```
 
@@ -2025,7 +2031,7 @@ POST /api/v1/tasks/{task_id}/stream-review  → 审核 + 流式恢复（SSE，�
    → orchestrator.ainvoke/astream
        ├─ retrieve_memory 节点: 加载 sessions/session_messages 历史 → MemoryRetriever
        ├─ ... 中间节点 ...
-       └─ save_session 节点: （SSE task.saved；DB 写入见 21 已知问题）
+       └─ save_session 节点: （写 sessions/session_messages + SSE task.saved）
 
 3. 查询历史:
    GET /api/v1/sessions?page=&status=       → 分页列表（last_message_at DESC）
@@ -2620,7 +2626,7 @@ volumes:  pgdata
 | # | 问题 | 影响 | 建议 |
 |---|------|------|------|
 | 1 | **RuntimeInjector 未接线**：`_runtime` 从未注入主编排图 | `chat_node`/`retrieve_node`/`clarify_node` 的 SSE 副作用（chat.chunk/qna.chunk 等）在图中实际不生效（event_bus=None）；`OrchestratorRuntime` 设计未落地 | 在 build_and_compile 前调用 RuntimeInjector.inject，或在节点内改为显式依赖注入 |
-| 2 | **SaveSessionNode 语义偏差**：注释声称写 PG，实际仅发 `task.saved` SSE 事件 | 会话消息/摘要未真正持久化到 sessions/session_messages | 补上 session_service 持久化调用（此前修复移除了 `_runtime` 依赖，但未接回 session_service） |
+| 2 | **SaveSessionNode 语义偏差**：注释声称写 PG，实际仅发 `task.saved` SSE 事件 — ✅ 已修复（条目 29 / 2026-07-28） | 会话消息/摘要未真正持久化到 sessions/session_messages | 现经 connection_manager 自建 DB 会话，写入 sessions/session_messages 表 |
 | 3 | **IterationDecider 阈值硬编码**：85/70 未读 `OrchestratorConfig.evaluation_pass_threshold/replan_threshold` | 配置项失效 | 改为从 config 读取 |
 | 4 | **EVENT_TYPES 不全**：`chat.status/chat.chunk/chat.done/chat.clarify/task.saved` 未登记 | SSE 文档/校验不一致 | 补全 EVENT_TYPES |
 | 5 | **WebIndexer 悬空引用**：`batch/tasks.py` 的 `sync_web_resources` 导入不存在的 `WebIndexer` 类 | Celery 环境该任务必然 ImportError → retry | 实现 WebIndexer 或改为 WebSyncScheduler |
@@ -2672,8 +2678,8 @@ volumes:  pgdata
 
 | 指标 | 数值 |
 |------|------|
-| Agent Layer 数 | 4（Analysis 11 / Planning 14 / Generation 8 / Evaluation 9） |
-| 主编排节点数 | 15 |
+| Agent Layer 数 | 4（Analysis 11 / Planning 14 / Generation 8 / Evaluation 10 = 9 维 + scoring） |
+| 主编排节点数 | 16（含入口 inject_runtime） |
 | 路由模块数 | 15 |
 | 数据库表数 | 14（ORM）+ 3（运行时向量表） |
 | 护栏插件数 | 7（pre_llm 3 + post_llm 4） |

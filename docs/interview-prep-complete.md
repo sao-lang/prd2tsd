@@ -1,6 +1,6 @@
 # PRD2TSD Agents — 面试准备完整手册
 
-> **版本**: v1.0 ｜ **日期**: 2026-08-16
+> **版本**: v1.2 ｜ **日期**: 2026-08-18（二轮优化：修正过时状态与数字；新增证据映射、STAR 故事、自测列、一页纸速查卡）
 > **定位**: 面向"前端转 Agent 开发"求职者的全链路面试题库与应答手册。
 > **内容**: 功能链路、技术栈选型、技术方案、评测可靠性、真实/测试环境真实性五大板块。
 > **配套**: `docs/full-architecture-deep-dive.md`（架构细节）、`docs/interview-questions.md`（亮点速答）。
@@ -38,14 +38,14 @@
 
 **块 2：一个深度细节（二选一，必会其一）**
 
-- 选项 A：人工审核 + 断点恢复。三句话：LangGraph 的 interrupt() 把当前状态写入 PostgreSQL checkpoint 后暂停；审核通过后用同一 thread_id 传 Command(resume) 恢复；崩溃后同 thread_id 可从最近 checkpoint 续跑。学法：打开 pp/orchestrator/human_review.py 对着三句话读一遍。
-- 选项 B：反思式检索。三句话：第一轮图+向量双路检索；LLM 判断结果是否满足查询；不满足就生成修正后的查询重查，最多 3 轮，失败时默认接受不阻塞。学法：打开 pp/knowledge_layer/retrieval/reflection.py 读一遍。
+- 选项 A：人工审核 + 断点恢复。三句话：LangGraph 的 interrupt() 把当前状态写入 PostgreSQL checkpoint 后暂停；审核通过后用同一 thread_id 传 Command(resume) 恢复；崩溃后同 thread_id 可从最近 checkpoint 续跑。学法：打开 `app/orchestrator/human_review.py` 对着三句话读一遍。
+- 选项 B：反思式检索。三句话：第一轮图+向量双路检索；LLM 判断结果是否满足查询；不满足就生成修正后的查询重查，最多 3 轮，失败时默认接受不阻塞。学法：打开 `app/knowledge_layer/retrieval/reflection.py` 读一遍。
 - 学会的标准：不看文档，能把这三句话讲出来，并指出"代码就在这个文件里"。
 
 **块 3：工程化证据（必会）**
 
-- 三句话：仓库有 400+ 自动化测试 + CI（ruff / mypy / 技术栈合规 / 真实 PG 集成测试）；Docker Compose 一键起 9 个服务；观测用 Jaeger + Prometheus + Grafana。
-- 关键动作：**面试前亲自跑一遍 pytest tests/unit -q**，亲眼看到 "380 passed, 1 failed（test_batch 需 Redis）"。跑过之后，这句话就从"文档说的"变成"我验证过的"——这是最大的差别。
+- 三句话：仓库有 400+ 自动化测试（全量收集 438 个）+ CI（ruff / mypy / 技术栈合规 / 真实 PG 集成测试）；Docker Compose 一键起 9 个服务；观测用 Jaeger + Prometheus + Grafana。
+- 关键动作：**面试前亲自跑一遍 pytest tests/unit -q**，亲眼看到当前实测结果 "357 passed, 1 failed, 18 errors"（18 个 error 是 DB 依赖用例，需本地 PostgreSQL；1 个失败是 test_batch，需 Redis；起齐后转通过）。跑过之后，这句话就从"文档说的"变成"我验证过的"——这是最大的差别。
 
 ### 0.5.3 诚实定位话术（被问"这是你写的吗"）
 
@@ -57,9 +57,9 @@
 
 | 说法 | 验证命令 | 预期结果 | 需要环境 |
 |------|----------|----------|----------|
-| 单元测试基本全绿 | pytest tests/unit -q | 380 passed, 1 failed（test_batch 需 Redis） | 本地即可 |
-| lint / 类型干净 | uff check app/ + mypy app/ | All checks passed / Success | 本地即可 |
-| 迁移链正确 | lembic heads | f3a4b5c6d7e8 (head) | 本地即可 |
+| 单元测试基本全绿 | pytest tests/unit -q | 357 passed, 1 failed, 18 errors（DB 用例需 PostgreSQL；test_batch 需 Redis） | 本地 + PostgreSQL |
+| lint / 类型干净 | `ruff check app/ + mypy app/` | All checks passed / Success | 本地即可 |
+| 迁移链正确 | `alembic heads` | f3a4b5c6d7e8 (head) | 本地即可 |
 | 一键部署 | docker compose up -d | 9 个容器健康 | 需要 Docker |
 | 冒烟 4/4 | python scripts/smoke_test_services.py | 四个中间件 OK | 需要 Docker |
 | 集成测试 | pytest tests/integration | 通过 | 需要 Docker（PG/Redis） |
@@ -89,7 +89,7 @@
 **三句话**：
 
 1. 后端用 FastAPI 提供统一交互入口（`POST /api/v1/interact`），按意图分流到对话、知识问答、文档分析、复杂生成四类任务。
-2. 复杂生成任务走 LangGraph 主编排图：15 个节点串起 4 层子图（Analysis 11 节点 / Planning 14 节点 / Generation 8 节点 / Evaluation 9+1 节点），评分不达标自动回退迭代，最多 3 轮。
+2. 复杂生成任务走 LangGraph 主编排图：16 个节点串起 4 层子图（Analysis 11 节点 / Planning 14 节点 / Generation 8 节点 / Evaluation 9+1 节点），评分不达标自动回退迭代，最多 3 轮。
 3. 自研 LLM Gateway（多模型路由/熔断/降级/限流/缓存/护栏/成本追踪）+ 自研双路检索（Neo4j 图 + PGVector 向量 + 反思纠偏），配 OpenTelemetry/Prometheus/Grafana 观测与 deepeval/rubric 评测闭环。
 
 ### 1.2 简历描述（可直接粘贴）
@@ -102,7 +102,7 @@
 
 **三条 bullet**：
 
-- **Agent 编排**：基于 LangGraph StateGraph 实现主编排图（15 节点）+ 4 层子图（知识检索 / 需求分析 11 节点 / 架构规划 14 节点 / 文档生成 8 节点），通过 Adapter 模式解耦层间状态；用 interrupt/resume 实现人工审核，PostgreSQL Checkpointer 做断点持久化与崩溃恢复；Evaluation 9 维并行评测，评分低于阈值自动迭代（最多 3 轮）。
+- **Agent 编排**：基于 LangGraph StateGraph 实现主编排图（16 节点，含入口 inject_runtime）+ 4 层子图（知识检索 / 需求分析 11 节点 / 架构规划 14 节点 / 文档生成 8 节点），通过 Adapter 模式解耦层间状态；用 interrupt/resume 实现人工审核，PostgreSQL Checkpointer 做断点持久化与崩溃恢复；Evaluation 9 维并行评测，评分低于阈值自动迭代（最多 3 轮）。
 - **知识检索（RAG）**：自研实体增强双路检索（Neo4j 知识图谱 + PGVector 向量），包含查询改写、实体链接、RRF 融合（k=60）、ReflectionJudge 自我纠偏（最多 3 轮）、Cross-encoder 精排（bge-reranker-v2-m3）与 token 预算压缩；中文 Embedding 使用 bge-large-zh-v1.5（1024 维）。
 - **工程化**：自研 LLM Gateway（多 Provider 路由 / 熔断 / Failover / 限流 / 语义缓存 / 成本追踪 / 7 项护栏）；SSE 流式事件推送（15+ 事件类型）；评测闭环（deepeval + rubric judge）；RBAC 多租户隔离 + 数据脱敏 + 哈希链审计；OpenTelemetry + Prometheus + Grafana 观测；400+ 自动化测试，ruff/mypy 零告警，Docker Compose 一键部署。
 
@@ -125,10 +125,24 @@
 | Embedding | BAAI/bge-large-zh-v1.5，1024 维 | `tech-stack.yml`、`config.py` |
 | 重排模型 | BAAI/bge-reranker-v2-m3（Cross-encoder） | `app/knowledge_layer/retrieval/reranker.py` |
 | 评测数据集 | RAG 12 条 / Agent 4 条 | `tests/eval/datasets/` |
-| 测试基线 | 单元 368 过 / 集成 54 过 / lint+tech-stack 7 过 | `overview.md` 条目 30 |
+| 测试基线 | 单元 357 过 / 1 败 / 18 error（DB 用例需 PG；test_batch 需 Redis，2026-08-18 实测）；完整环境基线 380 过 / 1 败（`overview.md` 条目 32）；集成 54 过 / lint+tech-stack 7 过 | `overview.md` 条目 30/32 + 实测 |
 | 冒烟 | 真实 Postgres/Redis/Neo4j/MinIO 4/4 通过 | `overview.md` 条目 30 |
-| 代码规模 | app 263 个 py 文件 / 约 2.2 万行；tests 约 5.5 千行 | 仓库统计 |
+| 代码规模 | app 262 个 py 文件 / 约 2.25 万行；tests 约 5.8 千行 | 仓库统计 |
 | 观测 | Jaeger（OTLP）、Prometheus（/api/v1/metrics）、Grafana | `docker-compose.yml` |
+
+### 1.4 简历说法 ↔ 代码证据映射（面试时指得到文件）
+
+| 简历说法 | 证据文件（打开即见） |
+|---------|---------------------|
+| Agent 编排：主编排图 16 节点 + 4 层子图 + Adapter 解耦 | `app/orchestrator/main_graph.py`、`app/orchestrator/adapters/*.py` |
+| 人工审核 / 断点恢复：interrupt + Command(resume) + PostgresSaver | `app/orchestrator/human_review.py`、`app/main.py`（lifespan 初始化 checkpointer） |
+| 迭代决策：≥85 通过 / <70 回退 / 最多 3 轮（配置化） | `app/orchestrator/iteration.py`、`app/orchestrator/state.py`（OrchestratorConfig） |
+| 知识检索：双路 + RRF(k=60) + 反思 + 重排 + 压缩 | `app/knowledge_layer/pipeline.py`、`app/knowledge_layer/retrieval/{fusion,reflection,reranker,compressor}.py`、`config.py` |
+| LLM Gateway：7 护栏 / 熔断 / Failover / 限流 / 缓存 / 成本 | `app/llm_gateway/__init__.py`、`app/llm_gateway/langchain_adapter.py`、`app/core/circuit_breaker.py` |
+| 评测闭环：deepeval L1/L2 + rubric L3/L4 + 图内 9 维门禁 | `app/evaluation/rag/evaluator.py`、`app/evaluation/agent/evaluator.py`、`app/evaluation/agent_graph.py`、`app/evaluation/scoring.py` |
+| SSE 流式：EventBus + 20 种事件 + 心跳 | `app/streaming/event_bus.py`、`app/streaming/models.py` |
+| 安全：脱敏 / 审计哈希链 / SSRF / RBAC | `app/security/data_masking.py`、`app/web_indexing/url_security.py`、`app/auth/middleware.py` |
+| 工程化：测试 / CI / 技术栈合规 | `tests/conftest.py`、`.github/workflows/ci.yml`、`scripts/check_tech_stack.py` |
 
 ---
 
@@ -200,7 +214,7 @@ flowchart LR
 
 - **做什么**：复杂生成（PRD→TSD）的完整状态机：入口分类 → 记忆检索 → 知识检索 → Analysis → 人工审核 → Planning → 人工审核 → Generation → Evaluation → 迭代决策 → 最终组装 → 记忆压缩 → 会话保存。
 - **关键实现**：
-  - `StateGraph(OrchestratorState)`，15 个节点；条件路由函数 `needs_review`、`IterationDecider.run` 决定边走向。
+  - `StateGraph(OrchestratorState)`，16 个节点（含入口 inject_runtime）；条件路由函数 `needs_review`、`IterationDecider.run` 决定边走向。
   - 每层子图通过 Adapter 节点调用（`AnalysisAdapter` 等），Adapter 负责 `OrchestratorState ↔ LayerState` 映射，并把 progress 推进（0.10→0.25→0.50→0.75→0.90→1.0）。
   - `OrchestratorState` 是 TypedDict，字段分输入/多租户/知识/四层结果/控制字段/会话记忆。
 - **关键文件**：`app/orchestrator/main_graph.py`、`state.py`、`adapters/*.py`、`routing.py`、`iteration.py`。
@@ -294,7 +308,7 @@ flowchart LR
 ### 3.13 URL 文档分析与 SSRF 防护
 
 - **做什么**：传 URL → 抓取正文 → 入库（file_type=url + source_url）→ 可分析。
-- **关键实现**：`url_security.py` 协议白名单 + 内网 IP 拦截 + DNS 二次检查；`url_document.py` 抓取与入库；SSRF 防护 11 个用例实测通过。
+- **关键实现**：`url_security.py` 协议白名单 + 内网 IP 拦截 + DNS 二次检查；`url_document.py` 抓取与入库；SSRF 防护 21 个用例实测通过。
 - **关键文件**：`app/web_indexing/url_security.py`、`url_document.py`、`tests/unit/test_url_security.py`。
 - **追问**：SSRF 为什么要 DNS 二次检查？→ 第一次解析可能是公网 IP，重绑定后变成内网；域名解析结果必须再次校验。
 
@@ -534,7 +548,7 @@ flowchart LR
 
 - **结论**：Agent 系统的攻击面 = Web 攻击 + Prompt 注入 + 数据泄露 + SSRF + 敏感信息外发。
 - **实现**：Prompt 注入/PII 检测护栏（LLM 调用前）；数据分级脱敏 L1-L4（API Key 替换 [MASKED_XXX]，可逆脱敏接入 Gateway 调用链）；哈希链审计日志（prev_hash 防篡改）；SSRF 防护（协议白名单 + 内网拦截 + DNS 二次检查）；RBAC 资源级权限。
-- **诚实补充**：安全是"纵深防御"，每一层都有测试（`tests/unit/test_url_security.py` 11 例等），但没有做过外部渗透测试——这是生产化前要做的事。
+- **诚实补充**：安全是"纵深防御"，每一层都有测试（`tests/unit/test_url_security.py` 21 例等），但没有做过外部渗透测试——这是生产化前要做的事。
 
 ### 5.15 成本控制链路完整说一遍？
 
@@ -562,9 +576,8 @@ flowchart LR
 **改进路线（按优先级）**：
 
 - P0：补 Web UI（React + SSE），把进度流、审核面板、文档预览做出来——同时补上"前端在哪"的叙事。
-- P1：阈值配置化；RuntimeInjector 接线；BatchTask 落库。
-- P2：评测数据集扩到百级 + 多领域分层 + 多人标注；权重回归优化；多 judge 取中位数。
-- P3：LangGraph 原生 Subgraph 替代手工 Adapter；Multi-Agent Supervisor；方案 A/B 对比。
+- P1：评测数据集扩到百级 + 多领域分层 + 多人标注（当前 RAG 12 / Agent 4 只是回归基线）；Web 同步子图化。
+- P2：评分权重回归优化；多 judge 取中位数；LangGraph 原生 Subgraph 替代手工 Adapter；Multi-Agent Supervisor；方案 A/B 对比。
 ## 6. 评测环节深度问答（重点：评测可不可靠？）
 
 > 面试官对评测的追问一般有两个方向：**怎么评的**（机制）和 **可不可信**（可靠性）。这一节两方向都给足答案。
@@ -620,13 +633,13 @@ flowchart LR
 ### 6.4 评测代码里的坑（能说出来 = 真的做过）
 
 - **deepeval 兼容坑**：deepeval 4.x 将 `click` 钉在 `<8.4.0`，与 `huggingface-hub>=8.4.2` 冲突（运行时已验证正常，`pip check` 会告警）。
-- **反思轮数占位**：`retrieve_and_answer` 返回的 reflection_rounds 目前是配置值的占位（pipeline 未暴露实际轮数），报告里应避免过度解读该字段。
+- **反思轮数记录不完整**：pipeline 已记录实际反思轮数（`RetrievalPipeline.last_reflection_rounds`，条目 31 修复），但 `retrieve_and_answer` 返回的仍是配置值 `max_reflection_rounds`（evaluator 尚未切换读取实际轮数），报告里应避免过度解读该字段。
 - **judge key 未配置**：`_build_judge_model` 检测不到 judge key 时返回 None，deepeval 用环境变量默认 LLM——评测结果会变，跑评测前必须确认配置。
 - **评测耗时与成本**：12 条样本 ×（检索 + 回答 + 4 指标 × judge LLM）是多次 LLM 调用；文档记录真实评测曾因 `.env` 中 key 无效（401）未跑通，用 mock 外部 LLM 验证过闭环。
 
 ### 6.5 "你们最终评测分数是多少？"怎么答
 
-> 真实评测需要有效的 judge key 和完整环境。仓库基线里：单元 368 过、集成 54 过、真实中间件冒烟 4/4 通过；评测闭环用 mock LLM 验证可产出报告。真实指标我会在面试前用有效 key 补跑一次，把报告（`tests/eval/reports/`）作为证据。
+> 真实评测需要有效的 judge key 和完整环境。仓库基线里：单元 380 过 / 1 败（完整环境，overview 条目 32）、集成 54 过、真实中间件冒烟 4/4 通过；2026-08-18 本机实测（未起外部服务）为 357 过 / 1 败 / 18 error（DB 用例需 PG）。评测闭环用 mock LLM 验证可产出报告。真实指标我会在面试前用有效 key 补跑一次，把报告（`tests/eval/reports/`）作为证据。
 
 **建议（重要）**：面试前真的跑一次 `python scripts/run_rag_eval.py --ab-reflection` 和 `python scripts/run_agent_eval.py`，把报告数字背下来。有真实数字的评测故事，比任何理论都强。
 
@@ -652,7 +665,7 @@ flowchart LR
 | 人工审核与断点恢复（interrupt/resume + PostgresSaver） | ✅ 可用 | 单元 + 接线断言（main.py lifespan 初始化，失败降级 MemorySaver） |
 | SSE 流式（EventBus + 15+ 事件 + 心跳） | ✅ 可用 | `test_streaming` 16 例 + 集成验证 |
 | 会话记忆（检索/压缩/落库，thread_id 绑定） | ✅ 可用 | `test_memory_context`、`test_memory_retriever*`、`test_save_session_persistence` |
-| 企业安全（7 护栏 / 脱敏 / 审计哈希链 / SSRF） | ✅ 可用 | SSRF 11 例 + 护栏/脱敏/审计单元测试 |
+| 企业安全（7 护栏 / 脱敏 / 审计哈希链 / SSRF） | ✅ 可用 | SSRF 21 例 + 护栏/脱敏/审计单元测试 |
 | 观测（Jaeger 追踪 / Prometheus 指标 / Grafana） | ✅ 可用 | 真实环境冒烟（trace 树、指标非零） |
 | Webhook / 批量与定时任务（Celery worker + beat） | ✅ 可用 | 单元 + 集成测试 |
 
@@ -660,7 +673,7 @@ flowchart LR
 
 ### 7.2 测试层证据
 
-- 基线（2026-08-15）：单元 368 过 / 集成 54 过 / lint + 技术栈合规 7 过；冒烟 4/4 通过。
+- 基线（overview 条目 30/32）：单元 380 过 / 1 败（完整环境）、集成 54 过、lint + 技术栈合规 7 过、冒烟 4/4 通过。2026-08-18 本机实测（未起外部服务）：357 过 / 1 败 / 18 error（18 例为 DB 依赖用例，需本地 PostgreSQL）。
 - 单元测试默认用 SQLite 内存库（`tests/conftest.py`），逻辑层不依赖真实中间件；集成测试在 CI 里跑真实 PostgreSQL（pgvector/pgvector:pg16）+ Redis 7。
 - 工程方法亮点：除组件单测外，专门加了"接线断言测试"——断言 State 字段被谁消费、节点结果真的流到下一个节点。这是因为 AI 辅助开发最常见的 bug 是"代码写了但没被调用"，这类测试专治断点。
 
@@ -683,7 +696,7 @@ flowchart LR
 - 一键部署：`docker compose up -d` 启动 9 个服务（PostgreSQL / Redis / MinIO / Neo4j / Jaeger / Prometheus / Grafana / API / Celery worker + beat），均带健康检查与持久化卷；API 和 worker 通过 Dockerfile 构建。
 - 数据持久化：业务数据（PG）、向量（PGVector）、图（Neo4j）、对象（MinIO）、缓存与任务队列（Redis）全部分离，重启不丢。
 - 部署注意点（重要，展示前必做）：本地 compose 用的 `postgres:15` 官方镜像不带 pgvector 扩展，而 CI 用 `pgvector/pgvector:pg16`——**跑向量相关功能前把镜像换成 pgvector/pgvector:pg16（或等效），这是环境配置问题，不是功能缺失**。
-- 代码库状态提示：仓库工作区当前有 143 个文件未提交（主要是类型注解与测试调整），对外展示前先提交并跑通 CI。
+- 对外展示前先提交全部改动并跑通 CI，避免把未提交的中间状态带进演示。
 
 ### 7.6 "是否已经上线"怎么答
 
@@ -725,44 +738,61 @@ flowchart LR
 
 ### 7.9 测试可信度
 
-- 覆盖率没有设强制门槛，但测试按风险分层：安全（SSRF 11 例、护栏）、并发/状态（Send 写冲突回归）、断点（checkpointer 用法回归）、链路（接线断言）这些高风险点都有专门测试。覆盖率数字容易被刷，关键路径的断言更有价值。
+- 覆盖率没有设强制门槛，但测试按风险分层：安全（SSRF 21 例、护栏）、并发/状态（Send 写冲突回归）、断点（checkpointer 用法回归）、链路（接线断言）这些高风险点都有专门测试。覆盖率数字容易被刷，关键路径的断言更有价值。
 - mypy --strict + ruff + docstring 完整性检查（test_lint）在 CI 强制，类型和规范层面有保障。
 ## 8. 高频问题速查表
 
-> 用法：考前对着这一列自测，能讲满 1 分钟打 ✅，讲不出回到对应章节补。
+> 用法：考前对着速查表自测，能讲满 1 分钟在「自测」列打 ✅，讲不出回到对应章节补；反复刷到全 ✅ 为止。
 
-| # | 问题 | 答案位置 | 一句话要点 |
-|---|------|----------|------------|
-| 1 | 这个项目是做什么的？ | §1.1 / §2.1 | PRD→TSD 自动生成，LangGraph 4 层流水线 + 评测闭环 |
-| 2 | 为什么选 LangGraph？ | §4.3 | 步骤确定的流水线要显式可控、可 interrupt、可 checkpoint |
-| 3 | 为什么不用 AgentExecutor？ | §4.3 | 黑盒 ReAct，无法精确控制与人工介入 |
-| 4 | 为什么用 pgvector 不用专用向量库？ | §4.5 | 业务+向量同库、事务一致、SQL 过滤租户隔离、规模够用 |
-| 5 | pgvector 什么时候不够用？ | §4.5 | 千万/亿级、水平扩展、多副本高可用时换 Qdrant/Milvus |
-| 6 | 为什么还要 Neo4j？ | §4.6 | 实体关系用图遍历最自然，向量路与图路解耦 |
-| 7 | 为什么自研 RAG？ | §4.7 | 需要实体关系+反思纠偏，框架默认没有，Protocol 可替换 |
-| 8 | LLM Gateway 为什么自研？ | §4.8 | 路由/熔断/限流/缓存/护栏/成本一条链，GatewayChatModel 两全 |
-| 9 | 人工审核怎么实现？ | §3.9 / §5.12 | interrupt() 暂停写 checkpoint，Command(resume) 同 thread 续跑 |
-| 10 | 检索不准怎么办？ | §3.4 / §5.6 | ReflectionJudge 反思重查，最多 3 轮，失败 fail-open |
-| 11 | RRF 融合为什么 k=60？ | §5.7 | 对排名加权免疫尺度差异，k=60 常见经验值 |
-| 12 | 评测怎么做的？ | §6.1 | 三层：deepeval L1/L2、自研 L3/L4、图内 9 维门禁 |
-| 13 | 评测可不可靠？ | §6.2 | 独立 judge+temp0+rubric+历史校准，局限=样本小+自评偏差，人工兜底 |
-| 14 | 评测怎么反哺优化？ | §6.2 ④ | 反思 A/B diff、variant 对比、报告定位短板维度 |
-| 15 | 长任务崩溃怎么办？ | §3.9 / §5.12 | PostgresSaver checkpoint + thread_id 续跑 + TaskManager 落库 |
-| 16 | 并行写状态冲突？ | §5.11 | reducer 合并（merge_contents/merge_scores），只返回增量 |
-| 17 | 成本怎么控制？ | §5.15 | 限流→路由→预算降级→语义缓存→熔断→成本追踪 |
-| 18 | SSE 为什么不用 WebSocket？ | §4.15 | 单向流 SSE 够用，EventBus asyncio.Queue maxsize=128 |
-| 19 | 会话记忆怎么做？ | §3.10 | retrieve_memory→compress_memory→save_session 节点链 |
-| 20 | 多租户/权限？ | §3.14 | JWT+RBAC 资源级权限，tenant_context 贯穿，Prompt 三级隔离 |
-| 21 | 数据安全？ | §5.14 | 护栏/脱敏 L1-L4/审计哈希链/SSRF DNS 二次检查 |
-| 22 | 可观测性？ | §3.15 / §5.16 | Jaeger 追踪 + Prometheus 指标 + DecisionRecorder 回放 |
-| 23 | 你是前端为什么 Python？ | §4.2 | Agent 生态在 Python，前端负责交互层（UI 是下一步） |
-| 24 | 哪些是 AI 写的？ | §2.4 | 诚实承认 AI 辅助，讲架构决策与问题定位是自己主导 |
-| 25 | 项目真跑通了吗？ | §7.1 | 测试 400+、冒烟 4/4、CI 真 PG+Redis，E2E/评测依赖 key |
-| 26 | 生产部署过吗？ | §7.6 | 按可部署产品形态完成，暂无生产流量数据；话术见 §7.6 |
-| 27 | 最大技术挑战？ | §4.8 / §5.1 | 编排/节点内便利/生产能力三角，GatewayChatModel 解法 |
-| 28 | 有什么缺点/改进？ | §5.17 / §7.8 | 主动列已知问题：阈值硬编码、RuntimeInjector、数据集小、无 UI |
-| 29 | 测试可信吗？覆盖率？ | §7.9 | 按风险分层，关键路径断言 + mypy/ruff CI 强制 |
-| 30 | 演示给我看看？ | §7.7 | docker compose 一键起，先测试后演示，录屏兜底 |
+| # | 问题 | 答案位置 | 一句话要点 | 自测 |
+|---|------|----------|------------|---|
+| 1 | 这个项目是做什么的？ | §1.1 / §2.1 | PRD→TSD 自动生成，LangGraph 4 层流水线 + 评测闭环 | |
+| 2 | 为什么选 LangGraph？ | §4.3 | 步骤确定的流水线要显式可控、可 interrupt、可 checkpoint | |
+| 3 | 为什么不用 AgentExecutor？ | §4.3 | 黑盒 ReAct，无法精确控制与人工介入 | |
+| 4 | 为什么用 pgvector 不用专用向量库？ | §4.5 | 业务+向量同库、事务一致、SQL 过滤租户隔离、规模够用 | |
+| 5 | pgvector 什么时候不够用？ | §4.5 | 千万/亿级、水平扩展、多副本高可用时换 Qdrant/Milvus | |
+| 6 | 为什么还要 Neo4j？ | §4.6 | 实体关系用图遍历最自然，向量路与图路解耦 | |
+| 7 | 为什么自研 RAG？ | §4.7 | 需要实体关系+反思纠偏，框架默认没有，Protocol 可替换 | |
+| 8 | LLM Gateway 为什么自研？ | §4.8 | 路由/熔断/限流/缓存/护栏/成本一条链，GatewayChatModel 两全 | |
+| 9 | 人工审核怎么实现？ | §3.9 / §5.12 | interrupt() 暂停写 checkpoint，Command(resume) 同 thread 续跑 | |
+| 10 | 检索不准怎么办？ | §3.4 / §5.6 | ReflectionJudge 反思重查，最多 3 轮，失败 fail-open | |
+| 11 | RRF 融合为什么 k=60？ | §5.7 | 对排名加权免疫尺度差异，k=60 常见经验值 | |
+| 12 | 评测怎么做的？ | §6.1 | 三层：deepeval L1/L2、自研 L3/L4、图内 9 维门禁 | |
+| 13 | 评测可不可靠？ | §6.2 | 独立 judge+temp0+rubric+历史校准，局限=样本小+自评偏差，人工兜底 | |
+| 14 | 评测怎么反哺优化？ | §6.2 ④ | 反思 A/B diff、variant 对比、报告定位短板维度 | |
+| 15 | 长任务崩溃怎么办？ | §3.9 / §5.12 | PostgresSaver checkpoint + thread_id 续跑 + TaskManager 落库 | |
+| 16 | 并行写状态冲突？ | §5.11 | reducer 合并（merge_contents/merge_scores），只返回增量 | |
+| 17 | 成本怎么控制？ | §5.15 | 限流→路由→预算降级→语义缓存→熔断→成本追踪 | |
+| 18 | SSE 为什么不用 WebSocket？ | §4.15 | 单向流 SSE 够用，EventBus asyncio.Queue maxsize=128 | |
+| 19 | 会话记忆怎么做？ | §3.10 | retrieve_memory→compress_memory→save_session 节点链 | |
+| 20 | 多租户/权限？ | §3.14 | JWT+RBAC 资源级权限，tenant_context 贯穿，Prompt 三级隔离 | |
+| 21 | 数据安全？ | §5.14 | 护栏/脱敏 L1-L4/审计哈希链/SSRF DNS 二次检查 | |
+| 22 | 可观测性？ | §3.15 / §5.16 | Jaeger 追踪 + Prometheus 指标 + DecisionRecorder 回放 | |
+| 23 | 你是前端为什么 Python？ | §4.2 | Agent 生态在 Python，前端负责交互层（UI 是下一步） | |
+| 24 | 哪些是 AI 写的？ | §2.4 | 诚实承认 AI 辅助，讲架构决策与问题定位是自己主导 | |
+| 25 | 项目真跑通了吗？ | §7.1 | 测试 400+、冒烟 4/4、CI 真 PG+Redis，E2E/评测依赖 key | |
+| 26 | 生产部署过吗？ | §7.6 | 按可部署产品形态完成，暂无生产流量数据；话术见 §7.6 | |
+| 27 | 最大技术挑战？ | §4.8 / §5.1 | 编排/节点内便利/生产能力三角，GatewayChatModel 解法 | |
+| 28 | 有什么缺点/改进？ | §5.17 / §7.8 | 主动列当前边界：无 Web UI、评测数据集小（12/4 条）、Web 同步子图化未做、本地 PG 镜像缺 pgvector | |
+| 29 | 测试可信吗？覆盖率？ | §7.9 | 按风险分层，关键路径断言 + mypy/ruff CI 强制 | |
+| 30 | 演示给我看看？ | §7.7 | docker compose 一键起，先测试后演示，录屏兜底 | |
+
+
+### 8.1 两个必会 STAR 故事（选 1-2 个展开讲）
+
+**故事 A：并行写状态冲突（真实 bug + 回归测试）**
+
+- **Situation**：Evaluation 层用 Send() 并行扇出 9 个评测节点，评审时发现并行写共享 state 报 InvalidUpdateError。
+- **Task**：让 9 维评测真正并行跑起来，评分能正确汇总。
+- **Action**：定位根因是并行节点返回了全量 state 导致写冲突；改为每个节点只返回自己的维度增量，用 reducer（merge_scores / merge_contents）合并；Generation 层章节并行写入的同类问题一并修复。
+- **Result**：并行扇出跑通，9 维总耗时从"串行相加"变成"取最大值"，并补了回归测试锁住这个行为。
+
+**故事 B：评测闭环在无 key 环境下怎么验证（诚实 + 兜底）**
+
+- **Situation**：评测从 ragas 迁到 deepeval 4.x 后，真实评测依赖 judge LLM 的 API key，而 .env 里是占位符（401）。
+- **Task**：证明"数据集 → 检索 → 回答 → 评分 → 报告"整条评测闭环真的通，而不是停留在代码层面。
+- **Action**：用 mock 外部 LLM 跑通完整闭环并产出报告；把"真实评测待有效 key"如实记为外部依赖，给出补跑命令（`scripts/run_rag_eval.py --ab-reflection`）。
+- **Result**：闭环机制有证据可用；面试时诚实说"机制已用 mock 验证，真实数字等我配好 key 补跑"，比假装有分数可信得多。
 
 ## 9. 面试红线与考前清单
 
@@ -770,7 +800,7 @@ flowchart LR
 
 1. **不编造**：不编"生产部署/用户量/压测数据/评测高分"。没有就是没有，用"测试基线 + 冒烟 + CI"证明工程质量。
 2. **不把计划当完成**：多模态、SSO、Web UI、协同编辑都删了或没做，简历和口述都别写。
-3. **数字必须准确**：9 维评测、7 护栏、3 轮反思、最多 3 轮迭代、k=60、1024 维、阈值 85/70、单元 368/集成 54——说错一个都会让前面全被怀疑。
+3. **数字必须准确**：9 维评测、7 护栏、3 轮反思、最多 3 轮迭代、k=60、1024 维、阈值 85/70、主编排 16 节点、单元 357 过 / 1 败 / 18 error（DB 用例需 PG）——说错一个都会让前面全被怀疑。
 4. **不背文档原文**：面试官追问"为什么"时，背稿的痕迹很明显。把每个答案压缩成"结论 + 一个代码事实"。
 5. **不回避"哪些是 AI 写的"**：这是必问题，诚实 + 深度是唯一解法（§2.4）。
 
@@ -812,6 +842,16 @@ flowchart LR
 
 > 完成以上 8 项，"已经上线在用"就是可验证的事实；没完成前，请用 7.6 的诚实话术。
 ---
+### 9.5 考前 30 分钟速查卡（一页纸）
+
+**主链路（默画）**：POST /api/v1/interact → 意图分类（规则 + LLM）→ [复杂生成] 知识检索（图 + 向量 + 反思）→ Analysis(11) → 人工审核 → Planning(14) → 人工审核 → Generation(8) → Evaluation(9 维并行) → 迭代决策（≥85 过 / <70 回退，最多 3 轮）→ 记忆压缩 → 会话保存。
+
+**核心数字**：主编排 16 节点｜Analysis 11 / Planning 14 / Generation 8 / Evaluation 9+1｜RRF k=60｜反思最多 3 轮｜7 护栏｜熔断 3 次 30s｜Failover deepseek-chat → gpt-4o-mini｜阈值 85/70｜单测 357 过 / 1 败 / 18 error（DB 用例需 PG）｜全量 438 收集｜SSRF 21 例｜SSE 20 种事件。
+
+**八句话定位**：输入 PRD → LangGraph 主编排 + 4 层子图 → 9 维评测门禁自动迭代 → 关键节点人工审核 → PostgresSaver 断点续跑 → 自研 LLM Gateway（护栏/熔断/降级/缓存/成本）→ 自研双路检索（Neo4j + PGVector + 反思）→ 观测三件套（Jaeger / Prometheus / 回放）+ 评测闭环（deepeval + rubric）。
+
+**必指文件（8 个）**：`main_graph.py` / `interact.py` / `human_review.py` + `iteration.py` / `pipeline.py` + `reflection.py` / `llm_gateway/__init__.py` + `langchain_adapter.py` / `evaluation/agent_graph.py` + `scoring.py` / `vector_store.py` + `fusion.py` / `.github/workflows/ci.yml`。
+
 > **文档结束** — 祝面试顺利。
 > 核心心法：**诚实定位 + 代码级深度 + 真实跑过**。前端转 Agent 开发，你的差异化就是"既懂 Agent 后端，又懂用户怎么用"。
 
