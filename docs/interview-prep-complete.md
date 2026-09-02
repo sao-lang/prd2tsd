@@ -853,6 +853,139 @@ flowchart LR
 
 **必指文件（8 个）**：`main_graph.py` / `interact.py` / `human_review.py` + `iteration.py` / `pipeline.py` + `reflection.py` / `llm_gateway/__init__.py` + `langchain_adapter.py` / `evaluation/agent_graph.py` + `scoring.py` / `vector_store.py` + `fusion.py` / `.github/workflows/ci.yml`。
 
+---
+
+## 10. 面试官追问项目细节时怎么回答
+
+### 10.1 统一使用四层回答法
+
+任何实现问题都按以下顺序回答：
+
+1. **结论**：这个机制解决什么问题；
+2. **链路**：数据从哪里进入，经过哪些节点，最后写到哪里；
+3. **代码锚点**：关键文件、类、函数或 State 字段；
+4. **取舍与边界**：为什么这样做、代价是什么、当前还有什么不足。
+
+通用模板：
+
+> 先说结论，这个功能主要解决的是……。运行时链路是 A → B → C，A 负责……，结果通过 State 中的某字段交给 B，B 再根据某个条件路由到 C。代码主要在 `xxx.py`，核心类/函数是 `XXX`。这样设计的好处是……，代价是……；当前实现还有……边界，如果生产化我会……。
+
+不要一上来罗列类名。先让面试官听懂业务目的和数据流，再补代码细节。
+
+### 10.2 高频细节的回答骨架
+
+#### Q：整个 PRD→TSD 链路怎么走？
+
+```text
+POST /api/v1/interact
+→ 规则 + LLM 意图分类
+→ TaskManager 创建异步任务
+→ LangGraph 主编排
+→ 会话记忆
+→ 知识检索
+→ Analysis
+→ 人工审核
+→ Planning
+→ 人工审核
+→ Generation
+→ Evaluation
+→ 接受 / 重规划 / 重生成 / 转人工
+→ 文档组装
+→ 会话保存
+```
+
+各阶段通过 `OrchestratorState` 传递 `knowledge_context`、`analysis_result`、`planning_result`、`generation_result` 和 `evaluation_report`。四个子图通过 Adapter 与主状态交接。这是受控 Agent 工作流，不是多个 Agent 自由协商。
+
+#### Q：为什么拆成四层，不用一个大 Prompt？
+
+- 大 Prompt 出错后难以判断是需求理解、规划还是生成阶段的问题；
+- 分层后可以结构化校验，并在 Analysis/Planning 后插入人工审核；
+- feasibility 低时只回 Planning，consistency 低时只回 Generation；
+- 代价是调用次数、状态映射和总延迟增加。
+
+#### Q：PGVector 和 Neo4j 怎么配合？
+
+Neo4j Local Search 负责实体和关系证据，PGVector 负责 TextUnit 语义相似召回。每个重写子查询分别走图检索和向量检索；Local 模式用 RRF 融合两路，Hybrid 模式再加入 Global Search。之后进入 Reflection、Cross-encoder 重排和 token 压缩。
+
+Embedding 为空或全零时跳过向量查询；PGVector 异常时降级保留图检索结果。反思生成 refined_query 后，图路和向量路都使用新查询重新检索。对应代码：`app/knowledge_layer/pipeline.py` 的 `_search_vectors()`、`_fuse_available()`、`retrieve()`。
+
+#### Q：为什么用 RRF？
+
+图检索分数、向量相似度和 Global 结果不在同一尺度，直接相加需要分数校准。RRF 只使用排名，以 `1/(k+rank)` 累加。`k=60` 是经验参数，不是线上实验得到的绝对最优值。
+
+#### Q：ReflectionJudge 怎么工作？
+
+第一轮检索后，把查询和前几条结果交给 Judge，返回 `accept` 或 `refine`。refine 时生成新查询并重新进行图检索和向量检索。最多两次反思判断、三次检索尝试。Judge 异常时 fail-open，接受当前结果继续，避免增强模块阻断主流程。
+
+#### Q：人工审核和断点恢复怎么实现？
+
+Analysis/Planning 后由 `needs_review()` 判断是否审核；`interrupt()` 暂停，Checkpointer 根据 thread_id 保存状态；审核 API 提交决定后，TaskManager 用原 thread_id 调用 `Command(resume=feedback)` 恢复。MemorySaver 适合开发，PostgresSaver 用于持久化恢复。
+
+当前边界：`needs_changes` 主要更新 paused/error_message，还缺少自动回到 Analysis 或 Planning 修改的条件边。
+
+#### Q：评测不通过后回哪里？
+
+| 条件 | 路由 |
+| --- | --- |
+| 总分 ≥85 | 接受并组装 |
+| 70～85 且 consistency <70 | 重新生成 |
+| 70～85 且 feasibility <70 | 重新规划 |
+| 总分 <70 且有 critical_issues | 人工审核 |
+| 总分 <70 且无 critical_issues | 重新规划 |
+| 达到最大迭代次数 | 当前实现强制结束 |
+
+达到上限后强制结束保证终止性，但更稳妥的生产设计应标记 degraded 并转人工，而不是把低质量结果当作正常通过。
+
+#### Q：LLM Gateway 具体做了什么？
+
+```text
+输入护栏
+→ RPM/TPM 限流
+→ 按 task_type 选择模型
+→ 预算检查与低成本模型降级
+→ 精确缓存
+→ Provider 熔断和 Failover
+→ 模型调用
+→ 输出护栏与 PII 还原
+→ 成本、token 和指标记录
+```
+
+类名虽然叫 `SemanticCache`，当前实现是 `task_type + 完整 prompt` 的 SHA-256 精确内存缓存，不是 embedding 相似度缓存；预算、限流和缓存主要也是进程内状态，多实例需要迁移到 Redis/数据库。
+
+#### Q：Pydantic 怎么约束结构化输出？
+
+节点用 `PydanticOutputParser` 把格式要求加入 Prompt，再解析为 RequirementList、ConstraintList、TechStackResult 等模型；跨层使用 AnalysisResultDetail、PlanningResultDetail 等 Contract。Pydantic 能验证和阻止错误结构静默下传，但不能保证模型第一次就输出合法格式，仍需重试、修复或降级。
+
+#### Q：Generation 为什么可以并行？
+
+生成大纲后，LangGraph `Send()` 为每个章节创建 SectionWriter。并行节点只返回章节增量，`section_contents` 使用 reducer 合并；如果每个节点都写完整 State，会出现并行写冲突。所有章节完成后 fan-in 到 diagram 和后续一致性处理。
+
+#### Q：评测可靠吗？
+
+项目建立的是可重复评测机制，不是绝对质量证明。九维评测、显式权重、独立 Judge、历史校准和小型数据集能做自动门禁，但样本量和 Judge 偏差仍存在；生产化需要人工标注集、独立模型评审、线上反馈和 A/B 校准。
+
+### 10.3 遇到不会的细节怎么办
+
+不要猜参数或底层实现。使用以下话术：
+
+> 这个细节我没有完全确认，我先说我确定的部分：当前链路是……，状态通过……传递。至于具体参数/底层实现，我不想凭印象给错误答案；从设计上我会重点确认……。
+
+例如不知道 PGVector 使用 HNSW、IVFFlat 还是无显式索引时：
+
+> 我确认查询使用 pgvector 距离运算并带 workspace_id 隔离，但具体索引类型我没有记准，不想编。选型时我会根据数据量、召回率、索引构建成本和更新频率决定。
+
+可以把问题拉回确定的主线：输入是什么、输出写哪个 State 字段、下游谁消费、异常如何降级、为什么这样设计。
+
+### 10.4 三种危险回答
+
+| 不要这样说 | 应该这样说 |
+| --- | --- |
+| “这是 AI 写的，我不太清楚” | “代码大量使用 AI 辅助，我重点核对了实际调用链和边界” |
+| “我们当时就是这么选的” | “当前规模下这样选是为了……，代价是……” |
+| “这是生产级最佳实践” | “这是可部署形态，但还没有真实生产流量验证” |
+
+核心目标不是背出最多类名，而是能稳定说明：数据从哪里来、经过什么、为什么这样走、失败怎么办、哪里还不够好。
+
 > **文档结束** — 祝面试顺利。
 > 核心心法：**诚实定位 + 代码级深度 + 真实跑过**。前端转 Agent 开发，你的差异化就是"既懂 Agent 后端，又懂用户怎么用"。
 
