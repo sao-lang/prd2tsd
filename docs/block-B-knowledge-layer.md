@@ -287,7 +287,11 @@ class KnowledgeGraphBuilder:
       → _expand_subgraph(entities) → 子图遍历 1-2 跳
       → _retrieve_chunks(entities) → 原文证据
       → _assemble_context() → 结构化输出
-    → RRF.fusion(图结果 + 向量结果)
+    → EntityEmbedder.embed_text(query) → 查询向量
+    → PGVectorStore.similarity_search(text_unit_embeddings, workspace_id)
+    → RRF.fusion(图结果 + TextUnit 向量结果)
+      └── Hybrid 模式额外融合 Global Search 结果
+      └── Embedding/PGVector 不可用时降级为图结果，不中断检索
     → ⭐ ReflectionJudge.judge()
       ├── "accept" → 继续
       └── "refine" → 修正查询 → 重新检索（最多 2 轮）
@@ -371,6 +375,26 @@ async def test_global_search_returns_summary():
 ```
 
 > **说明**：社区检测/社区报告逻辑已简化删除，Global Search 简化为「实体按类型聚合 → LLM 宏观总结」。
+
+### 9.6 PGVector 主链路融合测试
+
+```python
+# tests/unit/test_retrieval_pipeline_vector.py
+async def test_local_mode_fuses_graph_and_pgvector_results():
+    """验证 Local 模式 RRF 融合 Neo4j 与 PGVector TextUnit 排名。"""
+    ...
+
+async def test_hybrid_mode_fuses_graph_vector_and_global_results():
+    """验证 Hybrid 模式融合图、向量和 Global 三路结果。"""
+    ...
+
+async def test_pgvector_failure_degrades_to_graph_results():
+    """验证 PGVector 不可用时保留图检索结果。"""
+    ...
+```
+
+> **模式边界**：Local 使用 Neo4j + PGVector；Hybrid 使用 Neo4j + PGVector + Global；
+> Global 保持实体类型聚合的宏观总结，不执行 TextUnit 相似度检索。
 
 ---
 

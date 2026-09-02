@@ -524,7 +524,10 @@ ReflectionJudge.judge(query, results) -> ReflectionResult:
   解析失败 → 默认 accept
 
 反思循环（RetrievalPipeline.retrieve，max_reflection_rounds=2，最多 3 轮）:
-  round 1: sub_queries[:3] 各跑 local_search + global → RRF 融合
+  round 1: sub_queries[:3] 各跑 local_search + PGVector TextUnit 相似度检索
+           local:  RRF(图, 向量)
+           hybrid: RRF(图, 向量, global)
+           Embedding/PGVector 异常时降级到其余可用排名
   非末轮:   reflection.judge() → accept 则 break；refine 则 refined_query 重跑
 ```
 
@@ -633,8 +636,11 @@ RetrievalPipeline.retrieve(query, mode, top_k, workspace_id):
     │
     ▼ ④ 反思循环（最多 3 轮）:
     │    ├─ local/hybrid: sub_queries[:3] → LocalSearch.search_as_docs()（Neo4j 子图 + 位置降权）
+    │    ├─ local/hybrid: EntityEmbedder.embed_text() → PGVectorStore.similarity_search()
+    │    │                （text_unit_embeddings + workspace_id 租户过滤）
     │    ├─ global/hybrid: GlobalSearch.search()（实体按类型聚合 + LLM 宏观总结）
-    │    └─ hybrid 且两路有结果 → RRFFusion.fuse(k=60)
+    │    ├─ local → RRFFusion.fuse(图, 向量)；仅一路非空时保留原排名
+    │    └─ hybrid → RRFFusion.fuse(图, 向量, Global)
     │       非末轮 → ReflectionJudge.judge() → accept 则 break；refine 用 refined_query 重跑
     │
     ▼ ⑤ ReRanker.rerank(query, results, top_k)   # bge-reranker 或 关键词降权回退
@@ -1682,7 +1688,7 @@ KnowledgeRetrievalNode.run(state):
   2. prd_raw 为空 → knowledge_context=None, progress=0.10，跳过
   3. RetrievalPipeline.retrieve(query=prd_raw[:500], mode="hybrid", top_k=10, workspace_id)
        内部: IntentRouter → QueryRewriter → QueryEnricher → 反思循环
-             (LocalSearch 双路 + GlobalSearch + RRFFusion → ReflectionJudge → ReRanker → Compressor)
+             (LocalSearch + PGVector TextUnit + GlobalSearch + RRFFusion → ReflectionJudge → ReRanker → Compressor)
   4. 失败 → 降级 knowledge_context=None（不阻断）
   5. state["knowledge_context"] = ctx; progress = 0.10
   checkpoint

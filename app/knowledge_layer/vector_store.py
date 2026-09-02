@@ -52,7 +52,7 @@ class PGVectorStore:
                 embedding vector({self._dimension}),
                 section_path VARCHAR(512) DEFAULT '',
                 entity_ids TEXT DEFAULT '[]',
-                document_id VARCHAR(64) DEFAULT ',
+                document_id VARCHAR(64) DEFAULT '',
                 workspace_id VARCHAR(64) DEFAULT '',
                 created_at TIMESTAMP DEFAULT NOW()
             )
@@ -100,6 +100,7 @@ class PGVectorStore:
         chunk: Chunk,
         embedding: list[float] | None = None,
         document_id: str = "",
+        workspace_id: str = "",
     ) -> None:
         """写入 Chunk 向量。
 
@@ -107,6 +108,7 @@ class PGVectorStore:
             chunk: Chunk 对象。
             embedding: 向量。为 None 时不写入向量。
             document_id: 所属文档 ID（文档语义搜索关联用）。
+            workspace_id: 工作空间 ID（租户隔离）。
         """
         session = await self._get_session()
         vec_str = json.dumps(embedding) if embedding else None
@@ -120,7 +122,8 @@ class PGVectorStore:
                 embedding = EXCLUDED.embedding,
                 section_path = EXCLUDED.section_path,
                 entity_ids = EXCLUDED.entity_ids,
-                document_id = EXCLUDED.document_id
+                document_id = EXCLUDED.document_id,
+                workspace_id = EXCLUDED.workspace_id
             """
             ),
             {
@@ -129,7 +132,7 @@ class PGVectorStore:
                 "embedding": vec_str,
                 "section_path": chunk.section_path or "",
                 "entity_ids": "[]",
-                "workspace_id": chunk.metadata.get("workspace_id", "") if chunk.metadata else "",
+                "workspace_id": workspace_id,
                 "document_id": document_id,
             },
         )
@@ -165,7 +168,8 @@ class PGVectorStore:
                 name = EXCLUDED.name,
                 entity_type = EXCLUDED.entity_type,
                 description = EXCLUDED.description,
-                embedding = EXCLUDED.embedding
+                embedding = EXCLUDED.embedding,
+                workspace_id = EXCLUDED.workspace_id
             """
             ),
             {
@@ -203,16 +207,22 @@ class PGVectorStore:
 
         session = await self._get_session()
         vec_str = json.dumps(embedding)
-        select_cols = "id, text, content, name, description"
-        if table == "text_unit_embeddings":
-            select_cols += ", document_id"
+        select_columns = {
+            "text_unit_embeddings": "id, text AS text_content, document_id",
+            "entity_embeddings": (
+                "id, COALESCE(NULLIF(description, ''), name) AS text_content, "
+                "name, entity_type"
+            ),
+            "claim_embeddings": "id, content AS text_content, subject, claim_type",
+        }
         query = text(
             f"""
-            SELECT {select_cols},
+            SELECT {select_columns[table]},
                    1 - (embedding <=> :vec::vector) AS similarity
             FROM {table}
-            WHERE (:workspace_id = '' OR workspace_id = :workspace_id)
-            ORDER BY similarity DESC
+            WHERE embedding IS NOT NULL
+              AND (:workspace_id = '' OR workspace_id = :workspace_id)
+            ORDER BY similarity DESC NULLS LAST
             LIMIT :top_k
             """
         )
@@ -230,16 +240,20 @@ class PGVectorStore:
             metadata: dict[str, Any] = {"table": table}
             if table == "text_unit_embeddings":
                 metadata["document_id"] = row_dict.get("document_id", "")
-            text_content = (
-                row_dict.get("text")
-                or row_dict.get("content")
-                or row_dict.get("description")
-                or row_dict.get("name", "")
-            )
+            elif table == "entity_embeddings":
+                metadata.update(
+                    name=row_dict.get("name", ""),
+                    entity_type=row_dict.get("entity_type", ""),
+                )
+            elif table == "claim_embeddings":
+                metadata.update(
+                    subject=row_dict.get("subject", ""),
+                    claim_type=row_dict.get("claim_type", ""),
+                )
             docs.append(
                 ScoredDoc(
                     id=row_dict.get("id", ""),
-                    text=str(text_content),
+                    text=str(row_dict.get("text_content", "")),
                     score=float(row_dict.get("similarity", 0.0)),
                     source="vector",
                     metadata=metadata,
@@ -321,7 +335,9 @@ class PGVectorStore:
                 claim_type = EXCLUDED.claim_type,
                 content = EXCLUDED.content,
                 object = EXCLUDED.object,
-                embedding = EXCLUDED.embedding
+                embedding = EXCLUDED.embedding,
+                source_text_unit_id = EXCLUDED.source_text_unit_id,
+                workspace_id = EXCLUDED.workspace_id
             """
             ),
             {

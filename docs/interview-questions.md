@@ -187,8 +187,8 @@ ReflectionJudge 是知识检索层的自我纠偏机制。
 
 工作流程：
 1. 正常检索：IntentRouter → QueryRewriter(≤5 子查询) → QueryEnricher(实体链接)
-   → LocalSearch(Neo4j 子图 + PGVector) / GlobalSearch(实体类型聚合 + LLM 宏观总结)
-   → RRFFusion(k=60) 融合
+   → LocalSearch(Neo4j 子图) + PGVector(text_unit_embeddings) / GlobalSearch(实体类型聚合 + LLM 宏观总结)
+   → Local 用 RRFFusion(图, 向量)，Hybrid 用 RRFFusion(图, 向量, Global)，向量服务异常时降级
 2. 反思判断：检索结果 + 原始查询发给 LLM
    Prompt: "这些检索结果满足用户需求吗？如果不满足，缺少什么？给出修正后的搜索查询。"
 3. LLM 返回 judgment:

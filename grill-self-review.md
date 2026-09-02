@@ -4,6 +4,31 @@
 
 ---
 
+## RetrievalPipeline PGVector 接线自省（2026-09-02 08:07）
+
+### 四维检查
+
+| 维度 | 结论 | 证据 |
+|---|---|---|
+| 功能完整性 | ✅ | Local 融合图+向量，Hybrid 融合图+向量+Global，Global 边界已文档化 |
+| 功能间联通 | ✅ | QueryRewriter → EntityEmbedder → PGVector → RRF → Reflection → ReRanker 已贯通 |
+| 模块间联通 | ✅ | 构造参数向后兼容；`workspace_id` 从构建写入贯通到相似度查询过滤 |
+| 可用性 | ⚠️ 部分验证 | 新增 10 测试、相关回归 22 测试、Ruff/mypy 通过；真实服务未启动 |
+
+### 发现并修复的问题
+
+| 问题 | 严重程度 | 修复 |
+|---|---|---|
+| 可空 embedding 可能产生空相似度并在转 float 时失败 | 中等 | SQL 增加 `embedding IS NOT NULL` 与 `NULLS LAST` |
+| `similarity_search` 对三张表统一选择不存在的列 | 严重 | 按表维护允许的选择列并统一别名为 `text_content` |
+| Chunk 未显式写入 workspace_id，租户检索可能漏召回 | 严重 | `upsert_chunk` 新增显式参数，构建链路完整传递并在冲突时更新 |
+
+### 最终状态
+
+代码级和 Mock 链路验证通过；PostgreSQL/PGVector、Neo4j 与 E2E 因当前机器无运行服务而标记为待环境验证。
+
+---
+
 ## 第一轮自省（2026-07-24 17:00）
 
 ### 发现的问题

@@ -126,7 +126,11 @@ class KnowledgeGraphBuilder:
         await self.vector_store.ensure_extensions()
         for chunk in chunks:
             chunk_emb = await self.entity_embedder.embed_text(chunk.text)
-            await self.vector_store.upsert_chunk(chunk, chunk_emb)
+            await self.vector_store.upsert_chunk(
+                chunk,
+                chunk_emb,
+                workspace_id=workspace_id,
+            )
         for entity in resolved_entities:
             if entity.embedding:
                 await self.vector_store.upsert_entity_embedding(
@@ -207,7 +211,12 @@ class KnowledgeGraphBuilder:
         await self.vector_store.ensure_extensions()
         for chunk in chunks:
             chunk_emb = await self.entity_embedder.embed_text(chunk.text)
-            await self.vector_store.upsert_chunk(chunk, chunk_emb, document_id=document_id)
+            await self.vector_store.upsert_chunk(
+                chunk,
+                chunk_emb,
+                document_id=document_id,
+                workspace_id=workspace_id,
+            )
         for entity in resolved_entities:
             if entity.embedding:
                 await self.vector_store.upsert_entity_embedding(
@@ -276,15 +285,18 @@ class RetrievalPipeline:
         self,
         graph_store: Neo4jGraphStore | None = None,
         vector_store: PGVectorStore | None = None,
+        query_embedder: EntityEmbedder | None = None,
     ) -> None:
         """初始化检索管线。
 
         Args:
             graph_store: Neo4j 图存储。
             vector_store: PGVector 向量存储。
+            query_embedder: 查询文本 Embedding 生成器。
         """
         self.graph_store = graph_store or Neo4jGraphStore()
         self.vector_store = vector_store or PGVectorStore()
+        self.query_embedder = query_embedder or EntityEmbedder()
         self.intent_router = IntentRouter()
         self.rewriter = QueryRewriter()
         self.enricher = QueryEnricher(graph_store=self.graph_store)
@@ -334,6 +346,7 @@ class RetrievalPipeline:
         for round_idx in range(self.max_reflection_rounds + 1):
             # 4a. 多路检索
             local_docs: list[ScoredDoc] = []
+            vector_docs: list[ScoredDoc] = []
             global_docs: list[ScoredDoc] = []
             global_result = None
 
@@ -341,22 +354,19 @@ class RetrievalPipeline:
                 for sq in sub_queries[:3]:
                     sq_docs = await self.local_search.search_as_docs(sq, workspace_id, top_k)
                     local_docs.extend(sq_docs)
-                seen_ids: set[str] = set()
-                unique_local: list[ScoredDoc] = []
-                for doc in local_docs:
-                    if doc.id not in seen_ids:
-                        seen_ids.add(doc.id)
-                        unique_local.append(doc)
-                all_results = unique_local
+                local_docs = self._deduplicate(local_docs)
+                vector_docs = await self._search_vectors(sub_queries[:3], workspace_id, top_k)
+                all_results = self._fuse_available(local_docs, vector_docs)
 
             if detected_mode in ("global", "hybrid"):
                 global_result = await self.global_search.search(current_query, workspace_id)
                 global_docs = await self.global_search.search_as_docs(current_query, workspace_id)
-                all_results.extend(global_docs)
+                if detected_mode == "global":
+                    all_results = global_docs
 
-            # 4b. RRF 融合（hybrid 模式）
-            if detected_mode == "hybrid" and local_docs and global_docs:
-                all_results = self.fusion.fuse(local_docs, global_docs)
+            # 4b. RRF 融合：Local=图+向量；Hybrid=图+向量+Global。
+            if detected_mode == "hybrid":
+                all_results = self._fuse_available(local_docs, vector_docs, global_docs)
 
             # 4c. 反思裁判 — 最后一轮不反思
             if round_idx < self.max_reflection_rounds:
@@ -397,3 +407,57 @@ class RetrievalPipeline:
             len(compressed),
         )
         return context
+
+    async def _search_vectors(
+        self,
+        queries: list[str],
+        workspace_id: str,
+        top_k: int,
+    ) -> list[ScoredDoc]:
+        """检索 PGVector TextUnit，并在外部服务不可用时降级为空结果。
+
+        Args:
+            queries: 待检索的重写查询。
+            workspace_id: 工作空间 ID。
+            top_k: 每条查询的候选数。
+
+        Returns:
+            按各子查询排名顺序去重后的向量结果。
+        """
+        vector_docs: list[ScoredDoc] = []
+        for query in queries:
+            try:
+                embedding = await self.query_embedder.embed_text(query)
+                if not embedding or not any(embedding):
+                    logger.warning("查询 Embedding 不可用，跳过 PGVector 检索: query=%s", query)
+                    continue
+                docs = await self.vector_store.similarity_search(
+                    embedding=embedding,
+                    table="text_unit_embeddings",
+                    top_k=top_k,
+                    workspace_id=workspace_id,
+                )
+                vector_docs.extend(docs)
+            except Exception as exc:
+                logger.warning("PGVector 检索失败，降级到图检索: %s", exc)
+        return self._deduplicate(vector_docs)
+
+    @staticmethod
+    def _deduplicate(docs: list[ScoredDoc]) -> list[ScoredDoc]:
+        """按文档 ID 去重并保留首次出现的最高排名。"""
+        seen_ids: set[str] = set()
+        unique_docs: list[ScoredDoc] = []
+        for doc in docs:
+            if doc.id not in seen_ids:
+                seen_ids.add(doc.id)
+                unique_docs.append(doc)
+        return unique_docs
+
+    def _fuse_available(self, *ranked_lists: list[ScoredDoc]) -> list[ScoredDoc]:
+        """融合所有非空排名；只有一路结果时保留该路原始分数。"""
+        available = [ranked_list for ranked_list in ranked_lists if ranked_list]
+        if not available:
+            return []
+        if len(available) == 1:
+            return available[0]
+        return self.fusion.fuse(*available)

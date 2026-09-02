@@ -103,7 +103,7 @@
 **三条 bullet**：
 
 - **Agent 编排**：基于 LangGraph StateGraph 实现主编排图（16 节点，含入口 inject_runtime）+ 4 层子图（知识检索 / 需求分析 11 节点 / 架构规划 14 节点 / 文档生成 8 节点），通过 Adapter 模式解耦层间状态；用 interrupt/resume 实现人工审核，PostgreSQL Checkpointer 做断点持久化与崩溃恢复；Evaluation 9 维并行评测，评分低于阈值自动迭代（最多 3 轮）。
-- **知识检索（RAG）**：自研实体增强双路检索（Neo4j 知识图谱 + PGVector 向量），包含查询改写、实体链接、RRF 融合（k=60）、ReflectionJudge 自我纠偏（最多 3 轮）、Cross-encoder 精排（bge-reranker-v2-m3）与 token 预算压缩；中文 Embedding 使用 bge-large-zh-v1.5（1024 维）。
+- **知识检索（RAG）**：自研多路检索（Local=Neo4j 知识图谱 + PGVector TextUnit 向量；Hybrid 再加入 Global 宏观总结），包含查询改写、实体链接、RRF 融合（k=60）、ReflectionJudge 自我纠偏（最多 3 轮）、Cross-encoder 精排（bge-reranker-v2-m3）与 token 预算压缩；中文 Embedding 使用 bge-large-zh-v1.5（1024 维）。
 - **工程化**：自研 LLM Gateway（多 Provider 路由 / 熔断 / Failover / 限流 / 语义缓存 / 成本追踪 / 7 项护栏）；SSE 流式事件推送（15+ 事件类型）；评测闭环（deepeval + rubric judge）；RBAC 多租户隔离 + 数据脱敏 + 哈希链审计；OpenTelemetry + Prometheus + Grafana 观测；400+ 自动化测试，ruff/mypy 零告警，Docker Compose 一键部署。
 
 **技能标签**：LangGraph、LangChain、FastAPI、RAG、pgvector、Neo4j、Redis、MinIO、Celery、OpenAI/DeepSeek API、SSE、OpenTelemetry、pytest、ruff/mypy。
@@ -234,9 +234,10 @@ flowchart LR
 
 ### 3.4 检索链路（含反思循环）
 
-- **做什么**：查询 → 意图路由（local/global/hybrid）→ 查询改写（≤5 子查询）→ 实体链接增强 → 双路检索 → RRF 融合 → 反思判断 → 重排 → 压缩 → 返回上下文。
+- **做什么**：查询 → 意图路由（local/global/hybrid）→ 查询改写（≤5 子查询）→ 实体链接增强 → Local 图/向量双路检索（Hybrid 加 Global）→ RRF 融合 → 反思判断 → 重排 → 压缩 → 返回上下文。
 - **关键实现**：
   - Local Search：关键词匹配实体 → Neo4j 子图遍历（1-2 跳）→ 组装"匹配实体 + 相关实体 + 原文来源"上下文。
+  - PGVector Search：对子查询生成 Embedding → `text_unit_embeddings` 余弦相似度检索 → 按 `workspace_id` 隔离；不可用时降级为其余检索路。
   - Global Search：全部实体按类型聚合 → LLM 宏观总结（社区检测已简化为实体聚合）。
   - 双路：图检索 + PGVector 向量检索，RRF（k=60）融合排序。
   - ReflectionJudge：LLM 判断结果是否满足查询；不满足则生成 refined_query 重新检索，最多 3 轮；LLM 调用失败默认 accept（降级不阻塞）。

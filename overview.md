@@ -1,5 +1,20 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-09-02
+
+#### 35. RetrievalPipeline 接入 PGVector 主检索链路
+
+- **时间：** 2026-09-02 08:07:44
+- **发起人：** user（“PGVector 相似度检索是否为实现遗漏；若是则补齐逻辑和文档”）
+- **修改文件：** `app/knowledge_layer/pipeline.py`、`app/knowledge_layer/vector_store.py`、`tests/unit/test_retrieval_pipeline_vector.py`、`tests/unit/test_vector_store.py`、`docs/block-B-knowledge-layer.md`、`docs/full-architecture-deep-dive.md`、`docs/interview-prep-complete.md`、`docs/interview-questions.md`、`grill-self-review.md`
+- **修改内容：**
+  1. `RetrievalPipeline` 为重写查询生成 Embedding，并检索 PGVector `text_unit_embeddings`；Local 以 RRF 融合 Neo4j + PGVector，Hybrid 融合 Neo4j + PGVector + Global。
+  2. Embedding/PGVector 不可用时记录告警并降级到其余检索路；反思 refine 后使用新查询重新执行向量检索。
+  3. 修复 `similarity_search()` 跨表选择不存在列、空向量行排序、运行时建表 SQL 引号，以及 Chunk/Entity/Claim 冲突更新的 `workspace_id` 一致性；构建链路显式传递 Chunk 的租户 ID。
+  4. 同步块 B 设计、全架构链路、面试手册和问答文档，明确 Global 模式保持宏观实体聚合，不执行 TextUnit 向量检索。
+- **复盘结果：** 新增 10 个单元测试通过；相关回归共 22 个通过；`ruff check app tests` 全绿；改动文件 mypy 全绿。全量单测（排除环境缺少的 deepeval 收集文件）376 过、2 个既有环境失败（Redis 未启动、缺少 pypdf）。
+- **潜在风险：** 当前 Docker/外部服务未启动，PGVector/Neo4j Smoke Test 与真实 E2E 未完成；需在服务可用环境复核真实余弦查询和三路融合。
+
 ### 2026-08-18
 
 #### 34. 面试文档二轮优化：修正过时状态 + 新增速查卡 / STAR / 自测列 / 证据映射
