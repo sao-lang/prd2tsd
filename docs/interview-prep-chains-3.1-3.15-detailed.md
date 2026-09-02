@@ -20,6 +20,311 @@
 
 面试时先讲业务主链，再根据追问深入 Gateway、知识检索、并行生成或人工审核，不需要一次把全部细节倒出来。
 
+## gateway链路解析
+
+一、LLM Gateway 完整链路
+非流式 gateway.complete() 的实际顺序是：
+
+1. 前置护栏
+2. 工作空间限流
+3. task_type 模型路由
+4. 预算检查与模型降级
+5. 缓存查询
+6. 输入可逆脱敏
+7. Circuit Breaker + Failover + Provider 调用
+8. 后置护栏
+9. 缓存写入、成本记录、预算累计、限流计数、指标追踪
+核心入口在 [LLM Gateway (line 155)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:155)。
+10. 前置护栏
+Gateway 初始化时注册了 7 个护栏，管理器把它们按 pre_llm 和 post_llm 分组，顺序执行。
+① Prompt Injection Guardrail
+调用 LLM 前扫描用户输入，例如：
+
+- ignore all previous instructions
+- disregard your system prompt
+- system prompt:
+- “忽略之前的指令”
+- “忘记之前的……”
+一旦匹配：
+blocked = true
+severity = critical
+Gateway 不再调用任何 Provider，直接返回：
+[输入被护栏拦截: 检测到 Prompt 注入模式...]
+实现见 [prompt_injection.py (line 11)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/guardrails/prompt_injection.py:11)。
+这是规则式检测，优点是快、稳定、零模型成本；缺点是存在误报，也防不住复杂的语义注入。面试时不要把它说成完整的 AI 内容安全系统。
+② PII Detector Guardrail
+检测：
+- 身份证号
+- 手机号
+- 银行卡号
+- 邮箱
+默认策略是 mask，不是直接拒绝。
+不过需要注意：这个 Guardrail 虽然会产生 masked_text，当前 Gateway 对前置护栏只处理 blocked，没有直接使用这里返回的 masked_text。
+真正送入 Provider 前的脱敏由独立的 DataMaskingEngine 完成：
+原 Prompt
+   ↓ mask_reversible()
+手机号 → [MASKED_PHONE:1]
+   ↓
+发送给第三方 LLM
+   ↓
+LLM 输出
+   ↓ unmask()
+恢复原始内容
+调用位置在 [LLM Gateway (line 282)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:282)。
+这种可逆脱敏的设计目的是：
+- 第三方模型看不到真实敏感信息
+- 模型仍可以理解“这里存在一个手机号/邮箱”
+- 返回结果后可以恢复业务原文
+但当前脱敏注册表是 Gateway 进程内共享字典，生产化还需要考虑并发隔离和清理。
+③ Timeout Guardrail
+设计上用于调用前检查熔断器：
+- OPEN：直接阻止调用
+- HALF_OPEN：允许一次试探请求
+- CLOSED：正常调用
+实现见 [timeout_guardrail.py (line 13)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/guardrails/timeout_guardrail.py:13)。
+但当前默认初始化时没有向它注入具体 Circuit Breaker，因此它通常返回“无熔断器配置”。真正的熔断控制发生在 _failover_call() 中，而不是这个护栏里。
+
+2. 工作空间限流
+限流器以 workspace_id 为维度，维护 60 秒滑动窗口，支持：
+
+- RPM：每分钟请求数
+- TPM：每分钟 Token 数
+流程是：
+调用前 check(workspace_id)
+        ↓
+清理 60 秒以前的记录
+        ↓
+统计当前窗口请求数和 Token 数
+        ↓
+超过 RPM/TPM
+        ↓
+返回 retry_after，不调用 Provider
+调用成功后，再把实际 Token 数写入窗口：
+await rate_limiter.record(
+    workspace_id,
+    response.input_tokens + response.output_tokens,
+)
+实现见 [rate_limiter.py (line 16)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/rate_limiter.py:16)。
+面试时可以解释为：
+API 层的限流保护整个 HTTP 服务，Gateway 的限流则保护昂贵的模型资源，并且可以按工作空间配置不同配额。
+
+当前实现是单进程内存滑动窗口。多实例部署时各实例的计数不共享，生产环境应该迁移到 Redis + Lua 脚本，保证原子性和全局一致性。
+另外，调用前没有传入当前 Prompt 的预估 Token，因此 TPM 检查主要依据历史消耗；当前请求的真实 Token 是调用完成后才记录。这也是一个可以改进的点。
+3. 多 Provider 模型路由
+节点调用 Gateway 时会带上 task_type：
+analysis
+planning
+generation
+evaluation
+intent_classify
+knowledge_qa
+document_analysis
+ModelConfigManager 根据 task_type 查路由规则：
+运行时 API 动态配置
+        ↓ 没有
+环境变量中的路由配置
+        ↓ 没有
+默认 DeepSeek / deepseek-chat
+例如理论上可以配置：
+analysis   → DeepSeek
+generation → GPT-4o
+evaluation → GPT-4o-mini
+vision     → GPT-4o
+配置优先级则是：
+API 运行时注入 > 环境变量 > 代码默认值
+对应实现见 [config_manager.py (line 220)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/config_manager.py:220)。
+Provider 层有统一抽象：
+BaseProvider
+├── OpenAIProvider
+├── AnthropicProvider
+├── CohereProvider
+└── CustomProvider
+其中 OpenAI、DeepSeek、Azure OpenAI 都可以走 OpenAI-compatible SDK，只需要更换：
+
+- api_key
+- base_url
+- model
+工厂实现在 [providers/__init__.py (line 24)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/providers/__init__.py:24)。
+需要诚实说明：
+- 当前真正完整实现的是 OpenAI-compatible Provider
+- Anthropic 目前主要是预留占位
+- 实际 Failover 链只配置了 DeepSeek 和 OpenAI
+- 注释里提到的本地 Llama 没有真正进入默认 Failover 链
+
+4. 预算检查与自动降级
+预算以 workspace_id 为维度，维护：
+
+- 月预算金额
+- 当前累计成本
+- 告警阈值
+- 是否自动降级
+调用前先检查当前预算：
+预算使用率 < 告警阈值
+    → 使用原模型
+
+预算达到告警阈值，例如 90%
+    → alert=true
+    → 可自动换成低成本模型
+
+预算达到 100%
+    → within_budget=false
+    → 自动降级
+模型降级映射是：
+gpt-4o        → deepseek-chat
+deepseek-chat → gpt-4o-mini
+gpt-4o-mini   → gpt-4o-mini
+调用完成后再把本次真实成本累计进去。
+实现见 [budget_controller.py (line 56)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/budget_controller.py:56)。
+它和限流的区别是：
+
+- 限流控制短时间并发和吞吐
+- 预算控制长期累计成本
+- 限流超出通常拒绝请求
+- 预算超出优先降级到便宜模型，而不是直接拒绝
+当前预算也是内存实现，没有真正按自然月重置，也没有跨实例共享。面试时可以说这是完整的控制接口和原型实现，生产环境应持久化到 PostgreSQL/Redis。
+
+5. “语义缓存”到底怎么实现
+缓存 Key 是：
+SHA256(task_type + "::" + prompt)
+默认：
+
+- TTL：1 小时
+- 最大容量：1000 条
+- 满了删除最老条目
+- 缓存命中成本为 0，不调用 Provider
+代码在 [cache.py (line 10)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/cache.py:10)。
+但严格来说，当前不是“语义缓存”，而是“Prompt 精确匹配缓存”：
+“什么是 Redis？”
+“请解释一下 Redis”
+语义接近但字符串不同，不会命中。
+所以面试时最好说：
+当前完成的是语义缓存接口和精确哈希版本，后续可以把 Key 查询升级成 Embedding 相似度匹配，并在 Key 中加入租户、模型、Prompt 版本和温度参数。
+
+还有一个安全细节：当前缓存 Key 没包含 workspace_id，如果不同租户提交完全相同 Prompt，会共享缓存结果。对于通用问答没问题，但如果 Prompt 包含不同租户上下文，就存在隔离风险。
+6. Circuit Breaker 熔断器
+每个 Provider 有独立熔断器：
+provider:deepseek
+provider:openai
+provider:anthropic
+provider:cohere
+状态机是：
+CLOSED
+  │ 连续失败 3 次
+  ↓
+OPEN
+  │ 等待 30 秒
+  ↓
+HALF_OPEN
+  │
+  ├─ 试探成功 → CLOSED
+  └─ 试探失败 → OPEN
+实现见 [circuit_breaker.py (line 44)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/core/circuit_breaker.py:44)。
+熔断的作用不是“修复 Provider”，而是：
+已知某个 Provider 持续失败时，不让后续请求继续等待它超时，快速失败并切换备用 Provider，防止故障放大。
+
+例如 DeepSeek 连续超时，如果没有熔断器，每个请求可能都要等 60 秒；熔断后，新请求立即跳过 DeepSeek。
+7. Failover 故障切换
+默认链路是：
+Primary
+DeepSeek / deepseek-chat
+        ↓ 失败
+Fallback
+OpenAI / gpt-4o-mini
+        ↓ 失败
+返回“服务暂不可用”
+初始化在 [LLM Gateway (line 116)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:116)。
+实际执行过程：
+get_target("llm")
+        ↓
+选择当前健康且优先级最高的 Provider
+        ↓
+检查该 Provider 的 Circuit Breaker
+        ↓
+ProviderFactory 创建 Provider
+        ↓
+breaker.call(provider.complete)
+        ↓
+成功：直接返回
+失败：record_failure，把目标标为不健康
+        ↓
+下一轮选择后备 Provider
+最多循环 3 次，代码在 [LLM Gateway (line 491)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:491)。
+Failover 和熔断的区别是：
+
+- 熔断器负责判断“这个 Provider 当前是否应该继续尝试”
+- Failover 负责判断“这个 Provider 不可用后应该换谁”
+- 两者组合才构成高可用调用链
+当前实现有一个集成层面的不足：Failover 第一次失败就会把目标标为不健康，而熔断器需要累计 3 次失败才打开。因此多数情况下 Failover 会先把 Provider 跳过，熔断器不一定能累计到阈值。更合理的设计是由熔断器统一管理失败计数，Failover 只读取熔断状态。
+二、7 项护栏分别起什么作用
+护栏 阶段 作用 当前行为
+PromptInjection 前置 检测提示词注入 命中后直接阻断
+PIIDetector 前置 检测身份证、手机、银行卡、邮箱 产生脱敏文本；实际 Provider 脱敏主要由 DataMaskingEngine 完成
+TimeoutGuardrail 前置 检查熔断/超时状态 已注册，但默认没有绑定具体熔断器
+ContentSafety 后置 检测 API Key、密码、Token、私钥 命中后用 [MASKED] 替换
+OutputValidator 后置 期望 JSON 时校验格式 当前只产生 warning，不自动修复
+EmptyResponse 后置 检测空响应 当前只产生 warning
+RetryDecision 后置 根据空响应、JSON 错误、超时决定重试/降级 有决策类，但尚未真正接入 Gateway 的重试循环
+
+这里面真正形成强制动作的主要是：
+
+- Prompt Injection 阻断
+- DataMaskingEngine 输入脱敏
+- Content Safety 输出脱敏
+- Failover 层的异常重试和 Provider 切换
+而 JSON 修复、空响应重试、TimeoutGuardrail 目前更接近“接口和策略已定义，但闭环尚未完全打通”。
+面试时不要简单说“7 项护栏都实现了自动阻断与修复”。更准确的说法是：
+Gateway 注册了 7 类可插拔护栏，其中注入阻断、输入脱敏和敏感输出遮蔽已经进入主调用链；格式校验、空响应和重试决策目前完成了检测与策略抽象，自动修复闭环还需要继续完善。
+
+三、成本追踪是怎么做的
+Provider 返回：
+input_tokens
+output_tokens
+model
+cost
+Gateway 再做三类记录。
+
+1. 单次调用记录
+CostTracker 保存：
+
+- 模型名称
+- 输入 Token
+- 输出 Token
+- 估算成本
+- task_type
+- workspace_id
+- layer
+- node
+- 时间
+所以可以回答：
+这个月 planning 层用了多少钱？
+evaluation 哪个节点最贵？
+某个 workspace 消耗了多少 Token？
+
+2. Prometheus 指标
+主要记录：
+
+- LLM 调用次数
+- 成功/失败
+- 输入输出 Token
+- 不同模型的成本
+- 调用耗时
+
+3. OpenTelemetry Trace
+每次 Gateway 调用创建 CLIENT span，并写入：
+
+- task_type
+- workspace_id
+- layer
+- node
+- 实际模型
+- Token 数
+- 成本
+- 是否缓存命中
+- 是否预算降级
+- 是否触发护栏
+- 是否发生熔断
+这样一条 PRD→TSD 任务可以从主图节点一直追踪到具体 Provider 调用。
+
 ## 3.1 统一交互入口与意图分类链路
 
 ### 链路解决什么问题
@@ -80,9 +385,9 @@ API 层已确定意图时，会把 `intent`、`intent_confidence` 和 `intent_su
 
 常见追问：
 
-- **为什么不全部用 LLM 分类？** 强规则处理 URL、doc_id 和明显关键词更快、更便宜，也更可预测；LLM 只补规则覆盖不到的模糊表达。
-- **规则和 LLM 结果冲突怎么办？** 强信号优先，普通规则达到阈值也直接采用；只有低置信度结果交给 LLM，避免两套分类器来回覆盖。
-- **为什么复杂任务只返回 task_id？** Analysis 到 Evaluation 有多次模型调用、人工中断和重试，持有 HTTP 请求容易超时；task_id 让状态查询和 SSE 订阅与后台执行解耦。
+- __为什么不全部用 LLM 分类？__ 强规则处理 URL、doc_id 和明显关键词更快、更便宜，也更可预测；LLM 只补规则覆盖不到的模糊表达。
+- __规则和 LLM 结果冲突怎么办？__ 强信号优先，普通规则达到阈值也直接采用；只有低置信度结果交给 LLM，避免两套分类器来回覆盖。
+- __为什么复杂任务只返回 task_id？__ Analysis 到 Evaluation 有多次模型调用、人工中断和重试，持有 HTTP 请求容易超时；task_id 让状态查询和 SSE 订阅与后台执行解耦。
 
 关键文件：`app/api/routes/interact.py`、`app/api/schemas/interact.py`、`app/orchestrator/intent_classifier.py`、`app/orchestrator/nodes/intent_classify.py`。
 
@@ -191,13 +496,13 @@ TimeoutGuardrail 的名字容易误导：它本身不包裹网络超时，而是
 
 常见追问：
 
-- **为什么是主图加子图，而不是一个大图？** 主图只负责跨阶段路由和生命周期，子图封装本领域状态与节点；这样 Analysis 或 Generation 可以独立测试和替换。
-- **Adapter 是不是多余的一层？** 它隔离 `OrchestratorState` 与各层 State，明确字段映射、进度和错误边界，否则所有节点都会耦合主状态结构。
-- **熔断和 Failover 有什么区别？** 熔断按 Provider 记录健康状态并快速拒绝故障目标；Failover 在一次请求内按备用链换 Provider。没有熔断会反复撞故障服务，没有 Failover 则熔断后请求只能失败。
-- **缓存为什么还要带 guardrail 版本？** 护栏规则更新后，旧缓存可能不再符合当前安全要求；把版本放进隔离维度可以自然失效旧策略结果。
-- **限流为什么要先预留再校正？** 并发请求开始时还没有真实 usage；如果都等结束再记账，会同时穿透 TPM。先按输入估算和 max_tokens 占位，结束后替换成真实值，可以控制突发并减少长期误差。
-- **七项护栏是不是都会自动重试？** 不是。当前 Prompt 注入和无可用熔断器会直接拦截，PII/密钥会脱敏，JSON/空响应主要产生检查结果；RetryDecision 尚未接成自动重试循环，实际容错依赖 Gateway Failover 和业务层重跑。
-- **语义缓存会不会把 A 租户答案给 B 租户？** 候选查询和精确 key 都含 workspace、task_type、模型、Embedding 模型及护栏版本；没有 workspace 时直接禁止持久化语义命中，只保留本进程精确缓存。
+- __为什么是主图加子图，而不是一个大图？__ 主图只负责跨阶段路由和生命周期，子图封装本领域状态与节点；这样 Analysis 或 Generation 可以独立测试和替换。
+- __Adapter 是不是多余的一层？__ 它隔离 `OrchestratorState` 与各层 State，明确字段映射、进度和错误边界，否则所有节点都会耦合主状态结构。
+- __熔断和 Failover 有什么区别？__ 熔断按 Provider 记录健康状态并快速拒绝故障目标；Failover 在一次请求内按备用链换 Provider。没有熔断会反复撞故障服务，没有 Failover 则熔断后请求只能失败。
+- __缓存为什么还要带 guardrail 版本？__ 护栏规则更新后，旧缓存可能不再符合当前安全要求；把版本放进隔离维度可以自然失效旧策略结果。
+- __限流为什么要先预留再校正？__ 并发请求开始时还没有真实 usage；如果都等结束再记账，会同时穿透 TPM。先按输入估算和 max_tokens 占位，结束后替换成真实值，可以控制突发并减少长期误差。
+- __七项护栏是不是都会自动重试？__ 不是。当前 Prompt 注入和无可用熔断器会直接拦截，PII/密钥会脱敏，JSON/空响应主要产生检查结果；RetryDecision 尚未接成自动重试循环，实际容错依赖 Gateway Failover 和业务层重跑。
+- __语义缓存会不会把 A 租户答案给 B 租户？__ 候选查询和精确 key 都含 workspace、task_type、模型、Embedding 模型及护栏版本；没有 workspace 时直接禁止持久化语义命中，只保留本进程精确缓存。
 
 关键文件：`app/task_manager.py`、`app/orchestrator/main_graph.py`、`app/orchestrator/state.py`、`app/orchestrator/adapters/*.py`、`app/llm_gateway/__init__.py`。
 
@@ -236,7 +541,7 @@ TimeoutGuardrail 的名字容易误导：它本身不包裹网络超时，而是
 上传链调用 `build_from_bytes(content, filename, workspace_id, document_id)`。方法先根据文件名最后一个 `.` 取得小写扩展名，再调用 `multi_format_loader.extract_text()`。这里没有通用的“智能解析器”，而是按扩展名进入明确分支：
 
 | 文件类型 | 当前解析方式 | 产生的文本 |
-|---|---|---|
+| --- | --- | --- |
 | `.md` / `.txt` | `content.decode("utf-8", errors="replace")` | 原文本基本原样保留；非法 UTF-8 字节替换为替代字符，不做编码探测 |
 | `.csv` / `.tsv` | 标准库 `csv.reader`，分隔符分别为逗号和 Tab | 每行去掉空单元格和首尾空白，转换成 `记录: 单元格1，单元格2。`；表头不会被特殊识别 |
 | `.docx` | `python-docx` 从 `BytesIO` 打开 | 先按 `doc.paragraphs` 收集非空段落，再遍历所有表格行，转换成 `表格行: 单元格1，单元格2` |
@@ -308,10 +613,10 @@ PGVector 首先执行 `CREATE EXTENSION IF NOT EXISTS vector`，并确保三张�
 
 常见追问：
 
-- **为什么先分块再抽取？** 整篇文档可能超过上下文且主题混杂；段落块能控制 Token、提高抽取聚焦度，并保留 Claim 到原文的来源定位。
-- **实体消歧怎么做？** 当前以规范化名称精确匹配和别名匹配为主，命中后合并属性、描述和置信度；还不是向量相似度或图上下文驱动的高级实体对齐。
-- **写 Neo4j 和 PGVector 会不会不一致？** 两边不是分布式事务，任一步失败都可能造成部分完成；当前依靠任务失败和重新入图恢复，生产化应增加阶段状态、幂等 upsert 和补偿任务。
-- **Embedding 失败为什么还能继续？** 原文件与结构化实体仍有价值，返回零向量是一种可用性降级；但零向量不能视为正常索引，应通过状态和监控安排重建。
+- __为什么先分块再抽取？__ 整篇文档可能超过上下文且主题混杂；段落块能控制 Token、提高抽取聚焦度，并保留 Claim 到原文的来源定位。
+- __实体消歧怎么做？__ 当前以规范化名称精确匹配和别名匹配为主，命中后合并属性、描述和置信度；还不是向量相似度或图上下文驱动的高级实体对齐。
+- __写 Neo4j 和 PGVector 会不会不一致？__ 两边不是分布式事务，任一步失败都可能造成部分完成；当前依靠任务失败和重新入图恢复，生产化应增加阶段状态、幂等 upsert 和补偿任务。
+- __Embedding 失败为什么还能继续？__ 原文件与结构化实体仍有价值，返回零向量是一种可用性降级；但零向量不能视为正常索引，应通过状态和监控安排重建。
 
 关键文件：`app/knowledge_layer/pipeline.py`、`app/knowledge_layer/ingestion/*.py`、`app/knowledge_layer/graph_store.py`、`app/knowledge_layer/vector_store.py`。
 
@@ -400,10 +705,10 @@ Gateway 在 Rewriter、Embedding、Global Summary 和 Reflection 四处出现；
 
 常见追问：
 
-- **为什么不用加权平均而用 RRF？** Neo4j、余弦相似度和 LLM Global 结果的原始分数含义不同；RRF 只依赖名次，不要求先校准分数尺度。
-- **为什么检索后还要 Reflection？** 初次召回可能主题接近但没回答问题，Judge 能判断覆盖度并生成更合适的查询；设置最大轮数防止无限自我检索。
-- **为什么 Reflection 失败默认 accept？** 它是增强步骤，不是正确性的唯一来源。默认 accept 能保留已有召回结果，避免 Judge 故障拖垮问答。
-- **workspace 隔离在哪里做？** Neo4j、PGVector 查询和语义缓存都应带 workspace；不能先跨租户召回再在应用层过滤，否则既有泄露风险又浪费召回名额。
+- __为什么不用加权平均而用 RRF？__ Neo4j、余弦相似度和 LLM Global 结果的原始分数含义不同；RRF 只依赖名次，不要求先校准分数尺度。
+- __为什么检索后还要 Reflection？__ 初次召回可能主题接近但没回答问题，Judge 能判断覆盖度并生成更合适的查询；设置最大轮数防止无限自我检索。
+- __为什么 Reflection 失败默认 accept？__ 它是增强步骤，不是正确性的唯一来源。默认 accept 能保留已有召回结果，避免 Judge 故障拖垮问答。
+- __workspace 隔离在哪里做？__ Neo4j、PGVector 查询和语义缓存都应带 workspace；不能先跨租户召回再在应用层过滤，否则既有泄露风险又浪费召回名额。
 
 关键文件：`app/knowledge_layer/pipeline.py`、`app/knowledge_layer/retrieval/*.py`、`app/knowledge_layer/vector_store.py`。
 
@@ -433,7 +738,7 @@ parse
 `parse` 负责把原始 PRD 规范化为可分析内容；`lang_detect` 识别语言并在需要时翻译；`requirement` 提取功能与非功能需求；`constraint` 识别技术、业务、时间和合规约束；`dependency` 分析需求之间的前置关系；`domain` 判断业务领域；`quality` 给需求质量打分；`effort` 估算工作量；`stakeholder` 识别角色与关注点；`clarity` 找出歧义和需要澄清的信息；最后 `assemble` 组装统一的 `AnalysisResultDetail`。
 
 | 节点 | 主要输入 | 主要产出 | 下游用途 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | parse / lang_detect | 原始 PRD | 规范文本、语言、必要时的译文 | 给后续节点统一语料 |
 | requirement / constraint | 规范文本 + 知识上下文 | 功能/非功能需求、硬约束 | Planning 的技术选型和组件拆分依据 |
 | dependency / domain | 需求列表 | 前置关系、业务领域 | 安排组件边界与实施顺序 |
@@ -448,7 +753,7 @@ parse
 各智能节点送入模型的内容和降级值如下：
 
 | 节点 | 实际输入裁剪 | 写回字段 | 模型/解析失败时 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | requirement | `prd_raw[:8000]` | `extracted_requirements` | 写空列表 |
 | constraint | `prd_raw[:6000]` | `extracted_constraints` | 写空列表 |
 | dependency | 每条需求的 ID 和前 100 字符描述 | `dependency_graph` | 写空 DependencyGraph；没有需求时不调用模型 |
@@ -492,10 +797,10 @@ Analysis 图创建共享的 `GatewayChatModel(task_type="analysis", layer="analy
 
 常见追问：
 
-- **为什么这些节点串行，不全部并行？** dependency、quality、effort 等节点需要前面已经抽取的需求或约束；存在数据依赖的节点串行更稳，真正无依赖的部分才适合并行。
-- **Gateway 输出护栏和 Pydantic parser 有什么区别？** 护栏解决安全、空响应和通用格式问题；Pydantic 校验业务字段、枚举和嵌套结构。前者是平台治理，后者是领域契约。
-- **某个节点失败会怎样？** Gateway 先处理超时、熔断和 Provider 切换；仍失败时节点记录错误并由图的异常策略决定终止或降级，不能用一份自由文本假装结构化结果成功。
-- **拆节点会不会太贵？** 会增加调用次数，所以配合 task_type 路由、语义缓存、低成本模型和逐节点成本指标；拆分换来的是可定位、可测试和可单独重跑。
+- __为什么这些节点串行，不全部并行？__ dependency、quality、effort 等节点需要前面已经抽取的需求或约束；存在数据依赖的节点串行更稳，真正无依赖的部分才适合并行。
+- __Gateway 输出护栏和 Pydantic parser 有什么区别？__ 护栏解决安全、空响应和通用格式问题；Pydantic 校验业务字段、枚举和嵌套结构。前者是平台治理，后者是领域契约。
+- __某个节点失败会怎样？__ Gateway 先处理超时、熔断和 Provider 切换；仍失败时节点记录错误并由图的异常策略决定终止或降级，不能用一份自由文本假装结构化结果成功。
+- __拆节点会不会太贵？__ 会增加调用次数，所以配合 task_type 路由、语义缓存、低成本模型和逐节点成本指标；拆分换来的是可定位、可测试和可单独重跑。
 
 关键文件：`app/analysis_layer/agent_graph.py`、`app/analysis_layer/models.py`、`app/analysis_layer/nodes/*.py`、`app/orchestrator/adapters/analysis_adapter.py`。
 
@@ -526,7 +831,7 @@ knowledge_augment
 `knowledge_augment` 把知识检索结果加入规划上下文；模式节点先推荐再确认架构风格；随后选择技术栈、拆分组件，并补齐成本、时间、人力技能和风险；最后设计数据结构、API 与部署方案。
 
 | 阶段 | 节点 | 核心产出 |
-|---|---|---|
+| --- | --- | --- |
 | 上下文增强 | knowledge_augment | 与需求相关的技术知识和历史上下文 |
 | 架构收敛 | pattern_recommend、pattern_confirm | 候选模式、理由和最终架构模式 |
 | 方案拆解 | tech_stack_select、component_decompose | 技术栈、组件边界和职责 |
@@ -539,7 +844,7 @@ knowledge_augment
 规划节点并非全部都用同一种输出方式：
 
 | 节点 | 实际决策方式与输入 | 保存位置 / 失败行为 |
-|---|---|---|
+| --- | --- | --- |
 | pattern_recommend | 只输入项目名、领域标签、需求数量，要求 2～3 个候选 | Pydantic 转成 PatternEval；异常为空列表 |
 | pattern_confirm | 不调用 LLM，直接对 `match_score` 取 max | 无候选时固定选择“分层架构” |
 | tech_stack_select | 输入项目、选定模式、领域，固定要求 backend/database/cache/MQ/frontend/testing/CI-CD/monitoring 八个维度 | 转成 TechChoiceDetail；异常为空列表 |
@@ -581,10 +886,10 @@ knowledge_augment
 
 常见追问：
 
-- **为什么先定架构模式再选技术栈？** 模式决定组件关系、部署方式和数据流，技术栈是实现手段；先选框架再想架构容易让方案被熟悉技术绑架。
-- **为什么自检回到 pattern_recommend，而不是只修最后一个字段？** 自检失败可能说明总体模式与组件设计不一致，需要从架构决策重新推导；最多三次保证图可终止。
-- **如何避免重规划得到完全相同的结果？** PlanningAdapter 注入上一轮评测的 critical issues、recommendations 和分数；Prompt 必须明确要求针对反馈修改。相同调用还可能命中缓存，因此缓存 Key/Prompt 中要包含反馈。
-- **14 个节点性能会不会差？** 当前多数串行，优点是依赖清晰；成本、时间、技能和部分风险分析可在状态契约稳定后并行化，但并行时仍受 Gateway 的 workspace RPM/TPM 控制。
+- __为什么先定架构模式再选技术栈？__ 模式决定组件关系、部署方式和数据流，技术栈是实现手段；先选框架再想架构容易让方案被熟悉技术绑架。
+- __为什么自检回到 pattern_recommend，而不是只修最后一个字段？__ 自检失败可能说明总体模式与组件设计不一致，需要从架构决策重新推导；最多三次保证图可终止。
+- __如何避免重规划得到完全相同的结果？__ PlanningAdapter 注入上一轮评测的 critical issues、recommendations 和分数；Prompt 必须明确要求针对反馈修改。相同调用还可能命中缓存，因此缓存 Key/Prompt 中要包含反馈。
+- __14 个节点性能会不会差？__ 当前多数串行，优点是依赖清晰；成本、时间、技能和部分风险分析可在状态契约稳定后并行化，但并行时仍受 Gateway 的 workspace RPM/TPM 控制。
 
 关键文件：`app/planning_layer/agent_graph.py`、`app/planning_layer/models.py`、`app/planning_layer/output_models.py`、`app/planning_layer/nodes/*.py`。
 
@@ -623,7 +928,7 @@ outline
 后续节点分别生成 Mermaid 等图表、代码脚手架，检查章节与规划的一致性，根据问题修订，再组装统一文档并导出 Markdown、DOCX、PDF 等格式。GenerationAdapter 把 `generation_result`、章节内容和导出结果写回主状态，进度更新为 0.75。
 
 | 节点 | 职责 | 并行/串行原因 |
-|---|---|---|
+| --- | --- | --- |
 | outline | 根据 Analysis 和 Planning 生成章节目录 | 必须先完成，后续章节依赖它 |
 | section_writer | 按章节目标生成 Markdown 正文 | 章节之间弱依赖，使用 Send 并行 |
 | diagram / code_scaffold | 补架构图与代码骨架 | 依赖已合并的正文和规划结果 |
@@ -664,11 +969,11 @@ GenerationAdapter 会保留上轮 section_contents，实现迭代续写，并注
 
 常见追问：
 
-- **Send 和普通 asyncio.gather 有什么区别？** Send 是 LangGraph 的动态扇出，分支结果仍进入图状态和 reducer，便于 checkpoint、追踪和后续 fan-in；不是在节点内部偷偷创建一组无状态协程。
-- **为什么需要 reducer？** 多个章节并行返回时都要更新 `section_contents`。如果直接覆盖同一字段会冲突，`merge_contents` 按 section_id 合并增量。
-- **并行会不会把模型配额打爆？** 每个分支仍经过 workspace RPM/TPM 预留；超过当前限额时 Gateway 会拒绝调用，预算接近阈值时还可以触发低成本模型降级。
-- **为什么说是流式但首包仍可能慢？** Provider chunk 先在 Gateway 缓冲，完整输出过后置护栏才释放；随后 SectionWriter 又按约 200 字符发布业务事件，这是安全流式而非原始 token 实时透传。
-- **重生成为什么能跳过章节？** fan-out 会检查已有 `section_contents`，只为缺失目标创建 Send；但若评测要求修改已有章节，还需要显式标记该章节无效或进入 revision，不能仅靠“已存在就跳过”。
+- __Send 和普通 asyncio.gather 有什么区别？__ Send 是 LangGraph 的动态扇出，分支结果仍进入图状态和 reducer，便于 checkpoint、追踪和后续 fan-in；不是在节点内部偷偷创建一组无状态协程。
+- __为什么需要 reducer？__ 多个章节并行返回时都要更新 `section_contents`。如果直接覆盖同一字段会冲突，`merge_contents` 按 section_id 合并增量。
+- __并行会不会把模型配额打爆？__ 每个分支仍经过 workspace RPM/TPM 预留；超过当前限额时 Gateway 会拒绝调用，预算接近阈值时还可以触发低成本模型降级。
+- __为什么说是流式但首包仍可能慢？__ Provider chunk 先在 Gateway 缓冲，完整输出过后置护栏才释放；随后 SectionWriter 又按约 200 字符发布业务事件，这是安全流式而非原始 token 实时透传。
+- __重生成为什么能跳过章节？__ fan-out 会检查已有 `section_contents`，只为缺失目标创建 Send；但若评测要求修改已有章节，还需要显式标记该章节无效或进入 revision，不能仅靠“已存在就跳过”。
 
 关键文件：`app/generation_layer/agent_graph.py`、`app/generation_layer/models.py`、`app/generation_layer/nodes/section_writer.py`、`app/generation_layer/nodes/*.py`。
 
@@ -706,7 +1011,7 @@ EvaluationState
 综合评分实际口径是“9 个并行维度 + completeness 补充维度”。Scoring 优先使用子节点分数，LLM 只补缺失项，并返回结论、P0 覆盖率、问题和建议。九个核心维度使用显式权重，其中 PRD 覆盖率和一致性各 20%，可行性和安全性各 15%，其余维度合计 30%；completeness 不参与当前显式加权。
 
 | 评测维度 | 主要检查内容 | 常见回流方向 |
-|---|---|---|
+| --- | --- | --- |
 | PRD 覆盖率 / completeness | 需求是否遗漏、关键章节是否缺失 | Generation 补写，严重遗漏时回 Analysis |
 | 一致性 | 章节、接口、数据模型、技术栈是否互相冲突 | Generation 修订或 Planning 重做 |
 | 可行性 / 可实施性 | 方案是否能开发、部署和运维 | Planning 调整技术与组件 |
@@ -719,7 +1024,7 @@ EvaluationState
 九个维度实际看到的数据比名称更重要：
 
 | 维度 | 实际输入给 Judge 的数据 |
-|---|---|
+| --- | --- |
 | prd_coverage | Analysis 中全部需求的 ID + 前 100 字符描述，以及最终 TSD 的前 2000 字符 |
 | consistency | Planning 的架构模式、技术栈名称和组件名，不读取最终 TSD 正文 |
 | feasibility | 技术栈名称和架构模式 |
@@ -765,11 +1070,11 @@ EvaluationAdapter 把报告写回主状态并令 `iteration_count += 1`。主图
 
 常见追问：
 
-- **为什么评测要并行？** 九个维度主要读取同一份 PRD、规划和 TSD，彼此没有前置依赖；并行后耗时接近最慢维度，而不是九次调用相加。
-- **一个维度失败会让整次评测失败吗？** Gateway 先在该调用内 Failover；仍缺失时其他维度照常合并，Scoring 尝试补齐。若关键维度无法得到可信分数，应标记降级而非伪造满分。
-- **历史校准为什么有用？** LLM Judge 单次分数会漂移，和近期均值混合能降低抖动；但必须按 workspace、任务类型或 rubric 版本隔离，当前全局历史口径还不完整。
-- **怎么避免模型自己生成、自己打高分？** 使用明确 rubric、低温度、不同评测模型或 Provider、固定回归数据集和人工抽样；当前实现主要完成多维 Judge 与历史校准，不应夸大为完全客观。
-- **0～10 与 70/85 阈值怎么解释？** 这是当前实现的量纲缺口，应该统一乘 10 或把阈值改为 7/8.5；面试中应主动指出，而不是声称闭环已经正确。
+- __为什么评测要并行？__ 九个维度主要读取同一份 PRD、规划和 TSD，彼此没有前置依赖；并行后耗时接近最慢维度，而不是九次调用相加。
+- __一个维度失败会让整次评测失败吗？__ Gateway 先在该调用内 Failover；仍缺失时其他维度照常合并，Scoring 尝试补齐。若关键维度无法得到可信分数，应标记降级而非伪造满分。
+- __历史校准为什么有用？__ LLM Judge 单次分数会漂移，和近期均值混合能降低抖动；但必须按 workspace、任务类型或 rubric 版本隔离，当前全局历史口径还不完整。
+- __怎么避免模型自己生成、自己打高分？__ 使用明确 rubric、低温度、不同评测模型或 Provider、固定回归数据集和人工抽样；当前实现主要完成多维 Judge 与历史校准，不应夸大为完全客观。
+- __0～10 与 70/85 阈值怎么解释？__ 这是当前实现的量纲缺口，应该统一乘 10 或把阈值改为 7/8.5；面试中应主动指出，而不是声称闭环已经正确。
 
 关键文件：`app/evaluation/agent_graph.py`、`app/evaluation/scoring.py`、`app/evaluation/score_calibrator.py`、`app/evaluation/score_history.py`、`app/evaluation/nodes/*.py`。
 
@@ -832,10 +1137,10 @@ Analysis 审核上下文包含分析结果以及需求、约束数量；Planning
 
 常见追问：
 
-- **暂停时占用线程或协程吗？** 不占用等待线程。`interrupt` 把状态交给 checkpointer 后结束当前执行，恢复请求到来时再启动后续运行。
-- **task_id 和 thread_id 为什么不能合并？** task_id 面向 API、数据库和事件订阅；thread_id 面向 LangGraph checkpoint。分开后业务任务标识不受图执行实现影响。
-- **进程重启后还能恢复吗？** PostgreSQL Checkpointer 可以；降级使用 MemorySaver 时状态只在当前进程内，重启会丢失。
-- **审核拒绝会自动返工吗？** 当前 `needs_changes` 会记录意见和暂停状态，但审核节点后的条件边尚未完整回到 Analysis/Planning，属于已识别的实现边界。
+- __暂停时占用线程或协程吗？__ 不占用等待线程。`interrupt` 把状态交给 checkpointer 后结束当前执行，恢复请求到来时再启动后续运行。
+- __task_id 和 thread_id 为什么不能合并？__ task_id 面向 API、数据库和事件订阅；thread_id 面向 LangGraph checkpoint。分开后业务任务标识不受图执行实现影响。
+- __进程重启后还能恢复吗？__ PostgreSQL Checkpointer 可以；降级使用 MemorySaver 时状态只在当前进程内，重启会丢失。
+- __审核拒绝会自动返工吗？__ 当前 `needs_changes` 会记录意见和暂停状态，但审核节点后的条件边尚未完整回到 Analysis/Planning，属于已识别的实现边界。
 
 关键文件：`app/orchestrator/human_review.py`、`app/orchestrator/routing.py`、`app/api/routes/review.py`、`app/task_manager.py`、`app/orchestrator/main_graph.py`。
 
@@ -905,10 +1210,10 @@ SaveSession 自行从 connection_manager 创建数据库会话，不依赖 check
 
 常见追问：
 
-- **为什么只取最近 50 条后再排序？** 先用数据库窗口控制候选规模，再做混合排序，避免长会话每次对全部历史做 Embedding 或 LLM 判断。
-- **三个分数为什么这样配？** relevance 权重最高保证回答当前问题，recency 防止旧信息压过新决策，importance 保留关键约束；权重是工程初值，需要用真实会话评测调优。
-- **摘要会不会丢信息？** 会，所以最新消息设为保护区，旧内容才进入 summarize；摘要失败再降级 rolling/truncate。关键业务决策更适合额外结构化保存，而不是只依赖自然语言摘要。
-- **当前真的用了向量记忆吗？** 默认依赖注入没有 vector_store 和 Gateway，通常会降级到关键词、时间分和默认重要度，面试时必须说明这是可扩展设计与当前装配之间的差距。
+- __为什么只取最近 50 条后再排序？__ 先用数据库窗口控制候选规模，再做混合排序，避免长会话每次对全部历史做 Embedding 或 LLM 判断。
+- __三个分数为什么这样配？__ relevance 权重最高保证回答当前问题，recency 防止旧信息压过新决策，importance 保留关键约束；权重是工程初值，需要用真实会话评测调优。
+- __摘要会不会丢信息？__ 会，所以最新消息设为保护区，旧内容才进入 summarize；摘要失败再降级 rolling/truncate。关键业务决策更适合额外结构化保存，而不是只依赖自然语言摘要。
+- __当前真的用了向量记忆吗？__ 默认依赖注入没有 vector_store 和 Gateway，通常会降级到关键词、时间分和默认重要度，面试时必须说明这是可扩展设计与当前装配之间的差距。
 
 关键文件：`app/orchestrator/nodes/retrieve_memory.py`、`app/orchestrator/nodes/memory_context.py`、`app/orchestrator/nodes/compress_memory.py`、`app/orchestrator/nodes/save_session.py`、`app/session_history/*.py`。
 
@@ -971,10 +1276,10 @@ Gateway 决定“模型内容什么时候安全可见”，EventBus/SSE 决定�
 
 常见追问：
 
-- **为什么不用 WebSocket？** 当前交互主要是服务端推事件，用户审核可另走 POST；SSE 基于 HTTP、代理兼容和调试成本更低。
-- **慢客户端怎么办？** 每个订阅者队列最多 128 条，满后丢新事件而不阻塞生产者；最终结果应从任务查询接口补偿，而不能把 SSE 当可靠消息队列。
-- **多实例部署有什么问题？** EventBus 是进程内内存结构，发布者和订阅连接落到不同实例就收不到事件；需换 Redis Streams/PubSub 或 Kafka，并设计 sequence ID 和重放。
-- **模型流和 SSE 流是一回事吗？** 不是。Gateway 先把 Provider 输出变成安全 chunk，业务节点再封装为事件，EventBus 最后通过 SSE 传输，三层失败点不同。
+- __为什么不用 WebSocket？__ 当前交互主要是服务端推事件，用户审核可另走 POST；SSE 基于 HTTP、代理兼容和调试成本更低。
+- __慢客户端怎么办？__ 每个订阅者队列最多 128 条，满后丢新事件而不阻塞生产者；最终结果应从任务查询接口补偿，而不能把 SSE 当可靠消息队列。
+- __多实例部署有什么问题？__ EventBus 是进程内内存结构，发布者和订阅连接落到不同实例就收不到事件；需换 Redis Streams/PubSub 或 Kafka，并设计 sequence ID 和重放。
+- __模型流和 SSE 流是一回事吗？__ 不是。Gateway 先把 Provider 输出变成安全 chunk，业务节点再封装为事件，EventBus 最后通过 SSE 传输，三层失败点不同。
 
 关键文件：`app/streaming/event_bus.py`、`app/streaming/sse.py`、`app/streaming/models.py`、`app/api/routes/interact.py`、`app/generation_layer/nodes/section_writer.py`。
 
@@ -1047,11 +1352,11 @@ Celery broker 和 result backend 都使用 REDIS_URL。Worker 是同步 Celery t
 
 常见追问：
 
-- **为什么先存原文件再发 Celery？** Worker 只需要 document_id 就能从数据库和 MinIO 重建输入；任务失败或服务重启后仍可重试，不依赖上传请求内存中的字节。
-- **如何去重？** 对原始字节计算 SHA-256，并在 workspace 内查询。相同内容跨租户不共用业务记录，避免数据归属混乱。
-- **Gateway Failover 和 Celery retry 有什么区别？** Failover 在单次 LLM 调用内切 Provider；Celery retry 在整次入图失败后重跑，包括存储、解析和数据库异常。
-- **重复消费任务会不会重复入库？** 当前依赖文档记录和底层 upsert/重建行为，生产上还应把 document_id、chunk_id、entity key 设计成稳定幂等键，并记录各阶段完成状态。
-- **上传成功是否代表可检索？** 不是。上传成功只代表原文件和记录已保存，必须等 `processing_status=indexed`。
+- __为什么先存原文件再发 Celery？__ Worker 只需要 document_id 就能从数据库和 MinIO 重建输入；任务失败或服务重启后仍可重试，不依赖上传请求内存中的字节。
+- __如何去重？__ 对原始字节计算 SHA-256，并在 workspace 内查询。相同内容跨租户不共用业务记录，避免数据归属混乱。
+- __Gateway Failover 和 Celery retry 有什么区别？__ Failover 在单次 LLM 调用内切 Provider；Celery retry 在整次入图失败后重跑，包括存储、解析和数据库异常。
+- __重复消费任务会不会重复入库？__ 当前依赖文档记录和底层 upsert/重建行为，生产上还应把 document_id、chunk_id、entity key 设计成稳定幂等键，并记录各阶段完成状态。
+- __上传成功是否代表可检索？__ 不是。上传成功只代表原文件和记录已保存，必须等 `processing_status=indexed`。
 
 关键文件：`app/api/routes/documents.py`、`app/document_management/service.py`、`app/document_management/storage.py`、`app/document_management/deduplication.py`、`app/batch/tasks.py`。
 
@@ -1114,11 +1419,11 @@ SSRF 校验和网页抓取发生在 Gateway 之前，因为 Gateway 只治理模
 
 常见追问：
 
-- **为什么校验域名后还要校验解析 IP？** 攻击者可以使用一个看似公网的域名解析到 127.0.0.1、10.x 或云元数据地址；只做字符串黑名单不够。
-- **为什么重定向还要逐跳校验？** 初始公网地址可能返回 302 指向内网。如果 HTTP 客户端自动跟随而不重新校验，初次验证就被绕过。
-- **DNS Rebinding 是什么？** 校验时域名解析到公网 IP，真正连接时又解析到内网 IP；解决思路是绑定已验证 IP、限制重解析并校验证书/Host，而不只是重复调用 DNS。
-- **Prompt Injection 能防 SSRF 吗？** 不能。SSRF 是抓取阶段的网络安全问题；Prompt Injection 是正文进入模型后的指令安全问题，两层都要做。
-- **为什么保存为 Markdown？** 抓取结果已是清洗后的标题和正文，转为统一文本格式可以直接复用上传、去重、MinIO 和异步入图链路。
+- __为什么校验域名后还要校验解析 IP？__ 攻击者可以使用一个看似公网的域名解析到 127.0.0.1、10.x 或云元数据地址；只做字符串黑名单不够。
+- __为什么重定向还要逐跳校验？__ 初始公网地址可能返回 302 指向内网。如果 HTTP 客户端自动跟随而不重新校验，初次验证就被绕过。
+- __DNS Rebinding 是什么？__ 校验时域名解析到公网 IP，真正连接时又解析到内网 IP；解决思路是绑定已验证 IP、限制重解析并校验证书/Host，而不只是重复调用 DNS。
+- __Prompt Injection 能防 SSRF 吗？__ 不能。SSRF 是抓取阶段的网络安全问题；Prompt Injection 是正文进入模型后的指令安全问题，两层都要做。
+- __为什么保存为 Markdown？__ 抓取结果已是清洗后的标题和正文，转为统一文本格式可以直接复用上传、去重、MinIO 和异步入图链路。
 
 关键文件：`app/web_indexing/url_security.py`、`app/web_indexing/url_document.py`、`app/web_indexing/web_loader.py`、`app/api/routes/interact.py`、`tests/unit/test_url_security.py`。
 
@@ -1168,7 +1473,7 @@ Access Token 默认 15 分钟，Refresh Token 默认 7 天，使用 HS256 签名
 
 请求进入后，`AuthMiddleware` 从 Bearer Token 验签并把 user、org、workspace、permissions 写入 ASGI `request.scope`。`WorkspaceContextMiddleware` 只有在 JWT 没有 ws_id 时才允许从 `X-Workspace-ID` 或查询参数补充，避免请求头覆盖 Token 中已经认证的工作空间。
 
-具体来说，两个中间件都先用 `setdefault` 初始化 `auth.user_id`、`auth.org_id`、`auth.ws_id`、`auth.permissions`。认证中间件只识别严格以 `Bearer ` 开头的 Header，验证失败也不在中间件返回响应；WorkspaceContextMiddleware 按“Token 中的 ws_id → `X-Workspace-ID` → `?ws_id=`”的优先级补上下文。这个处理解决了上下文传递问题，但 Header/查询参数只是一个字符串，并没有在中间件查询 TeamMember，所以不能把“取得 workspace_id”和“证明用户属于该 workspace”混为一件事。
+具体来说，两个中间件都先用 `setdefault` 初始化 `auth.user_id`、`auth.org_id`、`auth.ws_id`、`auth.permissions`。认证中间件只识别严格以 `Bearer` 开头的 Header，验证失败也不在中间件返回响应；WorkspaceContextMiddleware 按“Token 中的 ws_id → `X-Workspace-ID` → `?ws_id=`”的优先级补上下文。这个处理解决了上下文传递问题，但 Header/查询参数只是一个字符串，并没有在中间件查询 TeamMember，所以不能把“取得 workspace_id”和“证明用户属于该 workspace”混为一件事。
 
 路由通过 `get_current_user` 强制已登录，通过 `require_permission("model_config:update")` 等依赖做权限判断。权限是 `workspace:read`、`prd:update` 这类字符串集合，角色负责聚合权限，属于 RBAC；workspace membership 检查可以作为资源属性判断，形成简单 ABAC。
 
@@ -1202,13 +1507,13 @@ PromptManager 先用 `{org_id}:{agent}:{node}` 查内存缓存；未命中时先
 
 常见追问：
 
-- **RBAC 和 ABAC 在这里怎么体现？** Role 聚合权限字符串属于 RBAC；再结合 workspace membership、资源 workspace_id 判断是否能操作具体对象，属于属性约束。
-- **为什么不允许请求头覆盖 JWT 中的 workspace？** 否则用户可能拿合法 Token 后通过改 Header 越权到别的租户。只有 Token 没有 ws_id 时才接受补充值，而且资源层仍需验证 membership。
-- **数据隔离只靠数据库 where 条件够吗？** 不够。Neo4j、PGVector、对象路径、Prompt、缓存、限流、预算和成本都要使用同一个 workspace_id，任何一层漏传都会形成串数据或资源抢占风险。
-- **Refresh Token 当前有什么问题？** 刷新时只按 user_id 签发新 Access Token，没有重新装载 org、workspace 和 permissions，刷新后声明会丢失；应重新查询当前 membership/role 后签发。
-- **退出登录为什么不能只让前端删 Token？** 已泄露的 Refresh Token 在过期前仍可使用；生产系统需要 Token version、jti 黑名单或服务端 Refresh Token 存储与撤销。
-- **为什么权限既放 JWT 又要查资源归属？** JWT 权限回答“能不能做某类操作”，资源归属回答“能不能操作这一条数据”。拥有 `prd:update` 不等于能修改其他 workspace 的 PRD，两者缺一不可。
-- **注册为什么多次 flush、最后一次 commit？** flush 让后续对象拿到 User、Organization、Workspace、Role 的 ID，但仍处于同一事务；最后统一 commit 才保证五类记录原子落库。
+- __RBAC 和 ABAC 在这里怎么体现？__ Role 聚合权限字符串属于 RBAC；再结合 workspace membership、资源 workspace_id 判断是否能操作具体对象，属于属性约束。
+- __为什么不允许请求头覆盖 JWT 中的 workspace？__ 否则用户可能拿合法 Token 后通过改 Header 越权到别的租户。只有 Token 没有 ws_id 时才接受补充值，而且资源层仍需验证 membership。
+- __数据隔离只靠数据库 where 条件够吗？__ 不够。Neo4j、PGVector、对象路径、Prompt、缓存、限流、预算和成本都要使用同一个 workspace_id，任何一层漏传都会形成串数据或资源抢占风险。
+- __Refresh Token 当前有什么问题？__ 刷新时只按 user_id 签发新 Access Token，没有重新装载 org、workspace 和 permissions，刷新后声明会丢失；应重新查询当前 membership/role 后签发。
+- __退出登录为什么不能只让前端删 Token？__ 已泄露的 Refresh Token 在过期前仍可使用；生产系统需要 Token version、jti 黑名单或服务端 Refresh Token 存储与撤销。
+- __为什么权限既放 JWT 又要查资源归属？__ JWT 权限回答“能不能做某类操作”，资源归属回答“能不能操作这一条数据”。拥有 `prd:update` 不等于能修改其他 workspace 的 PRD，两者缺一不可。
+- __注册为什么多次 flush、最后一次 commit？__ flush 让后续对象拿到 User、Organization、Workspace、Role 的 ID，但仍处于同一事务；最后统一 commit 才保证五类记录原子落库。
 
 关键文件：`app/api/routes/auth.py`、`app/auth/token_manager.py`、`app/auth/middleware.py`、`app/auth/deps.py`、`app/auth/permissions.py`、`app/auth/prompts/manager.py`。
 
@@ -1311,13 +1616,13 @@ knowledge_retrieval 开始任务 trace
 
 常见追问：
 
-- **Trace、Metrics、DecisionRecorder 有什么区别？** Trace 看一次请求经过哪些组件和耗时；Metrics 看整体趋势与告警；DecisionRecorder 看 Agent 输入、Prompt 摘要、状态变化和为何走某条业务分支。
-- **一次请求很慢怎么排查？** 用 task_id 找主任务，再定位最慢 layer/node，最后查看 Gateway span 是限流、缓存未命中、主 Provider 超时并 Failover，还是模型本身延迟高。
-- **成本怎么做到可归因？** Gateway 从 Provider usage 得到输入/输出 Token，按模型价格计算并写调用日志，同时打上 workspace、task_type、layer、node；这样能聚合到租户和业务节点。
-- **为什么异步任务的 Trace 容易断？** 创建后台任务后 HTTP 根 span 很快结束，后台执行生命周期更长；需要显式传播 trace context，并用 task_id/thread_id 作为稳定关联字段。
-- **记录 Prompt 会不会泄密？** 会有风险。应沿用 Gateway 脱敏、限制 Recorder 访问权限、截断长内容并设置保留周期；生产环境不应无条件保存原始 Prompt 和响应。
-- **为什么 Trace 有 Span 却在 Jaeger 查不到？** Span 创建和导出是两回事；只有 OTLP endpoint 配置成功并注册 BatchSpanProcessor 后才会送到 Jaeger，未配置时当前实现没有可查询的本地导出器。
-- **DecisionRecorder 能完全复现一次任务吗？** 当前不能。它主要记录四个 Adapter 的裁剪状态，工具、原始响应和 Token 多为空，也没有保存模型版本、随机参数及完整并行拓扑；它适合解释阶段变化，不是严格确定性重放。
+- __Trace、Metrics、DecisionRecorder 有什么区别？__ Trace 看一次请求经过哪些组件和耗时；Metrics 看整体趋势与告警；DecisionRecorder 看 Agent 输入、Prompt 摘要、状态变化和为何走某条业务分支。
+- __一次请求很慢怎么排查？__ 用 task_id 找主任务，再定位最慢 layer/node，最后查看 Gateway span 是限流、缓存未命中、主 Provider 超时并 Failover，还是模型本身延迟高。
+- __成本怎么做到可归因？__ Gateway 从 Provider usage 得到输入/输出 Token，按模型价格计算并写调用日志，同时打上 workspace、task_type、layer、node；这样能聚合到租户和业务节点。
+- __为什么异步任务的 Trace 容易断？__ 创建后台任务后 HTTP 根 span 很快结束，后台执行生命周期更长；需要显式传播 trace context，并用 task_id/thread_id 作为稳定关联字段。
+- __记录 Prompt 会不会泄密？__ 会有风险。应沿用 Gateway 脱敏、限制 Recorder 访问权限、截断长内容并设置保留周期；生产环境不应无条件保存原始 Prompt 和响应。
+- __为什么 Trace 有 Span 却在 Jaeger 查不到？__ Span 创建和导出是两回事；只有 OTLP endpoint 配置成功并注册 BatchSpanProcessor 后才会送到 Jaeger，未配置时当前实现没有可查询的本地导出器。
+- __DecisionRecorder 能完全复现一次任务吗？__ 当前不能。它主要记录四个 Adapter 的裁剪状态，工具、原始响应和 Token 多为空，也没有保存模型版本、随机参数及完整并行拓扑；它适合解释阶段变化，不是严格确定性重放。
 
 关键文件：`app/observability/tracing.py`、`app/observability/metrics.py`、`app/observability/replay/recorder.py`、`app/llm_gateway/__init__.py`、`app/task_manager.py`、`app/main.py`。
 

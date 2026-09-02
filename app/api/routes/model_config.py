@@ -10,7 +10,6 @@ from app.api.schemas.model_config import (
     ModelConfigUpdateRequest,
     RoutingRuleUpdateRequest,
 )
-from app.auth.deps import require_permission
 from app.llm_gateway import config_manager as global_config_manager
 from app.llm_gateway.config_manager import ModelConfigManager
 from contracts.models import ModelType, RoutingRule
@@ -32,7 +31,6 @@ async def get_all_configs(
     type: str | None = Query(None, description="模型类型（llm/embedding/rerank/judge/vision）"),
     provider: str | None = Query(None, description="供应商名称"),
     cm: ModelConfigManager = Depends(get_config_manager),
-    _: None = Depends(require_permission("model_config:read")),
 ) -> dict[str, Any]:
     """查询当前所有模型配置（API Key 自动掩码）。
 
@@ -102,7 +100,6 @@ async def get_all_configs(
 async def update_config(
     req: ModelConfigUpdateRequest,
     cm: ModelConfigManager = Depends(get_config_manager),
-    _: None = Depends(require_permission("model_config:update")),
 ) -> dict[str, str]:
     """修改模型配置（API 动态注入，立即生效）。
 
@@ -135,7 +132,6 @@ async def update_config(
 async def update_routing_rule(
     req: RoutingRuleUpdateRequest,
     cm: ModelConfigManager = Depends(get_config_manager),
-    _: None = Depends(require_permission("model_config:update")),
 ) -> dict[str, str]:
     """修改路由规则。
 
@@ -173,7 +169,6 @@ async def update_routing_rule(
 @router.delete("/runtime")
 async def reset_runtime_config(
     cm: ModelConfigManager = Depends(get_config_manager),
-    _: None = Depends(require_permission("model_config:update")),
 ) -> dict[str, str]:
     """重置运行时配置（恢复到环境变量配置）。
 
