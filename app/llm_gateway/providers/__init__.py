@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 from app.llm_gateway.providers.anthropic import AnthropicProvider
 from app.llm_gateway.providers.base import BaseProvider
 from app.llm_gateway.providers.cohere import CohereProvider
 from app.llm_gateway.providers.custom import CustomProvider
 from app.llm_gateway.providers.openai import OpenAIProvider
+from app.llm_gateway.providers.universal import UniversalProvider
 from contracts.models import ModelConfig, ProviderType
 
 __all__ = [
@@ -17,6 +16,7 @@ __all__ = [
     "AnthropicProvider",
     "CohereProvider",
     "CustomProvider",
+    "UniversalProvider",
     "ProviderFactory",
 ]
 
@@ -43,17 +43,5 @@ class ProviderFactory:
             except ValueError:
                 provider_type = ProviderType.CUSTOM
 
-        providers = {
-            ProviderType.OPENAI: OpenAIProvider,
-            ProviderType.DEEPSEEK: OpenAIProvider,
-            ProviderType.AZURE_OPENAI: OpenAIProvider,
-            ProviderType.ANTHROPIC: AnthropicProvider,
-            ProviderType.COHERE: CohereProvider,
-            ProviderType.CUSTOM: CustomProvider,
-        }
-
-        provider_cls = providers.get(provider_type)
-        if provider_cls is None:
-            raise ValueError(f"不支持的供应商类型: {provider_type}")
-
-        return cast(BaseProvider, cast(Any, provider_cls)(config))
+        # 所有外部调用均从统一门面进入，厂商差异由 protocol 适配器封装。
+        return UniversalProvider(config)

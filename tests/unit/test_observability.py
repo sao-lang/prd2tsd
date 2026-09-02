@@ -54,7 +54,9 @@ def test_track_llm_call_context_manager() -> None:
 
     # 验证指标已记录
     call_val = LLM_CALL_TOTAL.labels(
-        model="deepseek-chat", layer="test", node="test_node",
+        model="deepseek-chat",
+        layer="test",
+        node="test_node",
     )._value.get()
     assert call_val >= 1.0
 
@@ -92,10 +94,13 @@ async def test_gateway_complete_records_llm_metrics() -> None:
     gw.guardrails.check_input = AsyncMock(return_value=[])
     gw.guardrails.check_output = AsyncMock(return_value=[])
     gw.rate_limiter = MagicMock()
-    gw.rate_limiter.check = AsyncMock(return_value={"allowed": True, "retry_after": 0})
-    gw.rate_limiter.record = AsyncMock()
+    gw.rate_limiter.reserve = AsyncMock(
+        return_value={"allowed": True, "retry_after": 0, "reservation_id": "reservation"},
+    )
+    gw.rate_limiter.reconcile = AsyncMock()
     gw.budget_controller = MagicMock()
-    gw.budget_controller.check_and_record = AsyncMock(return_value={})
+    gw.budget_controller.check = AsyncMock(return_value={})
+    gw.budget_controller.record_usage = AsyncMock()
     gw.cache = MagicMock()
     gw.cache.make_key = MagicMock(return_value="test-key")
     gw.cache.get = MagicMock(return_value=None)
@@ -105,17 +110,19 @@ async def test_gateway_complete_records_llm_metrics() -> None:
     model_cfg = MagicMock()
     model_cfg.provider = "deepseek"
     gw.config_manager.resolve_model = MagicMock(return_value=(model_cfg, "deepseek-chat"))
-    gw._failover_call = AsyncMock(return_value=(
-        LLMResponse(
-            content="你好",
-            model="deepseek-chat",
-            cached=False,
-            cost=0.001,
-            input_tokens=10,
-            output_tokens=20,
-        ),
-        "deepseek-chat",
-    ))
+    gw._failover_call = AsyncMock(
+        return_value=(
+            LLMResponse(
+                content="你好",
+                model="deepseek-chat",
+                cached=False,
+                cost=0.001,
+                input_tokens=10,
+                output_tokens=20,
+            ),
+            "deepseek-chat",
+        )
+    )
 
     resp = await gw.complete(
         prompt="测试",
@@ -127,7 +134,9 @@ async def test_gateway_complete_records_llm_metrics() -> None:
     assert resp.content == "你好"
     # 调用次数 +1
     call_val = LLM_CALL_TOTAL.labels(
-        model="deepseek-chat", layer="test", node="test_node",
+        model="deepseek-chat",
+        layer="test",
+        node="test_node",
     )._value.get()
     assert call_val >= 1.0
     # token 指标
@@ -174,6 +183,8 @@ async def test_http_tracing_middleware_creates_root_span() -> None:
     mock_tracer.start_as_current_span.assert_called_once()
     # HTTP 指标已记录
     req_val = HTTP_REQUESTS_TOTAL.labels(
-        method="GET", path="/api/v1/health", status="200",
+        method="GET",
+        path="/api/v1/health",
+        status="200",
     )._value.get()
     assert req_val >= 1.0

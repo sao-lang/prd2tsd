@@ -53,12 +53,12 @@ class CostTracker:
         cost = _calc_cost(model, input_tokens, output_tokens)
         with self._lock:
             record = CostRecord(
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost=cost,
-            metadata=metadata or {},
-        )
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+                metadata=metadata or {},
+            )
             self._records.append(record)
         return record
 

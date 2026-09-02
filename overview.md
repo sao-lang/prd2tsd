@@ -2,6 +2,19 @@
 
 ### 2026-09-02
 
+#### 36. LLM Gateway 流式护栏一致性修复
+
+- **时间：** 2026-09-02 13:30:54
+- **发起人：** user（“流式输出会绕过护栏，其他任务是否也如此；如果需要则直接改造”）
+- **修改文件：** `app/llm_gateway/__init__.py`、`tests/unit/test_stream_guardrails.py`、`docs/block-E-enterprise.md`、`docs/full-architecture-deep-dive.md`、`overview.md`
+- **修改内容：**
+  1. 抽取 Gateway 统一输入/输出护栏方法，`complete()` 与 `stream_complete()` 共用同一套拦截、脱敏、输出遮罩语义。
+  2. 流式调用在 Provider 前执行 Prompt 注入/PII/超时护栏，护栏 `masked_text` 与 L3 可逆脱敏后的 Prompt 才能发往第三方。
+  3. Provider chunk 改为按 Failover 尝试隔离缓冲；完整输出通过后置护栏后才释放，同时消除失败 Provider 半截内容泄漏/拼接。
+  4. 新增 7 个单元回归用例，覆盖输入拦截、安全 chunk 保留、跨 chunk 敏感输出遮罩、PII 输入脱敏、脱敏 token 回显安全、交付前计费、Failover 半截输出隔离。
+- **复盘结果：** 根因为 Block E 流式能力与 Block F 护栏能力分阶段实现后未做契约对齐；修复收敛在 Gateway 层，Chat/QA/文档分析/TSD 章节生成无需分别打补丁。
+- **潜在风险：** 为保证完整输出在交付前经过后置护栏，SSE 首个内容 chunk 将延迟到当次 LLM 输出完成；状态/心跳/进度事件不受影响。
+
 #### 35. RetrievalPipeline 接入 PGVector 主检索链路
 
 - **时间：** 2026-09-02 08:07:44

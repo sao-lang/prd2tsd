@@ -142,8 +142,10 @@ class CircuitBreaker:
 
     @property
     def is_available(self) -> bool:
-        """当前是否可用（用于查询）。"""
-        return self.state != CircuitState.OPEN
+        """当前是否允许一次调用；恢复窗口到期后允许半开试探。"""
+        if self.state != CircuitState.OPEN:
+            return True
+        return time.monotonic() - self.last_failure_time > self.recovery_timeout
 
     def reset(self) -> None:
         """手动重置熔断器。"""

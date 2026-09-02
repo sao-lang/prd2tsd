@@ -40,13 +40,14 @@ class GatewayChatModel(BaseChatModel):
     """
 
     gateway: Any = None
-    default_model: str = "deepseek-chat"
+    default_model: str = ""
     task_type: str = "default"
     layer: str = ""
     node: str = ""
 
     class Config:
         """Pydantic 配置 — 允许任意类型。"""
+
         arbitrary_types_allowed = True
 
     def __init__(self, **data: Any) -> None:
@@ -120,7 +121,12 @@ class GatewayChatModel(BaseChatModel):
             ChatResult 包含生成的 AIMessage。
         """
         prompt = self._messages_to_prompt(messages)
-        model = kwargs.get("model", self.default_model)
+        call_kwargs = dict(kwargs)
+        model = call_kwargs.pop("model", self.default_model)
+        if model:
+            call_kwargs["model"] = model
+        if stop:
+            call_kwargs["stop"] = stop
 
         try:
             resp = await self.gateway.complete(
@@ -128,7 +134,7 @@ class GatewayChatModel(BaseChatModel):
                 task_type=self.task_type,
                 layer=self.layer,
                 node=self.node,
-                model=model,
+                **call_kwargs,
             )
             content = resp.content if hasattr(resp, "content") else str(resp)
         except Exception as exc:
@@ -158,7 +164,12 @@ class GatewayChatModel(BaseChatModel):
             ChatGenerationChunk 流式 Token。
         """
         prompt = self._messages_to_prompt(messages)
-        model = kwargs.get("model", self.default_model)
+        call_kwargs = dict(kwargs)
+        model = call_kwargs.pop("model", self.default_model)
+        if model:
+            call_kwargs["model"] = model
+        if stop:
+            call_kwargs["stop"] = stop
 
         try:
             async for token in self.gateway.stream_complete(
@@ -166,7 +177,7 @@ class GatewayChatModel(BaseChatModel):
                 task_type=self.task_type,
                 layer=self.layer,
                 node=self.node,
-                model=model,
+                **call_kwargs,
             ):
                 chunk_content = token if isinstance(token, str) else token.content
                 yield ChatGenerationChunk(message=AIMessageChunk(content=chunk_content))

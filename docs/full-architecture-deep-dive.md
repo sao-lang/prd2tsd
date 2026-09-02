@@ -1273,12 +1273,12 @@ GuardrailManager（app/llm_gateway/guardrails/manager.py）:
   check_input(text, context):  依次执行前置护栏，blocked 则 break
   check_output(text, context): 依次执行后置护栏，blocked 且 severity=="critical" 则 break
 
-pre_llm 阶段（Gateway.complete 步骤 0）:
+pre_llm 阶段（Gateway.complete / stream_complete 步骤 0）:
   PromptInjectionGuardrail   检测提示注入（ignore previous instructions / DAN / system: 等）
   PIIDetectorGuardrail       检测并脱敏 PII（邮箱/手机/身份证号）
   TimeoutGuardrail           检查 CircuitBreaker 状态
 
-post_llm 阶段（步骤 7）:
+post_llm 阶段（complete 步骤 7 / stream_complete 安全释放前）:
   ContentSafetyGuardrail     检测不安全内容
   OutputValidatorGuardrail   校验输出格式（response_format 时校验 JSON）
   EmptyResponseGuardrail     检测空响应
@@ -2125,6 +2125,7 @@ POST /api/v1/tasks/{task_id}/stream-review:
 ```text
 SectionWriterNode 流式生成:
   ├─ llm.astream(prompt)（GatewayChatModel 流式 → gateway.stream_complete）
+  ├─ Gateway 按单次 Failover 尝试缓冲完整章节，通过后置护栏后才释放 chunk
   ├─ 每 200 字符: EventBus.publish("task:{task_id}", generation.chunk {content, section})
   ├─ 章节完成:    EventBus.publish(generation.section {section, status:"done", content_length})
   └─ 所有章节:    经 reducer merge_contents 合并进 section_contents
@@ -2221,7 +2222,7 @@ class GatewayChatModel(BaseChatModel):
         # → ChatResult(generations=[ChatGeneration(AIMessage(content))])
 
     def _astream(...) -> Iterator[ChatGenerationChunk]:
-        # gateway.stream_complete 逐 token → AIMessageChunk
+        # gateway.stream_complete 先完整缓冲并通过后置护栏，再转 AIMessageChunk
 
     def bind_tools(tools):
         # Function Calling 支持（tool 生态当前未启用）
@@ -2245,6 +2246,7 @@ LLM 调用（OpenAI SDK 兼容 Provider）+ OTel Span + track_llm_call 指标
     ▼
 post_llm 护栏: ContentSafetyGuardrail → OutputValidatorGuardrail → EmptyResponseGuardrail
     │  → RetryDecisionGuardrail（决定 retry/fallback/continue）
+    │  stream_complete: Provider chunk 在此之前仅存于服务端尝试缓冲，不对外释放
     ▼
 设置缓存 / 成本追踪（CostTracker + llm_call_logs）/ 预算 / 速率记录
     ▼

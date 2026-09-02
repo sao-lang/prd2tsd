@@ -28,6 +28,7 @@ from app.core.connections import connection_manager
 from app.core.logger import get_logger
 from app.document_management.service import document_service
 from app.llm_gateway import gateway as default_gateway
+from app.llm_gateway import gateway_request_context
 from app.models.user import User
 from app.orchestrator.intent_classifier import IntentClassifier, IntentResult, IntentType
 from app.orchestrator.state import make_initial_state
@@ -42,6 +43,24 @@ router = APIRouter(prefix="/api/v1", tags=["interact"])
 # 共享意图分类器单例 — 统一交互入口为唯一判定来源，
 # 消除"路由手动分类 vs 图内 classify 节点"的双实现问题。
 classifier = IntentClassifier(llm_gateway=default_gateway)
+
+
+def _gateway_overrides(req: InteractRequest, default_max_tokens: int | None = None) -> dict[str, Any]:
+    """提取允许单次请求覆盖的 Gateway 参数。"""
+    values: dict[str, Any] = {}
+    if req.provider:
+        values["provider"] = req.provider
+    if req.model:
+        values["model"] = req.model
+    if req.estimated_tokens is not None:
+        values["estimated_tokens"] = req.estimated_tokens
+    if req.timeout is not None:
+        values["timeout"] = req.timeout
+    if req.max_tokens is not None:
+        values["max_tokens"] = req.max_tokens
+    elif default_max_tokens is not None:
+        values["max_tokens"] = default_max_tokens
+    return values
 
 
 def _try_get_db_session() -> AsyncSession | None:
@@ -96,7 +115,8 @@ async def interact(
     Returns:
         同步模式返回 InteractResponse（JSON）；流式模式返回 StreamingResponse。
     """
-    intent_result = await _classify_intent(req)
+    with gateway_request_context(**_gateway_overrides(req)):
+        intent_result = await _classify_intent(req)
 
     # 流式模式
     if req.stream:
@@ -181,7 +201,8 @@ async def _graph_sync(
     config = {"configurable": {"thread_id": task_id}}
 
     try:
-        final_state = await orchestrator.ainvoke(initial_state, config)
+        with gateway_request_context(**_gateway_overrides(req)):
+            final_state = await orchestrator.ainvoke(initial_state, config)
         chat_response = final_state.get("chat_response", "") if isinstance(final_state, dict) else ""
         status = final_state.get("status", "complete") if isinstance(final_state, dict) else "complete"
 
@@ -198,7 +219,7 @@ async def _graph_sync(
             prompt=req.message,
             task_type="chat",
             temperature=0.7,
-            max_tokens=1024,
+            **_gateway_overrides(req, 1024),
         )
         return InteractResponse(
             intent="chat",
@@ -230,21 +251,18 @@ async def _create_generation_task(
     user_role = ""
     if current_user.team_memberships:
         first_membership = current_user.team_memberships[0]
-        user_role = (
-            getattr(first_membership.role, "name", "")
-            if hasattr(first_membership, "role")
-            else ""
-        )
+        user_role = getattr(first_membership.role, "name", "") if hasattr(first_membership, "role") else ""
 
-    task_id = await task_manager.create_task(
-        prd_raw=prd_raw or req.message,
-        prd_file_type=req.prd_type,
-        workspace_id=req.workspace_id,
-        user_id=str(current_user.id),
-        user_role=user_role,
-        session_id=req.session_id,
-        orchestrator=orchestrator,
-    )
+    with gateway_request_context(**_gateway_overrides(req)):
+        task_id = await task_manager.create_task(
+            prd_raw=prd_raw or req.message,
+            prd_file_type=req.prd_type,
+            workspace_id=req.workspace_id,
+            user_id=str(current_user.id),
+            user_role=user_role,
+            session_id=req.session_id,
+            orchestrator=orchestrator,
+        )
     return task_id
 
 
@@ -291,6 +309,7 @@ def _build_document_prompt(text: str, instruction: str, source_label: str) -> st
         text: 文档文本。
         instruction: 用户分析指令。
         source_label: 文档来源描述。
+        req: 原始交互请求，用于工作空间与模型参数覆盖。
 
     Returns:
         LLM 提示词。
@@ -305,7 +324,12 @@ def _build_document_prompt(text: str, instruction: str, source_label: str) -> st
     )
 
 
-async def _analyze_document(text: str, instruction: str, source_label: str) -> str:
+async def _analyze_document(
+    text: str,
+    instruction: str,
+    source_label: str,
+    req: InteractRequest,
+) -> str:
     """对文档文本执行分析/总结（LLM 同步）。
 
     Args:
@@ -320,7 +344,8 @@ async def _analyze_document(text: str, instruction: str, source_label: str) -> s
         prompt=_build_document_prompt(text, instruction, source_label),
         task_type="document_analysis",
         temperature=0.3,
-        max_tokens=2048,
+        workspace_id=req.workspace_id,
+        **_gateway_overrides(req, 2048),
     )
     return resp.content
 
@@ -510,7 +535,7 @@ async def _document_analysis_sync(
                 message=f"无法读取内容: {source_label}",
                 session_id=req.session_id,
             )
-        summary = await _analyze_document(text, req.message, source_label)
+        summary = await _analyze_document(text, req.message, source_label, req)
         return InteractResponse(
             intent=IntentType.DOCUMENT_ANALYSIS.value,
             confidence=0.8,
@@ -527,7 +552,7 @@ async def _document_analysis_sync(
             message=f"无法读取内容: {source_label}",
             session_id=req.session_id,
         )
-    summary = await _analyze_document(text, req.message, source_label)
+    summary = await _analyze_document(text, req.message, source_label, req)
     return InteractResponse(
         intent=IntentType.DOCUMENT_ANALYSIS.value,
         confidence=0.8,
@@ -581,6 +606,7 @@ def _single_message_stream(message: str) -> StreamingResponse:
     Returns:
         StreamingResponse 实例。
     """
+
     async def event_generator() -> AsyncGenerator[str, None]:
         """生成澄清/问答 SSE 事件流。"""
         yield SseEvent(
@@ -671,6 +697,7 @@ def _chat_qa_stream(
                 workspace_id=workspace_id,
                 layer="qna",
                 node="stream_answer",
+                **_gateway_overrides(req, 2048),
             ):
                 yield SseEvent(type="qna.chunk", payload={"content": chunk}).to_sse_line()
 
@@ -703,6 +730,7 @@ def _generation_stream(
     Returns:
         StreamingResponse 实例。
     """
+
     async def event_generator() -> AsyncGenerator[str, None]:
         """生成任务创建与订阅 SSE 事件流。"""
         try:
@@ -745,6 +773,7 @@ def _document_analysis_stream(
     Returns:
         StreamingResponse 实例。
     """
+
     async def event_generator() -> AsyncGenerator[str, None]:
         """生成文档分析 SSE 事件流。"""
         try:
@@ -798,9 +827,10 @@ def _document_analysis_stream(
             async for chunk in default_gateway.stream_complete(
                 prompt=prompt,
                 task_type="document_analysis",
-                workspace_id=req.workspace_id,
+                workspace_id=_effective_workspace_id(req, request),
                 layer="analysis",
                 node="document_analysis",
+                **_gateway_overrides(req, 2048),
             ):
                 yield SseEvent(type="analysis.chunk", payload={"content": chunk}).to_sse_line()
 

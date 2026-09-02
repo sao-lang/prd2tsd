@@ -54,10 +54,18 @@ class OpenAIProvider(BaseProvider):
         max_tokens = kwargs.pop("max_tokens", 4096)
         stream = kwargs.pop("stream", False)
         event_queue = kwargs.pop("event_queue", None)
+        images = kwargs.pop("images", None)
+        user_content: Any = prompt
+        if images:
+            content_blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+            for image in images:
+                image_url = image if isinstance(image, dict) else {"url": str(image)}
+                content_blocks.append({"type": "image_url", "image_url": image_url})
+            user_content = content_blocks
 
         params: dict[str, Any] = {
             "model": model_name,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": user_content}],
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -123,18 +131,22 @@ class OpenAIProvider(BaseProvider):
         async for chunk in response:
             delta = chunk.choices[0].delta.content or ""
             if delta and event_queue:
-                await event_queue.put({
-                    "event": "token",
-                    "data": {"text": delta, "index": token_index},
-                })
+                await event_queue.put(
+                    {
+                        "event": "token",
+                        "data": {"text": delta, "index": token_index},
+                    }
+                )
                 token_index += 1
             full_content += delta
 
         if event_queue:
-            await event_queue.put({
-                "event": "token_done",
-                "data": {"total_tokens": token_index},
-            })
+            await event_queue.put(
+                {
+                    "event": "token_done",
+                    "data": {"total_tokens": token_index},
+                }
+            )
 
         return LLMResponse(
             content=full_content,
@@ -163,10 +175,18 @@ class OpenAIProvider(BaseProvider):
         model_name = model or self.config.default_model
         temperature = kwargs.pop("temperature", 0.7)
         max_tokens = kwargs.pop("max_tokens", 4096)
+        images = kwargs.pop("images", None)
+        user_content: Any = prompt
+        if images:
+            content_blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+            for image in images:
+                image_url = image if isinstance(image, dict) else {"url": str(image)}
+                content_blocks.append({"type": "image_url", "image_url": image_url})
+            user_content = content_blocks
 
         params: dict[str, Any] = {
             "model": model_name,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": user_content}],
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,
@@ -244,4 +264,5 @@ class OpenAIProvider(BaseProvider):
             估算成本（美元）。
         """
         from app.llm_gateway.pricing import estimate_cost
+
         return estimate_cost(model, prompt_tokens, completion_tokens)

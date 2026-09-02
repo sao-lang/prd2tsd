@@ -30,6 +30,30 @@ class ModelType(StrEnum):
     IMAGE = "image"
 
 
+class ModelPurpose(StrEnum):
+    """Gateway 的稳定模型用途，供分层路由、熔断和预算降级共同使用。"""
+
+    ANALYSIS = "analysis"
+    PLANNING = "planning"
+    GENERATION = "generation"
+    EVALUATION = "evaluation"
+    VISION = "vision"
+    DEFAULT = "default"
+
+
+class DefaultModel(StrEnum):
+    """代码级最终兜底模型，避免外部配置缺失时得到空模型名。"""
+
+    ANALYSIS = "deepseek-chat"
+    PLANNING = "deepseek-chat"
+    GENERATION = "deepseek-chat"
+    EVALUATION = "gpt-4o-mini"
+    VISION = "gpt-4o"
+    DEFAULT = "deepseek-chat"
+    EMBEDDING = "text-embedding-3-small"
+    RERANK = "rerank-english-v3.0"
+
+
 class ProviderType(StrEnum):
     """支持的模型供应商。"""
 
@@ -80,6 +104,8 @@ class RoutingRule(BaseModel):
     model: str = ""
     temperature: float | None = None
     max_tokens: int | None = None
+    timeout: float | None = None
+    fallbacks: list[dict[str, str]] = Field(default_factory=list)
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -112,6 +138,8 @@ class RoutingRuleUpdate(BaseModel):
     model: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    timeout: float | None = None
+    fallbacks: list[dict[str, str]] | None = None
     config: dict[str, Any] | None = None
 
 

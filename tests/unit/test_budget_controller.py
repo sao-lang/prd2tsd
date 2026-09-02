@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
-from app.llm_gateway.budget_controller import BudgetController
+from app.llm_gateway.budget_controller import BudgetController, MemoryBudgetStore
 
 
 @pytest.fixture
 def budget() -> BudgetController:
     """创建干净的预算控制器。"""
-    return BudgetController()
+    return BudgetController(store=MemoryBudgetStore())
 
 
 @pytest.mark.asyncio
@@ -72,3 +74,33 @@ async def test_budget_cumulative_cost(budget: BudgetController) -> None:
     await budget.check_and_record("ws-5", 20.0)
     monthly = await budget.get_monthly_cost("ws-5")
     assert monthly == 30.0
+
+
+@pytest.mark.asyncio
+async def test_weekly_budget_uses_current_natural_week() -> None:
+    """周预算只累计本周成本，并在自然周边界自动重置。"""
+    store = MemoryBudgetStore()
+    budget = BudgetController(store=store)
+    await budget.set_budget_config("ws-week", weekly_budget_usd=10.0, budget_period="weekly")
+    now = datetime.now(UTC)
+    store.costs["ws-week"] = [(now - timedelta(days=8), 100.0), (now, 6.0)]
+
+    result = await budget.check("ws-week")
+
+    assert result["period"] == "weekly"
+    assert result["usage_ratio"] == 0.6
+    assert result["within_budget"] is True
+
+
+@pytest.mark.asyncio
+async def test_budget_state_survives_controller_recreation() -> None:
+    """共享持久化 Store 的新控制器实例应读到原配置与账本。"""
+    store = MemoryBudgetStore()
+    first = BudgetController(store=store)
+    await first.set_budget_config("ws-persistent", monthly_budget_usd=20.0)
+    await first.record_usage("ws-persistent", 5.0, "test-model")
+
+    report = await BudgetController(store=store).get_monthly_report("ws-persistent")
+
+    assert report["monthly_budget_usd"] == 20.0
+    assert report["monthly_cost_usd"] == 5.0

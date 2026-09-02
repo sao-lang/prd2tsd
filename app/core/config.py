@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -61,6 +62,10 @@ class Settings(BaseSettings):
     MODEL_CONFIG__LLM__OPENAI__BASE_URL: str = "https://api.openai.com/v1"
     MODEL_CONFIG__LLM__OPENAI__DEFAULT_MODEL: str = "gpt-4o-mini"
 
+    MODEL_CONFIG__LLM__ANTHROPIC__API_KEY: str = ""
+    MODEL_CONFIG__LLM__ANTHROPIC__BASE_URL: str = "https://api.anthropic.com/v1"
+    MODEL_CONFIG__LLM__ANTHROPIC__DEFAULT_MODEL: str = "claude-sonnet-4-6"
+
     # ── Model Config — Embedding ──
     MODEL_CONFIG__EMBEDDING__OPENAI__API_KEY: str = ""
     MODEL_CONFIG__EMBEDDING__OPENAI__BASE_URL: str = "https://api.openai.com/v1"
@@ -68,7 +73,7 @@ class Settings(BaseSettings):
 
     # ── Model Config — Rerank ──
     MODEL_CONFIG__RERANK__COHERE__API_KEY: str = ""
-    MODEL_CONFIG__RERANK__COHERE__BASE_URL: str = "https://api.cohere.com/v1"
+    MODEL_CONFIG__RERANK__COHERE__BASE_URL: str = "https://api.cohere.com/v2"
     MODEL_CONFIG__RERANK__COHERE__DEFAULT_MODEL: str = "rerank-english-v3.0"
 
     # ── Model Config — Judge ──
@@ -92,17 +97,35 @@ class Settings(BaseSettings):
     BUDGET_DEFAULT_AUTO_DOWNGRADE: bool = True
 
     # ── Rate Limiter (Block E) ──
-    RATE_LIMIT_DEFAULT_RPM: int = 60       # 每分钟请求数
-    RATE_LIMIT_DEFAULT_TPM: int = 100000   # 每分钟 Token 数
+    RATE_LIMIT_DEFAULT_RPM: int = 60  # 每分钟请求数
+    RATE_LIMIT_DEFAULT_TPM: int = 100000  # 每分钟 Token 数
 
     # ── Gateway Capability Modes ──
-    EMBEDDING_MODE: str = "auto"        # auto / api / local
-    RERANK_MODE: str = "auto"           # auto / api / local
+    EMBEDDING_MODE: str = "auto"  # auto / api / local
+    RERANK_MODE: str = "auto"  # auto / api / local
+
+    # ── Gateway Routing / Guardrails / Semantic Cache ──
+    MODEL_ROUTING_CONFIG_FILE: str = "config/model-routing.yaml"
+    GATEWAY_DEFAULT_TIMEOUT_SECONDS: float = 60.0
+    PROMPT_INJECTION_BLOCK_THRESHOLD: int = 5
+    SEMANTIC_CACHE_ENABLED: bool = True
+    SEMANTIC_CACHE_SIMILARITY_THRESHOLD: float = 0.92
+    SEMANTIC_CACHE_TTL_SECONDS: int = 3600
+    SEMANTIC_CACHE_MAX_CANDIDATES: int = 100
+    SEMANTIC_CACHE_GUARDRAIL_VERSION: str = "v1"
 
     # ── Model Routing Rules ──
     MODEL_ROUTING__ANALYSIS_REQUIREMENT__TYPE: str = "llm"
     MODEL_ROUTING__ANALYSIS_REQUIREMENT__PROVIDER: str = "deepseek"
     MODEL_ROUTING__ANALYSIS_REQUIREMENT__MODEL: str = "deepseek-chat"
+
+    MODEL_ROUTING__ANALYSIS__TYPE: str = "llm"
+    MODEL_ROUTING__ANALYSIS__PROVIDER: str = "deepseek"
+    MODEL_ROUTING__ANALYSIS__MODEL: str = "deepseek-chat"
+
+    MODEL_ROUTING__PLANNING__TYPE: str = "llm"
+    MODEL_ROUTING__PLANNING__PROVIDER: str = "deepseek"
+    MODEL_ROUTING__PLANNING__MODEL: str = "deepseek-chat"
 
     MODEL_ROUTING__PLANNING_ARCHITECTURE__TYPE: str = "llm"
     MODEL_ROUTING__PLANNING_ARCHITECTURE__PROVIDER: str = "deepseek"
@@ -115,6 +138,14 @@ class Settings(BaseSettings):
     MODEL_ROUTING__GENERATION__TYPE: str = "llm"
     MODEL_ROUTING__GENERATION__PROVIDER: str = "deepseek"
     MODEL_ROUTING__GENERATION__MODEL: str = "deepseek-chat"
+
+    MODEL_ROUTING__EVALUATION__TYPE: str = "judge"
+    MODEL_ROUTING__EVALUATION__PROVIDER: str = "openai"
+    MODEL_ROUTING__EVALUATION__MODEL: str = "gpt-4o-mini"
+
+    MODEL_ROUTING__VISION__TYPE: str = "vision"
+    MODEL_ROUTING__VISION__PROVIDER: str = "openai"
+    MODEL_ROUTING__VISION__MODEL: str = "gpt-4o"
 
     MODEL_ROUTING__EMBEDDING__TYPE: str = "embedding"
     MODEL_ROUTING__EMBEDDING__PROVIDER: str = "openai"
@@ -135,10 +166,22 @@ class Settings(BaseSettings):
             包含 api_key, base_url, default_model 的字典。
         """
         prefix = f"MODEL_CONFIG__{model_type.upper()}__{provider.upper()}__"
+
+        def _value(field: str, default: Any = None) -> Any:
+            name = f"{prefix}{field}"
+            if name in os.environ:
+                return os.environ[name]
+            if name in self.model_fields_set:
+                return getattr(self, name, default)
+            return default
+
         return {
-            "api_key": getattr(self, f"{prefix}API_KEY", ""),
-            "base_url": getattr(self, f"{prefix}BASE_URL", ""),
-            "default_model": getattr(self, f"{prefix}DEFAULT_MODEL", ""),
+            "api_key": _value("API_KEY"),
+            "base_url": _value("BASE_URL"),
+            "default_model": _value("DEFAULT_MODEL"),
+            "timeout": _value("TIMEOUT"),
+            "max_retries": _value("MAX_RETRIES"),
+            "protocol": _value("PROTOCOL"),
         }
 
     def get_routing_env(self) -> dict[str, dict[str, str]]:
@@ -153,13 +196,15 @@ class Settings(BaseSettings):
         for key in dir(self):
             if not key.startswith("MODEL_ROUTING__"):
                 continue
+            if key not in self.model_fields_set and key not in os.environ:
+                continue
             parts = key.split("__")
             # MODEL_ROUTING__{TASK_TYPE}__{FIELD}
             if len(parts) < 4:
                 continue
             task_type = parts[2].lower()
             field = parts[3].lower()
-            value = getattr(self, key)
+            value = os.environ.get(key, getattr(self, key))
             if task_type not in rules:
                 rules[task_type] = {}
             rules[task_type][field] = str(value)

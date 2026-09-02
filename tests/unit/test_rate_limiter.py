@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.llm_gateway.rate_limiter import RateLimiter
@@ -61,3 +63,28 @@ async def test_rate_limiter_reset(limiter: RateLimiter) -> None:
     limiter.reset("ws-5")
     result = await limiter.check("ws-5")
     assert result["allowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_estimated_tokens_are_reserved_atomically() -> None:
+    """并发请求必须在 Provider 调用前原子占用预计 TPM。"""
+    limiter = RateLimiter(default_rpm=10, default_tpm=100)
+
+    results = await asyncio.gather(
+        limiter.reserve("ws-reserve", 60),
+        limiter.reserve("ws-reserve", 60),
+    )
+
+    assert sum(bool(result["allowed"]) for result in results) == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_replaces_estimate_with_actual_tokens() -> None:
+    """调用完成后实际 Token 应替换而非叠加预计 Token。"""
+    limiter = RateLimiter(default_rpm=10, default_tpm=100)
+    reserved = await limiter.reserve("ws-reconcile", 80)
+
+    await limiter.reconcile("ws-reconcile", str(reserved["reservation_id"]), 20)
+    second = await limiter.reserve("ws-reconcile", 70)
+
+    assert second["allowed"] is True

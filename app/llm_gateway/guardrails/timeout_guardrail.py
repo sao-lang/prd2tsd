@@ -46,11 +46,37 @@ class TimeoutGuardrail(Guardrail):
         Returns:
             护栏检查结果。
         """
-        if self._circuit_breaker is None:
-            return GuardrailResult(passed=True, reason="无熔断器配置")
+        timeout_seconds = context.get("timeout_seconds")
+        if isinstance(timeout_seconds, (int, float)) and timeout_seconds <= 0:
+            return GuardrailResult(
+                passed=False,
+                blocked=True,
+                reason="LLM 调用期限已耗尽",
+                severity="critical",
+            )
 
-        state = getattr(self._circuit_breaker, "state", "closed")
-        if state == "open":
+        configured_breakers = context.get("circuit_breakers")
+        if isinstance(configured_breakers, list) and configured_breakers:
+            if any(getattr(breaker, "is_available", False) for breaker in configured_breakers):
+                return GuardrailResult(passed=True, reason="Failover 链至少有一个熔断器可用")
+            return GuardrailResult(
+                passed=False,
+                blocked=True,
+                reason="Failover 链全部处于熔断状态",
+                severity="critical",
+            )
+
+        circuit_breaker = context.get("circuit_breaker") or self._circuit_breaker
+        if circuit_breaker is None:
+            return GuardrailResult(
+                passed=False,
+                blocked=True,
+                reason="未找到目标 Provider 的熔断器",
+                severity="critical",
+            )
+
+        state = getattr(circuit_breaker, "state", "closed")
+        if not getattr(circuit_breaker, "is_available", state != "open"):
             return GuardrailResult(
                 passed=False,
                 blocked=True,

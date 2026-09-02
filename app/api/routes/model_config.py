@@ -10,6 +10,7 @@ from app.api.schemas.model_config import (
     ModelConfigUpdateRequest,
     RoutingRuleUpdateRequest,
 )
+from app.auth.deps import require_permission
 from app.llm_gateway import config_manager as global_config_manager
 from app.llm_gateway.config_manager import ModelConfigManager
 from contracts.models import ModelType, RoutingRule
@@ -31,6 +32,7 @@ async def get_all_configs(
     type: str | None = Query(None, description="模型类型（llm/embedding/rerank/judge/vision）"),
     provider: str | None = Query(None, description="供应商名称"),
     cm: ModelConfigManager = Depends(get_config_manager),
+    _: None = Depends(require_permission("model_config:read")),
 ) -> dict[str, Any]:
     """查询当前所有模型配置（API Key 自动掩码）。
 
@@ -57,7 +59,7 @@ async def get_all_configs(
     result: dict[str, Any] = {}
     model_types = ["llm", "embedding", "rerank", "judge", "vision"]
     providers_map = {
-        "llm": ["deepseek", "openai"],
+        "llm": ["deepseek", "openai", "anthropic"],
         "embedding": ["openai"],
         "rerank": ["cohere"],
         "judge": ["openai"],
@@ -83,16 +85,15 @@ async def get_all_configs(
 
     result["routing_rules"] = {}
     for task_type in [
-        "analysis.requirement",
-        "analysis.constraint",
-        "planning.architecture",
-        "evaluation.scoring",
+        "analysis",
+        "planning",
+        "generation",
+        "evaluation",
+        "vision",
         "embedding",
         "rerank",
     ]:
-        rule = cm.get_routing_rule(task_type)
-        if rule:
-            result["routing_rules"][task_type] = rule.model_dump()
+        result["routing_rules"][task_type] = cm.resolve_rule(task_type).model_dump()
 
     return result
 
@@ -101,6 +102,7 @@ async def get_all_configs(
 async def update_config(
     req: ModelConfigUpdateRequest,
     cm: ModelConfigManager = Depends(get_config_manager),
+    _: None = Depends(require_permission("model_config:update")),
 ) -> dict[str, str]:
     """修改模型配置（API 动态注入，立即生效）。
 
@@ -133,6 +135,7 @@ async def update_config(
 async def update_routing_rule(
     req: RoutingRuleUpdateRequest,
     cm: ModelConfigManager = Depends(get_config_manager),
+    _: None = Depends(require_permission("model_config:update")),
 ) -> dict[str, str]:
     """修改路由规则。
 
@@ -143,7 +146,8 @@ async def update_routing_rule(
     Returns:
         操作结果消息。
     """
-    rule_fields: dict[str, Any] = {}
+    # PUT 保持部分更新语义，未传字段继承当前有效路由。
+    rule_fields: dict[str, Any] = cm.resolve_rule(req.task_type).model_dump()
     if req.type is not None:
         rule_fields["type"] = ModelType(req.type)
     if req.provider is not None:
@@ -154,6 +158,12 @@ async def update_routing_rule(
         rule_fields["temperature"] = req.temperature
     if req.max_tokens is not None:
         rule_fields["max_tokens"] = req.max_tokens
+    if req.timeout is not None:
+        rule_fields["timeout"] = req.timeout
+    if req.fallbacks is not None:
+        rule_fields["fallbacks"] = req.fallbacks
+    if req.config is not None:
+        rule_fields["config"] = req.config
 
     rule = RoutingRule(**rule_fields)
     cm.update_routing_rule(req.task_type, rule)
@@ -163,6 +173,7 @@ async def update_routing_rule(
 @router.delete("/runtime")
 async def reset_runtime_config(
     cm: ModelConfigManager = Depends(get_config_manager),
+    _: None = Depends(require_permission("model_config:update")),
 ) -> dict[str, str]:
     """重置运行时配置（恢复到环境变量配置）。
 

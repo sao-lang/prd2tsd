@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.llm_gateway import config_manager, gateway
 from app.llm_gateway.config_manager import ModelConfigManager
 from contracts.models import ModelConfig, ModelType, RoutingRule
 
@@ -101,12 +102,51 @@ def test_resolve_model(manager: ModelConfigManager):
 
 def test_all_model_types(manager: ModelConfigManager):
     """验证所有模型类型均可获取配置。"""
-    for mt in [ModelType.LLM, ModelType.EMBEDDING, ModelType.RERANK,
-               ModelType.JUDGE, ModelType.VISION]:
+    for mt in [ModelType.LLM, ModelType.EMBEDDING, ModelType.RERANK, ModelType.JUDGE, ModelType.VISION]:
         providers = {
-            "llm": "deepseek", "embedding": "openai",
-            "rerank": "cohere", "judge": "openai", "vision": "openai",
+            "llm": "deepseek",
+            "embedding": "openai",
+            "rerank": "cohere",
+            "judge": "openai",
+            "vision": "openai",
         }
         prov = providers.get(mt.value, "openai")
         config = manager.get_config(mt, prov)
         assert config is not None
+
+
+@pytest.mark.parametrize(
+    ("purpose", "expected_type", "expected_model"),
+    [
+        ("analysis", ModelType.LLM, "deepseek-chat"),
+        ("planning", ModelType.LLM, "deepseek-chat"),
+        ("generation", ModelType.LLM, "deepseek-chat"),
+        ("evaluation", ModelType.JUDGE, "gpt-4o-mini"),
+        ("vision", ModelType.VISION, "gpt-4o"),
+    ],
+)
+def test_purpose_routes_have_code_fallbacks(
+    manager: ModelConfigManager,
+    purpose: str,
+    expected_type: ModelType,
+    expected_model: str,
+) -> None:
+    """五类用途在无运行时覆盖时均有稳定代码/YAML 兜底。"""
+    rule = manager.resolve_rule(purpose)
+
+    assert rule.type == expected_type
+    assert rule.model == expected_model
+
+
+def test_request_override_preserves_failover_chain(manager: ModelConfigManager) -> None:
+    """单次请求覆盖主模型时不应丢失既有 failover。"""
+    rule = manager.resolve_rule("analysis", provider="openai", model="gpt-4.1-mini")
+
+    assert rule.provider == "openai"
+    assert rule.model == "gpt-4.1-mini"
+    assert rule.fallbacks
+
+
+def test_global_gateway_uses_runtime_api_config_manager() -> None:
+    """运行时配置 API 与全局 Gateway 必须共享同一个管理器实例。"""
+    assert gateway.config_manager is config_manager

@@ -4,6 +4,7 @@ from app.models.base import Base, TimestampMixin, UUIDMixin
 from app.models.block_e import (
     BudgetConfig,
     LLMCallLog,
+    SemanticCacheEntry,
     Session,
     SessionMessage,
     UploadedDocument,
@@ -25,6 +26,7 @@ __all__ = [
     "Role",
     "TeamMember",
     "LLMCallLog",
+    "SemanticCacheEntry",
     "BudgetConfig",
     "Session",
     "SessionMessage",

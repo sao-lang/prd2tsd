@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     SmallInteger,
@@ -34,7 +35,9 @@ class LLMCallLog(UUIDMixin, Base):
 
     task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     workspace_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("workspaces.id"), nullable=True,
+        String(36),
+        ForeignKey("workspaces.id"),
+        nullable=True,
     )
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     layer: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -45,7 +48,8 @@ class LLMCallLog(UUIDMixin, Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cached: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(),
+        DateTime(timezone=True),
+        server_default=func.now(),
     )
 
 
@@ -55,17 +59,33 @@ class BudgetConfig(UUIDMixin, Base):
     __tablename__ = "budget_configs"
 
     workspace_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("workspaces.id"), unique=True, nullable=False,
+        String(36),
+        ForeignKey("workspaces.id"),
+        unique=True,
+        nullable=False,
     )
     monthly_budget_usd: Mapped[float | None] = mapped_column(
-        Numeric(10, 2), nullable=True,
+        Numeric(10, 2),
+        nullable=True,
+    )
+    weekly_budget_usd: Mapped[float | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
+    budget_period: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="monthly",
     )
     alert_threshold: Mapped[float] = mapped_column(
-        Numeric(3, 2), default=0.90,
+        Numeric(3, 2),
+        default=0.90,
     )
     auto_downgrade: Mapped[bool] = mapped_column(Boolean, default=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -79,14 +99,20 @@ class Session(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "sessions"
 
     workspace_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("workspaces.id"), nullable=False,
+        String(36),
+        ForeignKey("workspaces.id"),
+        nullable=False,
     )
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id"), nullable=False,
+        String(36),
+        ForeignKey("users.id"),
+        nullable=False,
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     session_type: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="generate",
+        String(32),
+        nullable=False,
+        default="generate",
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     source_prd_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -98,28 +124,22 @@ class Session(UUIDMixin, TimestampMixin, Base):
     rating: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(JSON, default=list)
     last_message_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
     )
     deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
     )
     # Phase 3: LangGraph 断点恢复字段
-    thread_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True, comment="LangGraph thread_id"
-    )
+    thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, comment="LangGraph thread_id")
     checkpoint_ts: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, comment="最后一次 checkpoint 时间"
     )
-    current_node: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, comment="当前所在 LangGraph 节点名"
-    )
-    interrupt_stage: Mapped[str | None] = mapped_column(
-        String(32), nullable=True, comment="被 interrupt 暂停的阶段"
-    )
+    current_node: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="当前所在 LangGraph 节点名")
+    interrupt_stage: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="被 interrupt 暂停的阶段")
 
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "id", name="uq_workspace_session"),
-    )
+    __table_args__ = (UniqueConstraint("workspace_id", "id", name="uq_workspace_session"),)
 
 
 class SessionMessage(UUIDMixin, Base):
@@ -128,10 +148,14 @@ class SessionMessage(UUIDMixin, Base):
     __tablename__ = "session_messages"
 
     session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False,
+        String(36),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
     )
     user_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("users.id"), nullable=True,
+        String(36),
+        ForeignKey("users.id"),
+        nullable=True,
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -146,12 +170,11 @@ class SessionMessage(UUIDMixin, Base):
     model_used: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rating: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(),
+        DateTime(timezone=True),
+        server_default=func.now(),
     )
 
-    __table_args__ = (
-        UniqueConstraint("session_id", "turn_index", name="uq_session_turn"),
-    )
+    __table_args__ = (UniqueConstraint("session_id", "turn_index", name="uq_session_turn"),)
 
 
 class UploadedDocument(UUIDMixin, TimestampMixin, Base):
@@ -160,10 +183,14 @@ class UploadedDocument(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "uploaded_documents"
 
     workspace_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("workspaces.id"), nullable=False,
+        String(36),
+        ForeignKey("workspaces.id"),
+        nullable=False,
     )
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id"), nullable=False,
+        String(36),
+        ForeignKey("users.id"),
+        nullable=False,
     )
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
@@ -177,20 +204,62 @@ class UploadedDocument(UUIDMixin, TimestampMixin, Base):
     word_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     processing_status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="pending",
+        String(32),
+        nullable=False,
+        default="pending",
     )
     processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
     )
     entity_count: Mapped[int] = mapped_column(Integer, default=0)
     relation_count: Mapped[int] = mapped_column(Integer, default=0)
     session_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("sessions.id"), nullable=True,
+        String(36),
+        ForeignKey("sessions.id"),
+        nullable=True,
     )
     task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(JSON, default=list)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class SemanticCacheEntry(UUIDMixin, Base):
+    """持久化 LLM 语义缓存条目。"""
+
+    __tablename__ = "semantic_cache_entries"
+
+    workspace_id: Mapped[str] = mapped_column(String(36), nullable=False, default="", index=True)
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    response: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(JSON, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    guardrail_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "task_type",
+            "model",
+            "prompt_hash",
+            "embedding_model",
+            "guardrail_version",
+            name="uq_semantic_cache_scope_hash",
+        ),
+        Index(
+            "ix_semantic_cache_lookup",
+            "workspace_id",
+            "task_type",
+            "model",
+            "expires_at",
+        ),
     )

@@ -43,3 +43,6 @@ class RoutingRuleUpdateRequest(BaseModel):
     model: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    timeout: float | None = Field(default=None, gt=0, le=600)
+    fallbacks: list[dict[str, str]] | None = None
+    config: dict[str, Any] | None = None

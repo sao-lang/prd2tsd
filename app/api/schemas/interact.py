@@ -19,6 +19,11 @@ class InteractRequest(BaseModel):
     url: str = Field(default="", description="对 URL 分析/生成")
     generate: bool = Field(default=False, description="URL 分析后一键生成 TSD（转 complex_generation）")
     prd_type: str = Field(default="md", pattern="^(md|pdf|docx|txt)$", description="生成意图：PRD 类型")
+    provider: str = Field(default="", max_length=64, description="单次请求覆盖的模型 Provider（可选）")
+    model: str = Field(default="", max_length=128, description="单次请求覆盖的模型名称（可选）")
+    estimated_tokens: int | None = Field(default=None, ge=0, description="调用前用于 TPM 预留的预计 Token")
+    max_tokens: int | None = Field(default=None, ge=1, le=131072, description="模型最大输出 Token")
+    timeout: float | None = Field(default=None, gt=0, le=600, description="单次 Provider 尝试超时秒数")
 
 
 class InteractResponse(BaseModel):

@@ -39,6 +39,7 @@ class FailoverTarget:
     provider: str
     model: str
     priority: int  # 0=primary, 1=fallback, 2=ultimate
+    model_type: str = "llm"
     healthy: bool = True
     last_check: float = 0.0
 
@@ -91,7 +92,7 @@ class FailoverManager:
 
         raise AllProvidersUnavailableError(model_type)
 
-    async def record_failure(self, model_type: str, provider: str) -> None:
+    async def record_failure(self, model_type: str, provider: str, model: str = "") -> None:
         """记录调用失败，自动切到下一个。
 
         Args:
@@ -100,11 +101,15 @@ class FailoverManager:
         """
         chain = self._chains.get(model_type, [])
         for target in chain:
-            if target.provider == provider:
+            if target.provider == provider and (not model or target.model == model):
                 target.healthy = False
                 logger.warning("Provider 标记为不可用: %s/%s", model_type, provider)
                 break
         self._current_index[model_type] = 0  # 重置从头找
+
+    def get_chain(self, model_type: str) -> list[FailoverTarget]:
+        """返回按优先级排序的链副本，供 Gateway 执行动态路由。"""
+        return sorted(self._chains.get(model_type, []), key=lambda target: target.priority)
 
     async def _is_healthy(self, target: FailoverTarget) -> bool:
         """检查目标是否健康（带缓存）。"""
@@ -119,7 +124,7 @@ class FailoverManager:
     async def _ping(self, target: FailoverTarget) -> bool:
         """检测 Provider 是否可用（发一个最小请求）。"""
         try:
-            config = _config_manager.get_config("llm", target.provider)
+            config = _config_manager.get_config(target.model_type, target.provider)
             provider = _provider_factory.create(config.provider, config)
             await provider.complete(
                 prompt="ping",

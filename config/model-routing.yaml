@@ -1,0 +1,43 @@
+# Gateway 模型路由。环境变量、运行时 API 和单次请求均可覆盖这里的值。
+routing:
+  analysis:
+    type: llm
+    provider: deepseek
+    model: deepseek-chat
+    timeout: 60
+    fallbacks:
+      - provider: openai
+        model: gpt-4o-mini
+  planning:
+    type: llm
+    provider: deepseek
+    model: deepseek-chat
+    timeout: 60
+    fallbacks:
+      - provider: openai
+        model: gpt-4o-mini
+  generation:
+    type: llm
+    provider: deepseek
+    model: deepseek-chat
+    timeout: 90
+    fallbacks:
+      - provider: openai
+        model: gpt-4o-mini
+  evaluation:
+    type: judge
+    provider: openai
+    model: gpt-4o-mini
+    timeout: 60
+    fallbacks:
+      - type: llm
+        provider: deepseek
+        model: deepseek-chat
+  vision:
+    type: vision
+    provider: openai
+    model: gpt-4o
+    timeout: 90
+
+# Provider 连接配置可选；密钥应通过环境变量注入，禁止写入本文件。
+providers: {}

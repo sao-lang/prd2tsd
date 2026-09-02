@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from collections import defaultdict
 from threading import Lock
 from typing import Any
@@ -37,8 +38,8 @@ class RateLimiter:
         self._default_rpm = default_rpm or int(settings.RATE_LIMIT_DEFAULT_RPM)
         self._default_tpm = default_tpm or int(settings.RATE_LIMIT_DEFAULT_TPM)
 
-        # 滑动窗口记录: {workspace_id: [(timestamp, tokens), ...]}
-        self._request_log: dict[str, list[tuple[float, int]]] = defaultdict(list)
+        # 滑动窗口记录: {workspace_id: [(timestamp, tokens, reservation_id), ...]}
+        self._request_log: dict[str, list[tuple[float, int, str]]] = defaultdict(list)
         self._window_seconds = 60
 
         # 自定义限制: {workspace_id: {"rpm": int, "tpm": int}}
@@ -66,7 +67,9 @@ class RateLimiter:
         self._custom_limits[workspace_id] = limit
         logger.info(
             "工作空间 %s 速率限制已设置: rpm=%s, tpm=%s",
-            workspace_id, rpm, tpm,
+            workspace_id,
+            rpm,
+            tpm,
         )
 
     async def check(
@@ -100,13 +103,13 @@ class RateLimiter:
             # 清理过期记录
             log = self._request_log[workspace_id]
             self._request_log[workspace_id] = [
-                (ts, tk) for ts, tk in log if ts > cutoff
+                (ts, tk, reservation_id) for ts, tk, reservation_id in log if ts > cutoff
             ]
             log = self._request_log[workspace_id]
 
             # 计算当前窗口使用量
             current_rpm = len(log)
-            current_tpm = sum(tk for _, tk in log)
+            current_tpm = sum(tk for _, tk, _ in log)
 
         result: dict[str, Any] = {
             "allowed": True,
@@ -119,7 +122,7 @@ class RateLimiter:
         if max_rpm > 0 and current_rpm >= max_rpm:
             oldest = log[0][0] if log else now
             result["allowed"] = False
-            result["retry_after"] = max(result["retry_after"], cutoff + self._window_seconds - oldest)
+            result["retry_after"] = max(result["retry_after"], oldest + self._window_seconds - now)
             result["remaining_rpm"] = 0
 
         # 检查 TPM 限制
@@ -127,7 +130,7 @@ class RateLimiter:
             result["allowed"] = False
             if result["retry_after"] == 0.0 and log:
                 oldest = log[0][0]
-                result["retry_after"] = max(result["retry_after"], cutoff + self._window_seconds - oldest)
+                result["retry_after"] = max(result["retry_after"], oldest + self._window_seconds - now)
 
         return result
 
@@ -139,7 +142,52 @@ class RateLimiter:
             tokens: 消耗的 Token 数。
         """
         with self._lock:
-            self._request_log[workspace_id].append((time.monotonic(), tokens))
+            self._request_log[workspace_id].append((time.monotonic(), max(0, tokens), uuid.uuid4().hex))
+
+    async def reserve(self, workspace_id: str, estimated_tokens: int) -> dict[str, Any]:
+        """原子检查并预留一次请求的 RPM/TPM 配额。"""
+        estimated = max(0, estimated_tokens)
+        result = await self.check(workspace_id, estimated)
+        if not result["allowed"]:
+            result["reservation_id"] = ""
+            return result
+
+        reservation_id = uuid.uuid4().hex
+        with self._lock:
+            # check 与 append 之间可能有并发写入，因此在锁内重新计算一次。
+            now = time.monotonic()
+            cutoff = now - self._window_seconds
+            log = [entry for entry in self._request_log[workspace_id] if entry[0] > cutoff]
+            self._request_log[workspace_id] = log
+            limits = self._custom_limits.get(workspace_id, {})
+            max_rpm = limits.get("rpm", self._default_rpm)
+            max_tpm = limits.get("tpm", self._default_tpm)
+            current_tokens = sum(tokens for _, tokens, _ in log)
+            if (max_rpm > 0 and len(log) >= max_rpm) or (max_tpm > 0 and current_tokens + estimated > max_tpm):
+                result["allowed"] = False
+                result["reservation_id"] = ""
+                result["remaining_rpm"] = max(0, max_rpm - len(log)) if max_rpm > 0 else -1
+                result["remaining_tpm"] = max(0, max_tpm - current_tokens) if max_tpm > 0 else -1
+                return result
+            log.append((now, estimated, reservation_id))
+
+        result["reservation_id"] = reservation_id
+        remaining_rpm = int(result.get("remaining_rpm", -1))
+        remaining_tpm = int(result.get("remaining_tpm", -1))
+        result["remaining_rpm"] = max(0, remaining_rpm - 1) if remaining_rpm >= 0 else -1
+        result["remaining_tpm"] = max(0, remaining_tpm - estimated) if remaining_tpm >= 0 else -1
+        return result
+
+    async def reconcile(self, workspace_id: str, reservation_id: str, actual_tokens: int) -> None:
+        """用实际 Token 替换预留量；找不到预留时补记实际用量。"""
+        actual = max(0, actual_tokens)
+        with self._lock:
+            log = self._request_log[workspace_id]
+            for index, (timestamp, _tokens, entry_id) in enumerate(log):
+                if entry_id == reservation_id:
+                    log[index] = (timestamp, actual, entry_id)
+                    return
+            log.append((time.monotonic(), actual, reservation_id or uuid.uuid4().hex))
 
     def reset(self, workspace_id: str | None = None) -> None:
         """重置限制记录。

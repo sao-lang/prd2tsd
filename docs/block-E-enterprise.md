@@ -794,12 +794,15 @@ class LLMGateway:
         node: str = "",
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
-        """流式调用 LLM，yield 文本块。
+        """安全流式调用 LLM，yield 经护栏检查的文本块。
 
-        保留完整链路: 速率限制 → 模型路由 → 预算检查
-        → 语义缓存(跳过) → 追踪 → Provider.stream_complete() → 成本记录
+        完整链路: 前置护栏/脱敏 → 速率限制 → 模型路由 → 预算检查
+        → 语义缓存(跳过) → 追踪 → Provider.stream_complete()
+        → 按 Failover 尝试隔离缓冲 → 完整输出后置护栏 → 安全 chunk 释放 → 成本记录
         """
 ```
+
+> **注意**：完整输出检查是安全交付的前提，因此 SSE 的首个内容 chunk 会在当次 LLM 输出完成后到达。状态、心跳与任务进度事件仍实时推送。
 
 Provider 层:
 
