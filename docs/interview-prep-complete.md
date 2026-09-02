@@ -941,16 +941,16 @@ Analysis/Planning 后由 `needs_review()` 判断是否审核；`interrupt()` 暂
 ```text
 输入护栏
 → RPM/TPM 限流
-→ 按 task_type 选择模型
-→ 预算检查与低成本模型降级
-→ 精确缓存
-→ Provider 熔断和 Failover
+→ 按用途解析请求/API/环境/YAML/代码多级模型路由
+→ PostgreSQL 周/月预算检查与低成本模型降级
+→ 租户隔离的精确 + 持久化向量语义缓存
+→ 动态 Provider 熔断和配置化 Failover
 → 模型调用
 → 输出护栏与 PII 还原
 → 成本、token 和指标记录
 ```
 
-类名虽然叫 `SemanticCache`，当前实现是 `task_type + 完整 prompt` 的 SHA-256 精确内存缓存，不是 embedding 相似度缓存；预算、限流和缓存主要也是进程内状态，多实例需要迁移到 Redis/数据库。
+`SemanticCache` 先按 workspace/task/model/护栏版本执行进程内精确匹配，再从 PostgreSQL 读取同作用域、未过期且向量模型一致的候选计算余弦相似度；原始 Prompt 只保留哈希。预算配置和成本账本已持久化，限流窗口仍是单进程内存状态，多实例部署需要迁移到 Redis 或共享限流服务。
 
 #### Q：Pydantic 怎么约束结构化输出？
 
@@ -1001,7 +1001,7 @@ Analysis/Planning 后由 `needs_review()` 判断是否审核；`interrupt()` 暂
 - `interrupt + Command(resume)` 人工恢复机制已实现；
 - PGVector、Neo4j、Global Search 和 RRF 多路检索已接入主 Pipeline；
 - PGVector 异常降级、零向量跳过、反思后重新进行图/向量检索已有测试；
-- Gateway 的路由、限流、预算、精确缓存、熔断和 Failover 有代码与单测；
+- Gateway 的用途级路由、预计 Token 限流预留、持久化周/月预算、语义缓存、熔断和 Failover 有代码与单测；
 - FastAPI、SSE、任务管理、会话保存、认证与 RBAC 已实现；
 - Docker Compose、Alembic、pytest、ruff、mypy 和 CI 配置齐全。
 
@@ -1015,8 +1015,8 @@ Analysis/Planning 后由 `needs_review()` 判断是否审核；`interrupt()` 暂
 
 主动说明当前边界：
 
-- `SemanticCache` 实际是进程内精确缓存，多实例需要迁移 Redis；
-- 预算累计和限流窗口主要是进程内状态；
+- 语义缓存和预算账本已落 PostgreSQL，但语义候选当前在应用层计算余弦，多实例需关注候选规模与查询延迟；
+- 限流窗口仍是进程内状态，多实例需要迁移 Redis 或集中式限流器；
 - 人工审核 `needs_changes` 后自动回到对应阶段修改的条件边仍需完善；
 - 评测数据集较小，阈值和权重还没有真实业务数据校准。
 

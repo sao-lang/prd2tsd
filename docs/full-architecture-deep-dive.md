@@ -229,7 +229,7 @@ PromptStore:     ⚠️ 当前为内存实现（dict），未接数据库
 | 成本追踪 | `cost_tracker.record()` → llm_call_logs 语义 + `LLM_COST_TOTAL` 指标 |
 | 语义缓存 | `cache.py`：SHA-256(prompt+task_type) 精确匹配，TTL 1h，max 1000 条 |
 | 速率限制 | `rate_limiter.py`：RPM（默认 60）/ TPM（默认 100000）滑动窗口，按 workspace |
-| 预算控制 | `budget_controller.py`：月预算超 90% 自动降级到低成本模型 |
+| 预算控制 | `budget_controller.py`：PostgreSQL 持久化自然周/月预算，超阈值自动降级到低成本模型 |
 | 熔断 | 每个 Provider 独立 `CircuitBreaker`（failure_threshold=3, recovery_timeout=30s） |
 | Failover | LLM 链：deepseek-chat → gpt-4o-mini；每 60s 健康检测 |
 | 护栏 | 7 个可插拔护栏（详见第七章） |
@@ -1274,9 +1274,9 @@ GuardrailManager（app/llm_gateway/guardrails/manager.py）:
   check_output(text, context): 依次执行后置护栏，blocked 且 severity=="critical" 则 break
 
 pre_llm 阶段（Gateway.complete / stream_complete 步骤 0）:
-  PromptInjectionGuardrail   检测提示注入（ignore previous instructions / DAN / system: 等）
+  PromptInjectionGuardrail   NFKC/零宽归一化 + 中英文加权风险模式（指令覆盖/提示词外泄/角色伪造/编码绕过）
   PIIDetectorGuardrail       检测并脱敏 PII（邮箱/手机/身份证号）
-  TimeoutGuardrail           检查 CircuitBreaker 状态
+  TimeoutGuardrail           检查本次期限及动态路由完整 Failover 链的 CircuitBreaker 状态
 
 post_llm 阶段（complete 步骤 7 / stream_complete 安全释放前）:
   ContentSafetyGuardrail     检测不安全内容
@@ -1295,28 +1295,32 @@ Provider 级熔断: name="provider:{deepseek|openai|anthropic|cohere}"
   failure_threshold=3, recovery_timeout=30s, half_open_max_requests=1
 
 Gateway 中的使用:
-  complete():  resolve_model → 若当前 Provider 已熔断（cb.is_available=False）则走 Failover 链
-  stream_complete(): 遍历 failover.get_target()，熔断的 target 直接 continue 跳过
+  complete()/stream_complete(): 每个目标均通过 cb.call()；OPEN 恢复窗口到期后允许一次 HALF_OPEN 试探
+  TimeoutGuardrail: 只在整条 Failover 链均不可用或请求期限耗尽时前置阻断
 ```
 
 ### 7.4 Provider Failover 链
 
 ```text
 FailoverManager:
-  configure("llm", [deepseek-chat(P0), gpt-4o-mini(P1)])
-  configure("embedding", [text-embedding-3-small(P0)])
-  get_target(model_type): 跳过不健康 target，health_check_interval=60s（_ping 最小请求探测）
-  record_failure(model_type, provider): 标记 unhealthy，重置 index
-  AllProvidersUnavailableError: 全不可用时抛出
+  路由键 = task_type:model_type:provider:model
+  主目标及 fallbacks 来自运行时 API / 环境变量 / config/model-routing.yaml / 代码枚举兜底
+  每个 fallback 可声明自己的 type/provider/model，失败尝试按路由键记录
+
+UniversalProvider:
+  Gateway 只依赖一个统一 Provider 门面
+  OpenAI / DeepSeek / Azure / 自建兼容端点复用 openai-compatible 协议
+  Anthropic Messages 与 Cohere V2 作为门面内部协议适配器，由 config.protocol 选择
 ```
 
 ### 7.5 语义缓存 / 速率限制 / 预算控制
 
 ```text
-SemanticCache:  make_key = SHA-256("{task_type}::{prompt}")
-                TTL 1h, max_size 1000（满时删最旧）；命中返回 cached=True cost=0
-RateLimiter:    RPM(默认 60) + TPM(默认 100000) 滑动窗口 60s，按 workspace；set_limit 自定义
-BudgetController: 月预算(默认 $100)，check_and_record；超 90% → should_downgrade
+SemanticCache:  L1 精确键包含 workspace/task/model/guardrail_version；L2 PostgreSQL 保存向量和安全响应
+                候选按租户/任务/模型/向量模型/护栏版本/TTL 过滤，再计算余弦相似度；不保存原始 Prompt
+                workspace_id 为空时禁用语义匹配，仅允许精确命中
+RateLimiter:    RPM(默认 60) + TPM(默认 100000) 滑动窗口；调用前 reserve 预计 Token，完成后 reconcile 实际 Token
+BudgetController: budget_configs + llm_call_logs 持久化；支持自然周/自然月窗口；超阈值 → should_downgrade
                 → gateway 自动降级: gpt-4o-mini→openai / deepseek-chat→deepseek
 ```
 
@@ -2367,7 +2371,7 @@ tech-stack.yml 黑名单: langchain / langchain-community / langchain-openai / l
 
 ```text
 1. 语义缓存:  相同 prompt+task_type 命中缓存，跳过 LLM 调用（TTL 1h）
-2. 预算控制:  月预算超 90% → 自动降级到低成本模型
+2. 预算控制:  自然周/月预算超配置阈值 → 自动降级到低成本模型
 3. Session 老化清理: free 30天 / pro 180天
 4. ContextCompressor: token 超限自动压缩（summarize→rolling→truncate）
 5. Failover 链: 主 Provider 不可用自动切换，恢复自动切回
@@ -2524,7 +2528,8 @@ tech-stack.yml 黑名单: langchain / langchain-community / langchain-openai / l
 | `Role` | `roles` | id, organization_id(FK,可空), name, is_system, permissions(JSON) |
 | `TeamMember` | `team_members` | id, workspace_id(FK), user_id(FK), role_id(FK)；uq_workspace_user |
 | `LLMCallLog` | `llm_call_logs` | id, task_id, workspace_id(FK), model, layer, node, input_tokens, output_tokens, cost(Numeric 10,6), latency_ms, cached, created_at |
-| `BudgetConfig` | `budget_configs` | id, workspace_id(FK,unique), monthly_budget_usd, alert_threshold(默认0.90), auto_downgrade(默认True) |
+| `BudgetConfig` | `budget_configs` | id, workspace_id(FK,unique), monthly_budget_usd, weekly_budget_usd, budget_period(weekly/monthly), alert_threshold, auto_downgrade |
+| `SemanticCacheEntry` | `semantic_cache_entries` | workspace/task/model 隔离，prompt_hash、response、embedding、embedding_model、guardrail_version、expires_at；不存原始 Prompt |
 | `Session` | `sessions` | id, workspace_id(FK), user_id(FK), title, session_type, status, source_prd_id, source_task_id, summary, message_count, token_count, cost_usd, rating, tags(JSON), last_message_at, deleted_at, **thread_id / checkpoint_ts / current_node / interrupt_stage（LangGraph 断点）**；uq_workspace_session |
 | `SessionMessage` | `session_messages` | id, session_id(FK,CASCADE), user_id(FK), role, content, content_type, attachments(JSON), metadata(JSON), parent_message_id, **turn_index**, token_count, cost_usd, latency_ms, model_used, rating, created_at；uq_session_turn(session_id,turn_index) |
 | `UploadedDocument` | `uploaded_documents` | 见 6.2（含 processing_status/file_hash/source_url 等） |
@@ -2543,6 +2548,7 @@ tech-stack.yml 黑名单: langchain / langchain-community / langchain-openai / l
 | `e1f2g3h4i5j6` | add_persistence_and_align_tables.py | task_runs / webhook_subscriptions / evaluation_scores + ORM 对齐 |
 | `e2f3g4h5i6j7` | add_timestamp_align.py | organizations/roles 补 updated_at |
 | `f3a4b5c6d7e8` | add_batch_tasks_and_doc_link.py | batch_tasks 表 + text_unit_embeddings.document_id 列 |
+| `g4b5c6d7e8f9` | gateway_budget_semantic_cache.py | 周/月预算字段 + semantic_cache_entries 持久化语义缓存表 |
 
 ### 19.3 Contracts 数据模型（contracts/）
 
@@ -2707,7 +2713,7 @@ volumes:  pgdata
 | 文档上传最大大小 | 50 MB |
 | 会话保留（free/pro/enterprise） | 30 / 180 / 不限 天 |
 | 定时任务 | 图谱刷新 24h / 会话清理 1h / Web 同步 2h |
-| 预算降级阈值 | 月预算 90% |
+| 预算降级阈值 | 周/月预算默认 90%，可按工作空间配置 |
 | 速率限制默认 | RPM 60 / TPM 100000 |
 
 ### 22.3 相关文档索引

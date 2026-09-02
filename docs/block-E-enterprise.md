@@ -16,7 +16,7 @@
 - 模型路由策略（按任务类型自动选模型）
 - 成本追踪（每次 LLM 调用记录 token 消耗和费用）
 - 语义缓存（相同查询命中缓存不重复调用）
-- 预算控制（工作空间月预算超过 90% 自动降级到低成本模型）
+- 预算控制（工作空间自然周/月预算超过阈值自动降级到低成本模型）
 
 **E2 — 观测性（Observability）**
 - OpenTelemetry 分布式追踪（每个请求的全链路 Span）
@@ -194,9 +194,25 @@ CREATE TABLE llm_call_logs (
 CREATE TABLE budget_configs (
     workspace_id UUID PK FK → workspaces,
     monthly_budget_usd DECIMAL(10,2),
+    weekly_budget_usd DECIMAL(10,2),
+    budget_period VARCHAR(16) DEFAULT 'monthly', -- weekly / monthly，自然周期自动重置
     alert_threshold DECIMAL(3,2) DEFAULT 0.9,  -- 90% 触发告警
     auto_downgrade BOOLEAN DEFAULT TRUE,
     updated_at TIMESTAMPTZ
+);
+
+-- semantic_cache_entries: 租户隔离的持久化语义缓存（不保存原始 Prompt）
+CREATE TABLE semantic_cache_entries (
+    id UUID PK,
+    workspace_id UUID NOT NULL,
+    task_type VARCHAR(64) NOT NULL,
+    model VARCHAR(128) NOT NULL,
+    prompt_hash VARCHAR(64) NOT NULL,
+    response TEXT NOT NULL,
+    embedding JSON NOT NULL,
+    embedding_model VARCHAR(128) NOT NULL,
+    guardrail_version VARCHAR(32) NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
 );
 ```
 
@@ -388,6 +404,10 @@ class LLMGateway:
         prompt: str,
         task_type: str,                    # "analysis.requirement" / "planning.pattern"
         workspace_id: str,
+        provider: str | None = None,       # 单次请求覆盖
+        model: str | None = None,
+        estimated_tokens: int | None = None,
+        timeout: float | None = None,
         response_format: dict = None,
     ) -> LLMResponse:
         """自动路由模型 + 追踪成本 + 语义缓存。"""
@@ -419,12 +439,14 @@ class DocumentManagementService:
 ```
 E1 — LLM Gateway 调用链路:
   块 C/D 的 Node 调用 gateway.complete(prompt, task_type, workspace_id)
-    → Router.route(task_type) → 选择模型（deepseek-v3 / gpt-4o-mini）
-    → Cache.lookup(prompt) → 命中则直接返回
-    → CostTracker.track() → 记录开始
-    → 实际 LLM 调用（OpenAI SDK）
-    → CostTracker.track() → 记录结束（input_tokens, output_tokens, cost）
-    → BudgetController.check(workspace_id) → 超预算则告警
+    → 输入护栏（Unicode/零宽归一化注入检测 + PII/L3 脱敏 + 动态熔断状态）
+    → RateLimiter.reserve(estimated_tokens) 原子预留 RPM/TPM
+    → 按 request > runtime API > env > YAML > code enum 解析用途级路由
+    → BudgetController.check(workspace_id) → 周/月预算阈值触发低成本路由
+    → SemanticCache.lookup() → L1 精确命中或租户/任务/模型隔离的向量余弦命中
+    → CircuitBreaker + 配置化 Failover → UniversalProvider → 协议适配器
+    → 完整输出后置护栏（流式同样先缓冲检查，失败尝试不释放）
+    → 成本写入 llm_call_logs；RateLimiter.reconcile() 用实际 Token 结算预留
     → 返回 LLMResponse
 
 E3 — 会话历史链路:
@@ -797,7 +819,7 @@ class LLMGateway:
         """安全流式调用 LLM，yield 经护栏检查的文本块。
 
         完整链路: 前置护栏/脱敏 → 速率限制 → 模型路由 → 预算检查
-        → 语义缓存(跳过) → 追踪 → Provider.stream_complete()
+        → 语义缓存 → 追踪 → Provider.stream_complete()
         → 按 Failover 尝试隔离缓冲 → 完整输出后置护栏 → 安全 chunk 释放 → 成本记录
         """
 ```

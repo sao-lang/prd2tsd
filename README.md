@@ -208,10 +208,10 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 | `DELETE` | `/api/v1/workspaces/{id}` | 归档工作空间 | 是 |
 | `POST` | `/api/v1/workspaces/{id}/members` | 添加成员 | 是 |
 | `DELETE` | `/api/v1/workspaces/{id}/members/{uid}` | 移除成员 | 是 |
-| `GET` | `/api/v1/model-config` | 查询模型配置 | 否 |
-| `PUT` | `/api/v1/model-config` | 更新模型配置 | 否 |
-| `DELETE` | `/api/v1/model-config/runtime` | 重置运行时配置 | 否 |
-| `PUT` | `/api/v1/model-config/routing` | 更新路由规则 | 否 |
+| `GET` | `/api/v1/model-config` | 查询模型配置（需 `model_config:read`） | 是 |
+| `PUT` | `/api/v1/model-config` | 更新模型配置（需 `model_config:update`） | 是 |
+| `DELETE` | `/api/v1/model-config/runtime` | 重置运行时配置（需 `model_config:update`） | 是 |
+| `PUT` | `/api/v1/model-config/routing` | 更新用途级路由、超时与 failover（需 `model_config:update`） | 是 |
 | `POST` | `/api/v1/knowledge/build` | 上传文档构建知识图谱 | 是 |
 | `POST` | `/api/v1/knowledge/search` | 知识图谱检索 | 是 |
 
