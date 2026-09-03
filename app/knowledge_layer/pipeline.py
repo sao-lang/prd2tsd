@@ -360,8 +360,22 @@ class RetrievalPipeline:
             global_result = None
 
             if detected_mode in ("local", "hybrid"):
-                for sq in sub_queries[:3]:
-                    sq_docs = await self.local_search.search_as_docs(sq, workspace_id, top_k)
+                for idx, sq in enumerate(sub_queries[:3]):
+                    # 实体链接驱动图检索：仅首轮对原始 query 注入精确命中的实体 ID；
+                    # 改写子查询与反思轮仍走纯文本匹配，避免把初始链接结果带偏。
+                    if round_idx == 0 and idx == 0 and matched_entity_ids:
+                        sq_docs = await self.local_search.search_as_docs(
+                            sq,
+                            workspace_id,
+                            top_k,
+                            seed_entity_ids=matched_entity_ids,
+                        )
+                    else:
+                        sq_docs = await self.local_search.search_as_docs(
+                            sq,
+                            workspace_id,
+                            top_k,
+                        )
                     local_docs.extend(sq_docs)
                 local_docs = self._deduplicate(local_docs)
                 vector_docs = await self._search_vectors(sub_queries[:3], workspace_id, top_k)

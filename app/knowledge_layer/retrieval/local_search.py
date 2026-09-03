@@ -51,6 +51,7 @@ class LocalSearch:
         query: str,
         workspace_id: str = "",
         top_k: int | None = None,
+        seed_entity_ids: list[str] | None = None,
     ) -> LocalSearchResult:
         """执行 Local Search。
 
@@ -58,18 +59,30 @@ class LocalSearch:
             query: 搜索查询。
             workspace_id: 工作空间 ID。
             top_k: 返回结果数。
+            seed_entity_ids: 实体链接命中的实体 ID（可选），优先作为中心实体参与遍历。
 
         Returns:
             Local Search 结果。
         """
         k = top_k or self._top_k
 
+        # 0. 实体链接种子：优先把链接精确命中的实体作为中心实体（与关键词匹配互补去重）
+        matched_entities: list[KGEntity] = []
+        seen_ids: set[str] = set()
+        if seed_entity_ids:
+            seed_entities = await self._graph_store.get_entities_by_ids(
+                seed_entity_ids,
+                workspace_id,
+            )
+            for entity in seed_entities:
+                if entity.id not in seen_ids:
+                    seen_ids.add(entity.id)
+                    matched_entities.append(entity)
+
         # 1. 实体匹配
         import re
 
         keywords = re.findall(r"[a-zA-Z0-9_\-\u4e00-\u9fff]+", query)
-        matched_entities: list[KGEntity] = []
-        seen_ids: set[str] = set()
 
         for keyword in keywords:
             if len(keyword) < 2:
@@ -169,6 +182,7 @@ class LocalSearch:
         query: str,
         workspace_id: str = "",
         top_k: int | None = None,
+        seed_entity_ids: list[str] | None = None,
     ) -> list[ScoredDoc]:
         """执行 Local Search 并返回 ScoredDoc 列表。
 
@@ -176,11 +190,12 @@ class LocalSearch:
             query: 搜索查询。
             workspace_id: 工作空间 ID。
             top_k: 返回结果数。
+            seed_entity_ids: 实体链接命中的实体 ID（可选），透传给 search。
 
         Returns:
             ScoredDoc 列表。
         """
-        result = await self.search(query, workspace_id, top_k)
+        result = await self.search(query, workspace_id, top_k, seed_entity_ids)
         docs: list[ScoredDoc] = []
         for i, ent in enumerate(result.matched_entities):
             docs.append(

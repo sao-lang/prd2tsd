@@ -142,3 +142,37 @@ async def test_reflection_refinement_requeries_pgvector() -> None:
 
     assert [call.args[0] for call in query_embedder.embed_text.await_args_list] == ["原查询", "精炼查询"]
     assert {doc.id for doc in context.results} == {"graph-2", "vector-2"}
+
+
+@pytest.mark.asyncio
+async def test_entity_link_seed_drives_first_round_local_search() -> None:
+    """实体链接命中的实体 ID 应在首轮注入 Local 图检索。"""
+    pipeline, vector_store, _ = _make_pipeline()
+    pipeline.enricher.enrich.return_value = ("原查询", ["e-seed-1", "e-seed-2"])
+    pipeline.rewriter.rewrite.return_value = ["原查询"]
+    pipeline.local_search.search_as_docs.side_effect = [[_doc("graph-1", "local")]]
+    vector_store.similarity_search.side_effect = [[]]
+
+    context = await pipeline.retrieve("原查询", mode="local", top_k=10, workspace_id="ws-1")
+
+    assert pipeline.local_search.search_as_docs.await_count == 1
+    assert pipeline.local_search.search_as_docs.await_args.kwargs.get("seed_entity_ids") == [
+        "e-seed-1",
+        "e-seed-2",
+    ]
+    assert {doc.id for doc in context.results} == {"graph-1"}
+
+
+@pytest.mark.asyncio
+async def test_no_entity_link_passes_no_seed() -> None:
+    """实体链接未命中时，Local 图检索不应携带 seed_entity_ids（保持原行为）。"""
+    pipeline, vector_store, _ = _make_pipeline()
+    pipeline.enricher.enrich.return_value = ("原查询", [])
+    pipeline.rewriter.rewrite.return_value = ["原查询"]
+    pipeline.local_search.search_as_docs.side_effect = [[_doc("graph-1", "local")]]
+    vector_store.similarity_search.side_effect = [[]]
+
+    await pipeline.retrieve("原查询", mode="local", top_k=10, workspace_id="ws-1")
+
+    assert pipeline.local_search.search_as_docs.await_count == 1
+    assert "seed_entity_ids" not in pipeline.local_search.search_as_docs.await_args.kwargs

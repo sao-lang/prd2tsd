@@ -171,6 +171,41 @@ class Neo4jGraphStore:
             return None
         return self._record_to_entity(record["e"])
 
+    async def get_entities_by_ids(
+        self,
+        entity_ids: list[str],
+        workspace_id: str = "",
+    ) -> list[KGEntity]:
+        """根据 ID 批量获取实体（保持输入顺序）。
+
+        Args:
+            entity_ids: 实体 ID 列表。
+            workspace_id: 工作空间 ID（租户隔离）。
+
+        Returns:
+            按输入顺序返回存在的实体，缺失的 ID 跳过。
+        """
+        if not entity_ids:
+            return []
+        driver = await self._get_driver()
+        ordered_ids = list(dict.fromkeys(entity_ids))
+        cypher = """
+            MATCH (e:KGEntity)
+            WHERE e.id IN $ids
+              AND coalesce(e.status, 'active') IN ['active', 'downgraded']
+        """
+        params: dict[str, Any] = {"ids": ordered_ids}
+        if workspace_id:
+            cypher += " AND e.workspace_id = $workspace_id"
+            params["workspace_id"] = workspace_id
+        cypher += " RETURN e"
+        async with driver.session(database=self._database) as session:
+            result = await session.run(cypher, params)
+            records = [record async for record in result]
+        entities = [self._record_to_entity(r["e"]) for r in records]
+        by_id = {e.id: e for e in entities}
+        return [by_id[eid] for eid in ordered_ids if eid in by_id]
+
     async def get_entity_by_name(self, name: str, workspace_id: str = "") -> KGEntity | None:
         """根据名称获取实体。
 
