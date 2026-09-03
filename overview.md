@@ -2,6 +2,31 @@
 
 ### 2026-09-04
 
+#### 42. 实体链接结果驱动图检索 + Global 设计取舍文档澄清
+
+- **时间：** 2026-09-04
+- **发起人：** user（指出 Global 非社区 GraphRAG 是原本设计取舍、QueryEnricher 增强结果未消费需完善）
+- **修改文件：** `app/knowledge_layer/{graph_store.py,pipeline.py}`、`app/knowledge_layer/retrieval/local_search.py`、`tests/unit/{test_local_search.py,test_retrieval_pipeline_vector.py}`、`docs/interview-prep-chains-3.1-3.15-detailed.md`、`overview.md`
+- **修改内容：**
+  1. `Neo4jGraphStore` 新增 `get_entities_by_ids(entity_ids, workspace_id="")`：按 ID 批量读取 active/downgraded 实体并保持输入顺序，缺失 ID 跳过；无真实 Neo4j 时由测试 mock 覆盖。
+  2. `LocalSearch.search()/search_as_docs()` 新增可选 `seed_entity_ids`：先按 ID 精确加载实体链接命中的实体作为中心实体（与文本关键词匹配去重合并），再走既有 1~2 跳子图遍历；不传时完全保持原行为。
+  3. `RetrievalPipeline.retrieve()` 首轮（`round_idx==0`）对 `sub_queries[0]`（原始 query）注入 `seed_entity_ids=matched_entity_ids`，使此前被丢弃的实体链接结果真正驱动图召回；改写子查询与反思轮仍走纯文本检索，避免初始链接把精炼查询带偏。
+  4. 文档 3.4 检索链路同步：QueryEnricher 段落与"当前实现边界"由"增强结果未消费"更新为"首轮注入 Local 图检索、向量/Global 路不消费、refined_query 不复用链接"的如实边界；Global 段落与边界由"不是社区 GraphRAG"的缺陷式表述，改为"实体类型聚合宏观总结是单租户演示规模下的有意轻量取舍，社区检测/分层报告是规模上来后的演进项"。
+- **复盘结果：** 定向回归 21 passed（含 4 个新增用例：LocalSearch seed 生效、search_as_docs 透传、pipeline 首轮注入 seed、无命中时不带 seed）；`ruff check` 与 `mypy`（graph_store/local_search/pipeline）均通过。mypy 暴露 `AsyncResult.fetch()` 需传数量参数，已改为异步迭代收集全部记录。完整 `interview-prep-complete.md` 无同源缺陷表述，无需同步。
+- **潜在风险：** 本机未启动真实 Neo4j，`get_entities_by_ids` 的 Cypher 仅经 mock 验证，需在真实环境做一次入图+检索冒烟；实体链接仅在首轮对原始 query 生效，中文查询无分词仍可能整段命中受限。
+
+#### 41. 面试文档补充"记忆管理与上下文防爆炸"系统性描述
+
+- **时间：** 2026-09-04
+- **发起人：** user（"这两个文档新增一下相关的描述"并确认方案后落地，随后要求登记开发记录）
+- **修改文件：** `docs/interview-prep-complete.md`、`docs/interview-prep-chains-3.1-3.15-detailed.md`、`overview.md`
+- **修改内容：**
+  1. `interview-prep-complete.md` §3.10 会话记忆链路末尾新增"防上下文爆炸全景（加分点）"bullet，用①~⑥浓缩六层机制（状态三层模型、检索式注入、多级 Token 预算、压缩流水线、生成 Map-Reduce、分析层采样）+ 一句话心法，并指向详版文档。
+  2. `interview-prep-chains-3.1-3.15-detailed.md` §3.10 新增小节"防止上下文爆炸的系统性设计（跨模块全景）"：6 行机制表（机制/解决什么/做法与参数/关键代码锚点）+ 两条收口机制（`max_iterations=3` 迭代收敛、会话按套餐老化清理）+ 心法总结；并在常见追问补充"整套系统怎么避免上下文爆炸"话术。
+  3. 内容均锚定当前源码：Runtime 不参与 checkpoint（`orchestrator/state.py`）、最近 50 条 + top_k≈8~10 + 单条 300 字符（`memory_context.py`）、query[:500] 与 RAG 压缩 4000 tokens（`knowledge_layer/config.py`）、128k/32k 与 summarize→rolling→truncate（`session_history/compressor.py`）、Send 分节（`generation_layer/agent_graph.py`）、分析节点 `prd_raw[:3k~8k]` 采样（`analysis_layer/nodes/*.py`）。
+- **复盘结果：** 方案含插入位置与内容范围，经用户确认后一次落地；已复核插入位置、表格对齐与 Markdown 结构正确，未改动两文档既有内容，与既有 §3.10/§5.13（记忆压缩三策略）口径一致，并保留"默认未注入 vector_store/Gateway 时记忆退化为关键词+时间分"的如实边界。
+- **潜在风险：** 纯文档变更，无代码、API、数据库或配置影响；机制表中的数值口径（128k/32k 默认上限、top_k、采样长度）以当前源码为准，后续源码演进需同步更新。
+
 #### 40. 知识图谱关系、Claims 全入口与老化调度闭环
 
 - **时间：** 2026-09-04

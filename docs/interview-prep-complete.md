@@ -293,6 +293,7 @@ flowchart LR
 - **关键实现**：图内 `retrieve_memory → ... → compress_memory → save_session`；MemoryRetriever 多策略（recency/relevance/importance/hybrid）；ContextCompressor 三种策略（summarize/rolling/truncate）；session 表记录会话与消息，thread_id 与图 checkpoint 绑定。
 - **关键文件**：`app/orchestrator/nodes/{retrieve_memory,compress_memory,save_session}.py`、`app/session_history/*.py`。
 - **追问**：为什么不把所有历史都塞进 prompt？→ token 成本与上下文窗口限制，滚动摘要保留核心事实、丢弃过程噪音。
+- **防上下文爆炸全景（加分点）**：会话记忆只是上下文管理一环，系统性防爆炸靠六层——①状态三层模型（Config/State/Runtime，Runtime 不进 checkpoint，`state.py`）；②检索式注入（DB 只取最近 50 条、top_k≈8、单条 300 字符）；③多级 Token 预算（query 截 500、RAG 压到 4000 tokens）；④压缩流水线（128k 触发，保最新 32k，summarize→rolling→truncate）；⑤生成层 Map-Reduce（Send 每节独立小 prompt，`generation_layer/agent_graph.py`）；⑥分析层采样（每节点只读 prd_raw[:3k~8k]）。心法一句话：**记忆只落库、prompt 只带检索片段+摘要、超长文档靠采样与并行分节**。详版见 `interview-prep-chains-3.1-3.15-detailed.md` §3.10。
 
 ### 3.11 SSE 流式链路
 

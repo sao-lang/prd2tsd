@@ -352,7 +352,7 @@ PGVector 首先执行 `CREATE EXTENSION IF NOT EXISTS vector`，并确保三张�
 
 `QueryRewriter` 把原问题放入 Prompt，要求生成 3 条不带编号的改写，Gateway 参数是 `task_type="default"`、`layer="knowledge"`、`node="query_rewriter"`、温度 0.3、最大输出 512。返回后按换行拆分、去掉空行，把原问题放在列表第一个，只过滤与原问题忽略大小写后完全相等的行，最终截取前 5 条。它不会清理模型返回的 `1.`、`-` 等编号，也不会在改写之间做语义去重；调用异常时直接返回 `[原查询]`。
 
-`QueryEnricher` 用 `[a-zA-Z0-9_\-\u4e00-\u9fff]+` 提取连续关键词，长度小于 2 的跳过；每个关键词在 Neo4j 中执行 `e.name CONTAINS $query`，每词最多取 3 个实体，并按实体 ID 去重。命中后把前 5 个实体 ID拼成 `原查询 (entities: ...)`。当前 Pipeline 虽然得到了 `enriched_query` 和 `matched_entity_ids`，后面的 Local/Vector/Global 仍主要使用原 query 或 sub_queries，因此“实体链接已做，但增强结果尚未真正驱动召回”。另外，这个正则不会做中文分词，一整段连续中文可能被当作一个关键词。
+`QueryEnricher` 用 `[a-zA-Z0-9_\-\u4e00-\u9fff]+` 提取连续关键词，长度小于 2 的跳过；每个关键词在 Neo4j 中执行 `e.name CONTAINS $query`，每词最多取 3 个实体，并按实体 ID 去重。命中后把前 5 个实体 ID拼成 `原查询 (entities: ...)`。实体链接结果在首轮检索注入 LocalSearch 的 `seed_entity_ids`（仅对原始 query），由 `get_entities_by_ids` 按 ID 精确加载实体并作为中心实体参与 1~2 跳遍历，让实体链接真正驱动图召回；`enriched_query` 字符串本身不参与文本检索，避免把 UUID 拼进查询产生噪声。另外，这个正则不会做中文分词，一整段连续中文可能被当作一个关键词。
 
 #### 2. Local 图检索
 
@@ -376,7 +376,7 @@ Local 路最多消费重写列表的前 3 条，并按顺序逐条调用 `search
 
 Global 路先拉取 workspace 下全部实体，按 `entity.type` 分组，再按每组实体数量降序保留前 5 种类型；每种类型最多展示前 10 个名称。拼好的实体文本截到 4000 字符，与当前 query 一起交给 Gateway，总结组件、技术栈、关系、架构模式和约束。模型异常时不返回空，而是退化成“查询 + 前 1000 字符实体列表”。没有任何实体时返回固定说明。
 
-当前 Pipeline 每轮先调用一次 `global_search.search()` 保存 `global_result`，随后 `search_as_docs()` 内部又调用一次 `search()` 包装成 `ScoredDoc(id="global_summary", score=1.0)`，因此同一轮可能发生两次相同的 Global LLM 总结。语义缓存可能吸收第二次调用，但从代码结构看仍存在重复调用入口。它也不是社区检测式 GraphRAG，只是实体按类型聚合后的宏观摘要。
+当前 Pipeline 每轮先调用一次 `global_search.search()` 保存 `global_result`，随后 `search_as_docs()` 内部又调用一次 `search()` 包装成 `ScoredDoc(id="global_summary", score=1.0)`，因此同一轮可能发生两次相同的 Global LLM 总结。语义缓存可能吸收第二次调用，但从代码结构看仍存在重复调用入口。Global 只做“实体按类型聚合 → LLM 宏观总结”，不是社区发现/社区报告式 GraphRAG——这是有意的轻量取舍：本项目是单租户演示级知识库，没有社区量级；社区检测（Leiden）与分层摘要会显著增加图构建、检索与维护成本。面试时可主动说明“完整 GraphRAG 是数据规模上来后的演进项，不是当前缺口”。
 
 #### 5. RRF、反思循环和最终压缩
 
@@ -392,8 +392,8 @@ Gateway 在 Rewriter、Embedding、Global Summary 和 Reflection 四处出现；
 
 ### 当前实现边界
 
-- QueryEnricher 生成了 `enriched_query` 和实体 ID，但主检索循环目前主要继续使用原 query/sub_queries，增强结果没有充分消费。
-- Global Search 是“按实体类型聚合后由 LLM 总结”，不是完整的社区发现、社区报告式 GraphRAG。
+- 实体链接已消费但仍轻量：`matched_entity_ids` 只在首轮对原始 query 注入 Local 图检索，向量与 Global 路不消费实体 ID；改写子查询与反思产生的 refined_query 不会重新做实体链接；正则无中文分词，连续中文长句易整段命中受限。
+- Global Search 定位为“实体类型聚合 → LLM 宏观总结”，不引入社区发现/分层报告式 GraphRAG——这是按数据规模做的有意取舍，演进路线是社区检测而非缺陷修复。
 - Neo4j/PGVector/Embedding 任一路失败时会尽量保留其他路结果，是可用性优先的降级设计。
 
 ### 面试话术
@@ -896,6 +896,23 @@ SaveSession 自行从 connection_manager 创建数据库会话，不依赖 check
 - Checkpoint 面向程序执行：保存图跑到哪个节点、每个状态字段是什么。
 - `session_id` 用于对话连续性，`thread_id` 用于执行连续性，不能互相替代。
 
+### 防止上下文爆炸的系统性设计（跨模块全景）
+
+会话记忆只是上下文管理的一环。整套系统从"存储、状态、注入、生成"四个环节系统性防止上下文爆炸，面试时可以作为跨模块的加分点展开：
+
+| 机制 | 解决什么 | 做法与参数 | 关键代码 |
+| --- | --- | --- | --- |
+| 状态三层模型 | checkpoint 不膨胀 | Config（只读）/ State（持久化）/ Runtime（每次请求注入、**不参与序列化**）分离；db_session、event_bus、llm_gateway 等大对象不进 checkpoint | `app/orchestrator/state.py` |
+| 检索式记忆注入 | 不把全量历史塞进 prompt | DB 只取最近 50 条 → MemoryRetriever hybrid 排序 → top_k=8~10 → 每条截 300 字符才拼入 prompt | `app/orchestrator/nodes/memory_context.py` |
+| 多级 Token 预算 | 每层输入都受限 | 检索 query 截 `[:500]`；RAG 检索 `local_top_k=10 / global_top_k=5`，结果压缩到约 4000 tokens；记忆单条 `[:300]` | `app/knowledge_layer/config.py`、`retrieval/compressor.py` |
+| 历史压缩流水线 | 长会话不超窗 | 超过约 128K 触发，为最新内容预留约 32K 保护区；旧消息按 summarize → rolling → truncate 三级降级 | `app/session_history/compressor.py` |
+| 生成层 Map-Reduce | 超长 TSD 不一次生成 | outline 后 `Send()` 每章节一个独立 SectionWriter（prompt 只有项目名/模式/单节标题/技术栈/组件），reducer 合并 | `app/generation_layer/agent_graph.py` |
+| 分析层采样切分 | 超大 PRD 不全量喂模型 | 各节点只读 `prd_raw[:3k~8k]` 采样片段 | `app/analysis_layer/nodes/*.py` |
+
+再叠加两条收口机制：评测回环最多 `max_iterations=3` 轮强制收敛；会话按套餐老化清理（free 30 天 / pro 180 天 / enterprise 不限，`app/session_history/cleanup.py`）。
+
+一句话心法：**记忆永远只落库、不常驻内存；prompt 每次只带"刚检索到的小片段 + 被压缩后的摘要"；超长文档靠分析层采样与生成层并行分节消化**。
+
 ### 当前实现边界
 
 - 默认注入的 MemoryRetriever 没有 vector_store 和 LLM Gateway，因此 hybrid 策略通常退化为关键词相关性 + 默认重要度 + 时间分。
@@ -911,6 +928,7 @@ SaveSession 自行从 connection_manager 创建数据库会话，不依赖 check
 - __三个分数为什么这样配？__ relevance 权重最高保证回答当前问题，recency 防止旧信息压过新决策，importance 保留关键约束；权重是工程初值，需要用真实会话评测调优。
 - __摘要会不会丢信息？__ 会，所以最新消息设为保护区，旧内容才进入 summarize；摘要失败再降级 rolling/truncate。关键业务决策更适合额外结构化保存，而不是只依赖自然语言摘要。
 - __当前真的用了向量记忆吗？__ 默认依赖注入没有 vector_store 和 Gateway，通常会降级到关键词、时间分和默认重要度，面试时必须说明这是可扩展设计与当前装配之间的差距。
+- __整套系统怎么避免上下文爆炸？__ 它不是靠单一手段。状态层把不可序列化对象挡在 checkpoint 外；注入层只带检索到的 top_k 片段而不是全量历史；长会话结束前走 summarize/rolling/truncate 压缩；写超长 TSD 用 Send 每节独立小 prompt；读超长 PRD 则各分析节点只取采样片段；迭代轮数和会话保留期也都有上限。每层的核心是"控制单次放进模型的量"，而不是事后截断。
 
 关键文件：`app/orchestrator/nodes/retrieve_memory.py`、`app/orchestrator/nodes/memory_context.py`、`app/orchestrator/nodes/compress_memory.py`、`app/orchestrator/nodes/save_session.py`、`app/session_history/*.py`。
 
