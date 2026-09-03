@@ -20,6 +20,9 @@ try:
     celery_app = Celery("prd2tsd")
     celery_app.conf.broker_url = settings.REDIS_URL or "redis://redis:6379/0"
     celery_app.conf.result_backend = settings.REDIS_URL or "redis://redis:6379/0"
+    from app.batch.scheduler import BatchScheduler
+
+    celery_app.conf.beat_schedule = BatchScheduler.BEAT_SCHEDULE
 
     @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)  # type: ignore[untyped-decorator]
     def refresh_knowledge_graph(self: Any) -> dict[str, Any]:
@@ -29,12 +32,18 @@ try:
         logger.info("Celery 任务: refresh_knowledge_graph 开始")
         try:
             async def _run() -> dict[str, Any]:
+                from app.knowledge_layer.aging import KnowledgeAgingPolicy
                 from app.knowledge_layer.pipeline import KnowledgeGraphBuilder
 
                 builder = KnowledgeGraphBuilder()
-                # 报告当前图谱规模（实体/关系计数），作为定时刷新的基线
+                aging = await KnowledgeAgingPolicy(graph_store=builder.graph_store).run()
                 stats = await builder.get_stats()
-                return {"status": "completed", "task": "refresh_knowledge_graph", "stats": stats.model_dump()}
+                return {
+                    "status": "completed",
+                    "task": "refresh_knowledge_graph",
+                    "aging": aging.model_dump(),
+                    "stats": stats.model_dump(),
+                }
 
             result = asyncio.run(_run())
             logger.info("知识图谱刷新任务完成: %s", result)
@@ -183,7 +192,13 @@ try:
                         )
                         await repo.update(
                             session, doc.id,
-                            DocumentUpdate(processing_status="indexed"),
+                            DocumentUpdate(
+                                processing_status="indexed",
+                                processing_error=None,
+                                indexed_at=datetime.now(UTC),
+                                entity_count=stats.entities,
+                                relation_count=stats.relations,
+                            ),
                         )
                         return {
                             "status": "completed",

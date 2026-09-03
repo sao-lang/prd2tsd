@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.batch.scheduler import BatchScheduler
-from app.batch.tasks import BatchTaskService
+from app.batch.tasks import BatchTaskService, celery_app
 
 
 class TestBatchTaskService:
@@ -67,6 +67,10 @@ class TestBatchScheduler:
         assert "refresh-knowledge-graph" in config
         assert "cleanup-expired-sessions" in config
         assert "sync-web-resources" in config
+
+    def test_schedule_is_wired_to_celery_app(self) -> None:
+        """定义的定时任务必须真正注册到 Worker/Beat 使用的 Celery app。"""
+        assert celery_app.conf.beat_schedule == BatchScheduler.BEAT_SCHEDULE
 
     @pytest.mark.asyncio
     async def test_trigger_known_task(self) -> None:

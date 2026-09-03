@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
-from app.knowledge_layer.models import Chunk, KGEntity, ScoredDoc
+from app.knowledge_layer.models import Chunk, KGEntity, KGRelation, KnowledgeAgingStats, ScoredDoc
 from app.knowledge_layer.pipeline import KnowledgeGraphBuilder, RetrievalPipeline
 
 __all__ = [
     "KGEntity",
+    "KGRelation",
+    "KnowledgeAgingStats",
     "ScoredDoc",
     "Chunk",
     "RetrievalPipeline",

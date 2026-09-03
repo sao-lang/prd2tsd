@@ -20,311 +20,6 @@
 
 面试时先讲业务主链，再根据追问深入 Gateway、知识检索、并行生成或人工审核，不需要一次把全部细节倒出来。
 
-## gateway链路解析
-
-一、LLM Gateway 完整链路
-非流式 gateway.complete() 的实际顺序是：
-
-1. 前置护栏
-2. 工作空间限流
-3. task_type 模型路由
-4. 预算检查与模型降级
-5. 缓存查询
-6. 输入可逆脱敏
-7. Circuit Breaker + Failover + Provider 调用
-8. 后置护栏
-9. 缓存写入、成本记录、预算累计、限流计数、指标追踪
-核心入口在 [LLM Gateway (line 155)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:155)。
-10. 前置护栏
-Gateway 初始化时注册了 7 个护栏，管理器把它们按 pre_llm 和 post_llm 分组，顺序执行。
-① Prompt Injection Guardrail
-调用 LLM 前扫描用户输入，例如：
-
-- ignore all previous instructions
-- disregard your system prompt
-- system prompt:
-- “忽略之前的指令”
-- “忘记之前的……”
-一旦匹配：
-blocked = true
-severity = critical
-Gateway 不再调用任何 Provider，直接返回：
-[输入被护栏拦截: 检测到 Prompt 注入模式...]
-实现见 [prompt_injection.py (line 11)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/guardrails/prompt_injection.py:11)。
-这是规则式检测，优点是快、稳定、零模型成本；缺点是存在误报，也防不住复杂的语义注入。面试时不要把它说成完整的 AI 内容安全系统。
-② PII Detector Guardrail
-检测：
-- 身份证号
-- 手机号
-- 银行卡号
-- 邮箱
-默认策略是 mask，不是直接拒绝。
-不过需要注意：这个 Guardrail 虽然会产生 masked_text，当前 Gateway 对前置护栏只处理 blocked，没有直接使用这里返回的 masked_text。
-真正送入 Provider 前的脱敏由独立的 DataMaskingEngine 完成：
-原 Prompt
-   ↓ mask_reversible()
-手机号 → [MASKED_PHONE:1]
-   ↓
-发送给第三方 LLM
-   ↓
-LLM 输出
-   ↓ unmask()
-恢复原始内容
-调用位置在 [LLM Gateway (line 282)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:282)。
-这种可逆脱敏的设计目的是：
-- 第三方模型看不到真实敏感信息
-- 模型仍可以理解“这里存在一个手机号/邮箱”
-- 返回结果后可以恢复业务原文
-但当前脱敏注册表是 Gateway 进程内共享字典，生产化还需要考虑并发隔离和清理。
-③ Timeout Guardrail
-设计上用于调用前检查熔断器：
-- OPEN：直接阻止调用
-- HALF_OPEN：允许一次试探请求
-- CLOSED：正常调用
-实现见 [timeout_guardrail.py (line 13)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/guardrails/timeout_guardrail.py:13)。
-但当前默认初始化时没有向它注入具体 Circuit Breaker，因此它通常返回“无熔断器配置”。真正的熔断控制发生在 _failover_call() 中，而不是这个护栏里。
-
-2. 工作空间限流
-限流器以 workspace_id 为维度，维护 60 秒滑动窗口，支持：
-
-- RPM：每分钟请求数
-- TPM：每分钟 Token 数
-流程是：
-调用前 check(workspace_id)
-        ↓
-清理 60 秒以前的记录
-        ↓
-统计当前窗口请求数和 Token 数
-        ↓
-超过 RPM/TPM
-        ↓
-返回 retry_after，不调用 Provider
-调用成功后，再把实际 Token 数写入窗口：
-await rate_limiter.record(
-    workspace_id,
-    response.input_tokens + response.output_tokens,
-)
-实现见 [rate_limiter.py (line 16)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/rate_limiter.py:16)。
-面试时可以解释为：
-API 层的限流保护整个 HTTP 服务，Gateway 的限流则保护昂贵的模型资源，并且可以按工作空间配置不同配额。
-
-当前实现是单进程内存滑动窗口。多实例部署时各实例的计数不共享，生产环境应该迁移到 Redis + Lua 脚本，保证原子性和全局一致性。
-另外，调用前没有传入当前 Prompt 的预估 Token，因此 TPM 检查主要依据历史消耗；当前请求的真实 Token 是调用完成后才记录。这也是一个可以改进的点。
-3. 多 Provider 模型路由
-节点调用 Gateway 时会带上 task_type：
-analysis
-planning
-generation
-evaluation
-intent_classify
-knowledge_qa
-document_analysis
-ModelConfigManager 根据 task_type 查路由规则：
-运行时 API 动态配置
-        ↓ 没有
-环境变量中的路由配置
-        ↓ 没有
-默认 DeepSeek / deepseek-chat
-例如理论上可以配置：
-analysis   → DeepSeek
-generation → GPT-4o
-evaluation → GPT-4o-mini
-vision     → GPT-4o
-配置优先级则是：
-API 运行时注入 > 环境变量 > 代码默认值
-对应实现见 [config_manager.py (line 220)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/config_manager.py:220)。
-Provider 层有统一抽象：
-BaseProvider
-├── OpenAIProvider
-├── AnthropicProvider
-├── CohereProvider
-└── CustomProvider
-其中 OpenAI、DeepSeek、Azure OpenAI 都可以走 OpenAI-compatible SDK，只需要更换：
-
-- api_key
-- base_url
-- model
-工厂实现在 [providers/__init__.py (line 24)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/providers/__init__.py:24)。
-需要诚实说明：
-- 当前真正完整实现的是 OpenAI-compatible Provider
-- Anthropic 目前主要是预留占位
-- 实际 Failover 链只配置了 DeepSeek 和 OpenAI
-- 注释里提到的本地 Llama 没有真正进入默认 Failover 链
-
-4. 预算检查与自动降级
-预算以 workspace_id 为维度，维护：
-
-- 月预算金额
-- 当前累计成本
-- 告警阈值
-- 是否自动降级
-调用前先检查当前预算：
-预算使用率 < 告警阈值
-    → 使用原模型
-
-预算达到告警阈值，例如 90%
-    → alert=true
-    → 可自动换成低成本模型
-
-预算达到 100%
-    → within_budget=false
-    → 自动降级
-模型降级映射是：
-gpt-4o        → deepseek-chat
-deepseek-chat → gpt-4o-mini
-gpt-4o-mini   → gpt-4o-mini
-调用完成后再把本次真实成本累计进去。
-实现见 [budget_controller.py (line 56)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/budget_controller.py:56)。
-它和限流的区别是：
-
-- 限流控制短时间并发和吞吐
-- 预算控制长期累计成本
-- 限流超出通常拒绝请求
-- 预算超出优先降级到便宜模型，而不是直接拒绝
-当前预算也是内存实现，没有真正按自然月重置，也没有跨实例共享。面试时可以说这是完整的控制接口和原型实现，生产环境应持久化到 PostgreSQL/Redis。
-
-5. “语义缓存”到底怎么实现
-缓存 Key 是：
-SHA256(task_type + "::" + prompt)
-默认：
-
-- TTL：1 小时
-- 最大容量：1000 条
-- 满了删除最老条目
-- 缓存命中成本为 0，不调用 Provider
-代码在 [cache.py (line 10)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/cache.py:10)。
-但严格来说，当前不是“语义缓存”，而是“Prompt 精确匹配缓存”：
-“什么是 Redis？”
-“请解释一下 Redis”
-语义接近但字符串不同，不会命中。
-所以面试时最好说：
-当前完成的是语义缓存接口和精确哈希版本，后续可以把 Key 查询升级成 Embedding 相似度匹配，并在 Key 中加入租户、模型、Prompt 版本和温度参数。
-
-还有一个安全细节：当前缓存 Key 没包含 workspace_id，如果不同租户提交完全相同 Prompt，会共享缓存结果。对于通用问答没问题，但如果 Prompt 包含不同租户上下文，就存在隔离风险。
-6. Circuit Breaker 熔断器
-每个 Provider 有独立熔断器：
-provider:deepseek
-provider:openai
-provider:anthropic
-provider:cohere
-状态机是：
-CLOSED
-  │ 连续失败 3 次
-  ↓
-OPEN
-  │ 等待 30 秒
-  ↓
-HALF_OPEN
-  │
-  ├─ 试探成功 → CLOSED
-  └─ 试探失败 → OPEN
-实现见 [circuit_breaker.py (line 44)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/core/circuit_breaker.py:44)。
-熔断的作用不是“修复 Provider”，而是：
-已知某个 Provider 持续失败时，不让后续请求继续等待它超时，快速失败并切换备用 Provider，防止故障放大。
-
-例如 DeepSeek 连续超时，如果没有熔断器，每个请求可能都要等 60 秒；熔断后，新请求立即跳过 DeepSeek。
-7. Failover 故障切换
-默认链路是：
-Primary
-DeepSeek / deepseek-chat
-        ↓ 失败
-Fallback
-OpenAI / gpt-4o-mini
-        ↓ 失败
-返回“服务暂不可用”
-初始化在 [LLM Gateway (line 116)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:116)。
-实际执行过程：
-get_target("llm")
-        ↓
-选择当前健康且优先级最高的 Provider
-        ↓
-检查该 Provider 的 Circuit Breaker
-        ↓
-ProviderFactory 创建 Provider
-        ↓
-breaker.call(provider.complete)
-        ↓
-成功：直接返回
-失败：record_failure，把目标标为不健康
-        ↓
-下一轮选择后备 Provider
-最多循环 3 次，代码在 [LLM Gateway (line 491)](E:/vsc-workspace/lania-zip/prd2tsd-agents/app/llm_gateway/__init__.py:491)。
-Failover 和熔断的区别是：
-
-- 熔断器负责判断“这个 Provider 当前是否应该继续尝试”
-- Failover 负责判断“这个 Provider 不可用后应该换谁”
-- 两者组合才构成高可用调用链
-当前实现有一个集成层面的不足：Failover 第一次失败就会把目标标为不健康，而熔断器需要累计 3 次失败才打开。因此多数情况下 Failover 会先把 Provider 跳过，熔断器不一定能累计到阈值。更合理的设计是由熔断器统一管理失败计数，Failover 只读取熔断状态。
-二、7 项护栏分别起什么作用
-护栏 阶段 作用 当前行为
-PromptInjection 前置 检测提示词注入 命中后直接阻断
-PIIDetector 前置 检测身份证、手机、银行卡、邮箱 产生脱敏文本；实际 Provider 脱敏主要由 DataMaskingEngine 完成
-TimeoutGuardrail 前置 检查熔断/超时状态 已注册，但默认没有绑定具体熔断器
-ContentSafety 后置 检测 API Key、密码、Token、私钥 命中后用 [MASKED] 替换
-OutputValidator 后置 期望 JSON 时校验格式 当前只产生 warning，不自动修复
-EmptyResponse 后置 检测空响应 当前只产生 warning
-RetryDecision 后置 根据空响应、JSON 错误、超时决定重试/降级 有决策类，但尚未真正接入 Gateway 的重试循环
-
-这里面真正形成强制动作的主要是：
-
-- Prompt Injection 阻断
-- DataMaskingEngine 输入脱敏
-- Content Safety 输出脱敏
-- Failover 层的异常重试和 Provider 切换
-而 JSON 修复、空响应重试、TimeoutGuardrail 目前更接近“接口和策略已定义，但闭环尚未完全打通”。
-面试时不要简单说“7 项护栏都实现了自动阻断与修复”。更准确的说法是：
-Gateway 注册了 7 类可插拔护栏，其中注入阻断、输入脱敏和敏感输出遮蔽已经进入主调用链；格式校验、空响应和重试决策目前完成了检测与策略抽象，自动修复闭环还需要继续完善。
-
-三、成本追踪是怎么做的
-Provider 返回：
-input_tokens
-output_tokens
-model
-cost
-Gateway 再做三类记录。
-
-1. 单次调用记录
-CostTracker 保存：
-
-- 模型名称
-- 输入 Token
-- 输出 Token
-- 估算成本
-- task_type
-- workspace_id
-- layer
-- node
-- 时间
-所以可以回答：
-这个月 planning 层用了多少钱？
-evaluation 哪个节点最贵？
-某个 workspace 消耗了多少 Token？
-
-2. Prometheus 指标
-主要记录：
-
-- LLM 调用次数
-- 成功/失败
-- 输入输出 Token
-- 不同模型的成本
-- 调用耗时
-
-3. OpenTelemetry Trace
-每次 Gateway 调用创建 CLIENT span，并写入：
-
-- task_type
-- workspace_id
-- layer
-- node
-- 实际模型
-- Token 数
-- 成本
-- 是否缓存命中
-- 是否预算降级
-- 是否触发护栏
-- 是否发生熔断
-这样一条 PRD→TSD 任务可以从主图节点一直追踪到具体 Provider 调用。
-
 ## 3.1 统一交互入口与意图分类链路
 
 ### 链路解决什么问题
@@ -458,9 +153,9 @@ TaskManager 创建任务时生成两个 UUID，在 `asyncio.Lock` 下写入内�
   → 精确缓存 → 向量语义缓存（默认相似度 0.92、TTL 1 小时）
       ├─ 命中：返回缓存内容
       └─ 未命中：按 task_type 选择主 Provider/模型
-  → 检查 Provider 熔断器
-      ├─ 可用：在 timeout 内调用
-      └─ 打开/超时/异常：按 fallback 顺序切备用 Provider
+  → Failover 只读熔断状态并按优先级过滤候选
+      ├─ 可用：由 CircuitBreaker.call 在 timeout 内调用
+      └─ OPEN/超时/异常：跳过或按 fallback 顺序切备用 Provider
   → 恢复脱敏值并执行后置护栏
   → 写语义缓存、Token、成本、预算账本、Prometheus 和 Trace
   → 用实际 Token 校正限流预留
@@ -470,11 +165,11 @@ TaskManager 创建任务时生成两个 UUID，在 `asyncio.Lock` 下写入内�
 
 一次非流式调用的真实顺序是“先解析路由和估算 Token，再进入 CLIENT span，随后前置护栏、限流预留、预算降级、缓存、Failover、后置护栏、计费与校正”。这里有几个容易被追问的细节：护栏拦截和限流不是抛异常，而是返回带 metadata 的零成本 `LLMResponse`；所有 Provider 都失败时返回固定的“服务暂不可用”；缓存命中把预留 Token 校正为 0；真实调用成功后才把 Provider 返回的 usage 写进 Token 指标、成本表和预算账本。业务节点因此仍要判断 metadata/内容，不能把“Gateway 返回了对象”等同于模型成功。
 
-`FailoverManager` 为每个 task_type 路由组装“主 Provider/模型 + fallback 列表”。尝试目标前先看对应 Provider 的 CircuitBreaker，调用由 breaker 包裹并受 `asyncio.wait_for(timeout)` 约束；成功会把熔断器重置为 CLOSED，异常会增加该 Provider 的连续失败数并记录本目标失败，然后继续下一个目标。熔断器由 `provider:{provider_name}` 命名，因此同一 Provider 下不同模型共享健康状态；默认阈值为 3、恢复等待 30 秒、HALF_OPEN 最多放 1 个探测请求。
+`FailoverManager` 为每个 task_type 路由组装“主 Provider/模型 + fallback 列表”，目标对象不保存健康状态。它只通过 `CircuitBreakerManager` 读取 `is_available` 并返回候选；真正的 Provider 调用由 `breaker.call()` 包裹并受 `asyncio.timeout()` 约束。只有 CircuitBreaker 会在异常时增加连续失败数、在成功时清零、在恢复窗口到期后控制 HALF_OPEN 试探。熔断器由 `provider:{provider_name}` 命名，因此同一 Provider 下不同模型共享健康状态；默认阈值为 3、恢复等待 30 秒、HALF_OPEN 最多放 1 个探测请求。
 
 缓存范围包含 workspace、task_type、模型、Prompt 和 guardrail 版本，避免跨租户串数据，也避免安全策略升级后继续返回旧版本结果。限流按 60 秒窗口同时约束 RPM 和 TPM，调用前用 Prompt 长度与 `max_tokens` 做预留，调用后按真实 usage 校正；预算则根据 PostgreSQL 中的调用账单按周/月统计，控制的是更长周期成本。
 
-缓存是两级的。一级是进程内 dict，精确 key 为 `SHA256(workspace::task_type::model::guardrail_version::原始Prompt)`，默认最多 1000 条，满了删除时间最老的一条；二级从 PostgreSQL 只读取同 workspace、task_type、模型、Embedding 模型和护栏版本且未过期的候选，最多比较配置的候选数，再用余弦相似度选最高项，达到默认 0.92 才命中。匿名调用没有 workspace 时只允许一级精确匹配，禁止跨匿名请求做语义复用。Embedding 或数据库失败只降级成精确缓存，不影响真实模型调用；成功结果先写一级缓存，再尽力持久化语义条目。
+缓存是两级的。一级是进程内 dict，精确 key 为 `SHA256(workspace::task_type::model::guardrail_version::输入身份)`，默认最多 1000 条，满了删除时间最老的一条；二级从 PostgreSQL 只读取同 workspace、task_type、模型、Embedding 模型和护栏版本且未过期的候选，最多比较配置的候选数，再用余弦相似度选最高项，达到默认 0.92 才命中。匿名调用没有 workspace 时只允许一级精确匹配。多模态请求会把图片载荷 SHA-256 纳入输入身份，并禁用只看文本 Prompt 的语义匹配，防止不同图片因 OCR 指令相同而串缓存；纯文本仍使用两级语义缓存。
 
 限流记录结构是 `{workspace_id: [(monotonic时间, 预留Token, reservation_id)]}`。`reserve()` 先做一次快速 check，再在 `threading.Lock` 内清理 60 秒外记录并重新计算 RPM/TPM，解决并发请求都在 check 阶段看到“还有配额”的竞态；允许后立即占一条请求和估算 Token。`reconcile()` 找到 reservation_id 后用实际输入加输出 Token 替换估算值，找不到则补记。它是单进程内存限流器，横向部署时各 Worker 各有一份窗口，生产环境应换成 Redis/Lua 等跨实例原子实现。
 
@@ -512,7 +207,7 @@ TimeoutGuardrail 的名字容易误导：它本身不包裹网络超时，而是
 
 ### 链路解决什么问题
 
-把上传文档或网页正文加工成两类可检索知识：Neo4j 中的技术实体，以及 PGVector 中的原文块、实体和 Claims 向量。
+把上传文档或网页正文加工成两类可检索知识：Neo4j 中的技术实体与显式关系，以及 PGVector 中的原文块、实体和 Claims 向量。
 
 ### 完整流程
 
@@ -525,30 +220,30 @@ TimeoutGuardrail 的名字容易误导：它本身不包裹网络超时，而是
       → 护栏/限流/预算/缓存 → 主模型或 Failover → JSON 解析
   → 得到 TechStack/Component/Pattern/Constraint/Concept
   → 与当前 workspace 已有实体做消歧合并
+  → RelationExtractor 按 Chunk 从候选实体间抽取关系并校验端点
   → gateway.embed(embedding) 为实体生成向量
-  → 实体写入 Neo4j
-  → ClaimsExtractor 经 Gateway 提取结构化断言
-  → gateway.embed → claim_embeddings
+  → 实体与 RELATED 关系写入 Neo4j
+  → ClaimsExtractor + claim_embeddings（文件、上传和 URL 共用）
   → gateway.embed → text_unit_embeddings
   → gateway.embed → entity_embeddings
-  → 返回 entities/chunks/claims 统计
+  → 返回 entities/relations/chunks/claims 统计
 ```
 
 ### 每一步的数据变化
 
 #### 1. 文件字节怎样变成统一文本
 
-上传链调用 `build_from_bytes(content, filename, workspace_id, document_id)`。方法先根据文件名最后一个 `.` 取得小写扩展名，再调用 `multi_format_loader.extract_text()`。这里没有通用的“智能解析器”，而是按扩展名进入明确分支：
+上传链调用 `build_from_bytes(content, filename, workspace_id, document_id)`。方法先根据文件名最后一个 `.` 取得小写扩展名，再分别调用 `multi_format_loader.extract_text()` 和 `extract_images()`。这里没有通用的“智能解析器”，而是按扩展名进入明确分支：
 
 | 文件类型 | 当前解析方式 | 产生的文本 |
 | --- | --- | --- |
 | `.md` / `.txt` | `content.decode("utf-8", errors="replace")` | 原文本基本原样保留；非法 UTF-8 字节替换为替代字符，不做编码探测 |
 | `.csv` / `.tsv` | 标准库 `csv.reader`，分隔符分别为逗号和 Tab | 每行去掉空单元格和首尾空白，转换成 `记录: 单元格1，单元格2。`；表头不会被特殊识别 |
-| `.docx` | `python-docx` 从 `BytesIO` 打开 | 先按 `doc.paragraphs` 收集非空段落，再遍历所有表格行，转换成 `表格行: 单元格1，单元格2` |
-| `.pdf` | `pypdf.PdfReader(BytesIO)` 逐页执行 `extract_text()` | 跳过无文本页，非空页前加 `[第 N 页]`，页与页之间用两个换行连接 |
-| `.png` / `.jpg` / `.jpeg` | 不做 OCR 和视觉模型识别 | 仅生成 `[图片: 文件名, 类型 xxx, 大小 xx.xKB]` 占位文本，保证能按文件名或元数据检索 |
+| `.docx` | `python-docx` 读取段落/表格；ZIP `word/media/*` 提取图片 | 正文 + 每张内嵌图片的 Gateway Vision OCR，来源标记为 DOCX 图片名 |
+| `.pdf` | `pypdf` 逐页提取文字，并遍历 `page.images` | 页文本 + 页内栅格图片 OCR，来源保留 PDF 页码和图片名 |
+| `.png` / `.jpg` / `.jpeg` | Pillow 校验/规范化后调用 `gateway.analyze_vision()` | 元数据 + 可见文字逐字转录 + 图表、流程、截图等语义描述 |
 
-`build_from_bytes()` 会对最终文本执行 `text.strip()`；完全为空就抛出 `ValueError`，Celery 将文档状态改成 `failed` 并进入任务重试。网页正文和已经得到的纯文本直接走 `build_from_text()`，不会再经过文件格式解析。另一个 `build_from_document()` 使用 `DocumentLoader` 从本地路径读取，但当前只接受 `.md`，不能和上传链的多格式 Loader 混为一谈。
+`build_from_bytes()` 先执行确定性正文提取，再执行 `extract_images()`。图片按内容 SHA-256 去重，受单文档 50 张、单图 20MB、图片总量 50MB 的默认限制；OCR 提示明确把图片文字当作不可信数据，禁止执行图中指令。每张图片使用独立 `vision` 路由并传入预计 Token，OCR 被护栏拦截、限流、全部 Provider 失败或返回空内容都会抛错，使 Celery 将任务标为 failed 并重试，而不是把错误响应写进知识库。最终正文与 `[图片 OCR：来源]` 段落合并后才进入 `build_from_text()`。本地路径入口对非 Markdown 文件也会转到同一字节流链路；Markdown 保留原有完整构建路径。
 
 #### 2. paragraph 分块具体怎样做
 
@@ -571,19 +266,21 @@ TimeoutGuardrail 的名字容易误导：它本身不包裹网络超时，而是
 
 Gateway 完成输入护栏、限流、预算、缓存、路由、熔断和 Failover 后，Extractor 会去掉可能存在的 ```json 代码围栏，再用 `json.loads()` 解析。只有顶层为数组才继续；调用异常、JSON 无效或返回对象而不是数组时，该 Chunk 返回空实体，不会中断其他 Chunk。有效元素转换为 `KGEntity`：ID 为新 UUID，名称为空的丢弃，类型缺省为 `Concept`，置信度使用模型默认值 0.9，并把来源 Chunk ID 写入 `source_text_unit_id`。
 
-`ClaimsExtractor` 采用几乎相同的逐块流程，同样只看前 2000 字符、温度 0.1、最大输出 2048。它提取 `decision`、`specification`、`constraint`、`comparison`、`prediction` 五类断言，只有 `subject` 和 `content` 同时非空才保留，并保存 `object` 与来源 Chunk ID。需要注意：`build_from_document()` 调用了 ClaimsExtractor，而上传/网页实际复用的 `build_from_text()` 当前没有 Claim 提取步骤，所以“所有上传文件都会产生 Claims”并不成立。
+`ClaimsExtractor` 采用几乎相同的逐块流程，同样只看前 2000 字符、温度 0.1、最大输出 2048。它提取 `decision`、`specification`、`constraint`、`comparison`、`prediction` 五类断言，只有 `subject` 和 `content` 同时非空才保留，并保存 `object` 与来源 Chunk ID。`build_from_document()`、上传字节流与 URL 最终统一进入 `build_from_text()`，所以三类入口都会执行 Claims 提取；Claim ID 根据 workspace、来源、类型、主客体和内容生成稳定 UUID，并尽量绑定消歧后的实体 ID。
+
+`RelationExtractor` 只在同一 Chunk 至少有两个候选实体时调用 Gateway。Prompt 明确禁止创造端点，返回结果还会再次校验 source/target 是否属于该 Chunk 的候选实体，并映射到消歧后的稳定实体 ID；幻觉端点、自环和无 ID 端点会被丢弃。关系类型会规范为最长 64 字符的安全小写标识，关系 ID 由 workspace、源实体 ID、关系类型、目标实体 ID 生成稳定 UUID。
 
 #### 4. 实体消歧和向量具体怎样生成
 
-Builder 先从 Neo4j 拉取当前 workspace 最多 10000 个已有实体，再把它们和新实体一起交给 `resolve_batch()`。匹配顺序是：名称 `lower().strip()` 精确相等；固定别名表匹配，例如 PostgreSQL/Postgres/pg、Kubernetes/k8s；最后去掉连字符、下划线和空格后比较标准化 key。命中时保留已有实体 ID，用更长的描述覆盖短描述、取更高置信度并合并 properties；未命中才保留新 UUID。
+Builder 先从 Neo4j 拉取当前 workspace 最多 10000 个已有实体，再把新实体交给 `resolve_touched_batch()`。匹配顺序是：名称 `lower().strip()` 精确相等；固定别名表匹配，例如 PostgreSQL/Postgres/pg、Kubernetes/k8s；最后去掉连字符、下划线和空格后比较标准化 key。命中时保留已有实体 ID，用更长的描述覆盖短描述、取更高置信度并合并 properties；未命中才保留新 UUID。
 
-`resolve_batch()` 的结果包含“已有实体 + 本次新增/合并实体”，后续会对整个结果重新生成 Embedding 并 upsert。因此当前 BuildStats 的 entities 数量更接近消歧后的 workspace 实体集合大小，不完全等于“本次新提取数量”，这也是面试官追问统计口径时应说明的点。
+`resolve_touched_batch()` 只返回本次命中或新增的实体，后续也只对这些实体重新生成 Embedding 和 upsert。这样既让 BuildStats.entities 表示本次处理数量，也避免无关历史实体的 `updated_at` 被刷新、永远无法进入老化阶段。原 `resolve_batch()` 仍保留兼容语义，但主构建链不再使用。
 
 实体向量不是简单拼接文本一次 Embedding。`embed_entity()` 分别收集名称和描述，一次调用 `gateway.embed(texts=[name, description], task_type="embedding")`，两路权重各 0.5，再按维度做加权平均；如果只有名称，权重归一化后相当于名称占 100%。API Embedding 失败时延迟加载 `BAAI/bge-large-zh-v1.5`，默认在 CPU 上执行并做归一化；本地模型仍不可用才返回长度 1024 的零向量。Chunk 和 Claim 则用 `embed_text()` 单条生成。虽然类中存在 `embed_texts()` 批量接口，当前 Builder 的循环仍然是一条条调用和写库，吞吐量还有优化空间。
 
 #### 5. Neo4j 和 PGVector 怎样落库
 
-Neo4j 的实体写入也是逐条执行。`MERGE (e:KGEntity {id: $id})` 以实体 ID 为唯一匹配条件，再覆盖 name、type、category、description、properties、confidence、workspace_id、source_text_unit_id 和 updated_at。由于消歧命中时复用旧 ID，可以更新已有节点；新实体使用随机 UUID。当前没有关系提取和 relation upsert，因此严格说是“实体图索引”，不是完整关系图谱。
+Neo4j 的实体写入也是逐条执行。`MERGE (e:KGEntity {id: $id})` 以实体 ID 为唯一匹配条件，再覆盖 name、type、category、description、properties、confidence、workspace_id、source_text_unit_id 和 updated_at；再次写入会恢复 `active` 并清除归档/删除时间。关系使用固定 Neo4j 类型 `RELATED`，业务 `relation_type` 作为参数化属性保存，避免把 LLM 输出拼接进 Cypher；写入前按实体 ID 和 workspace 同时匹配两端，缺任一端会明确失败。
 
 PGVector 首先执行 `CREATE EXTENSION IF NOT EXISTS vector`，并确保三张表存在：
 
@@ -591,9 +288,9 @@ PGVector 首先执行 `CREATE EXTENSION IF NOT EXISTS vector`，并确保三张�
 - `entity_embeddings`：实体名称、类型、描述、向量、workspace_id。
 - `claim_embeddings`：subject、claim_type、content、object、来源 Chunk、workspace_id 和向量。
 
-三类写入均采用 `INSERT ... ON CONFLICT(id) DO UPDATE`，并且当前每条记录单独 `commit()`。实体消歧后 ID 稳定时可更新；但 Chunk 和 Claim 使用随机 UUID，重新入图会得到新 ID，单靠 ON CONFLICT 不能避免重复数据。Neo4j 与 PostgreSQL 之间也没有分布式事务：例如 Neo4j 成功、PGVector 失败时会形成部分完成，外层 Celery 虽会把任务标记失败并最多重试 3 次，但生产化还应使用稳定内容哈希 ID、阶段状态和补偿清理。
+三类写入均采用 `INSERT ... ON CONFLICT(id) DO UPDATE`，并且当前每条记录单独 `commit()`。实体消歧后 ID 稳定时可更新，Claim 已使用内容派生的稳定 UUID；Chunk 仍使用随机 UUID，重新入图仍可能产生重复块。Neo4j 与 PostgreSQL 之间也没有分布式事务：例如 Neo4j 成功、PGVector 失败时会形成部分完成，外层 Celery 虽会把任务标记失败并最多重试 3 次，但生产化还应增加阶段状态和补偿清理。
 
-这条链通常在 Celery Worker 内执行：原文件已经先存入 MinIO，所以模型、Neo4j 或 PGVector 暂时失败时可以凭 document_id 重新下载并重跑，不要求用户重新上传。`workspace_id` 被写入 Neo4j 和三张向量表；Gateway 调用还应持续携带同一租户上下文，才能让缓存、限流、预算和成本也按 workspace 隔离。
+这条链通常在 Celery Worker 内执行：原文件已经先存入 MinIO，所以模型、Neo4j 或 PGVector 暂时失败时可以凭 document_id 重新下载并重跑，不要求用户重新上传。`workspace_id` 被写入 Neo4j 和三张向量表，并传给实体、关系和 Claims 的 Gateway 调用，使缓存、限流、预算和成本也按 workspace 隔离。
 
 ### 为什么双写 Neo4j 和 PGVector
 
@@ -603,13 +300,13 @@ PGVector 首先执行 `CREATE EXTENSION IF NOT EXISTS vector`，并确保三张�
 
 ### 当前实现边界
 
-- 当前主构建链明确完成了实体写入，但没有看到关系抽取和关系 upsert，因此不能把“实体+关系完整入图”说成已闭环。
-- `downgrade_days=90`、`archive_days=180`、`soft_delete_days=365` 已有配置，当前没有接入实际老化调度逻辑。
-- `build_from_document` 会提取 Claims；供上传/URL 复用的 `build_from_text` 当前没有 Claims 提取步骤。
+- 关系抽取与 upsert 已闭环，但关系只从同一 Chunk 已识别的实体候选中抽取；跨 Chunk 关系、关系向量和关系本体约束尚未实现。
+- `downgrade_days=90`、`archive_days=180`、`soft_delete_days=365` 已由每日 `refresh_knowledge_graph` 执行。任务按软删除→归档→降级处理实体和关系，检索只读取 `active/downgraded`，再次摄取会激活知识；历史无时间戳节点会先安全回填，当前老化依据是最后写入时间，还没有访问热度或业务保留标签。
+- 文件路径、上传/Celery 与 URL 已统一走 `build_from_text` 的实体、关系和 Claims 步骤；Chunk ID 仍随机，重复重建的 Chunk 幂等性仍可加强。
 
 ### 面试话术
 
-> 入图不是简单做 Embedding，而是先解析和分块，再抽取、消歧技术实体，同时保留原文 Chunk 和结构化 Claim。Neo4j 服务实体检索，PGVector 服务语义召回。当前代码的实体和三类向量落库已经完成，关系构建与知识老化属于后续要补齐的生产化能力。
+> 入图不是简单做 Embedding，而是先解析和分块，再抽取、消歧技术实体，从受约束候选中抽取显式关系，同时保留原文 Chunk 和结构化 Claim。Neo4j 保存实体与固定 `RELATED` 关系，PGVector 保存三类语义向量；每日 Celery Beat 还会按 90/180/365 天执行降级、归档和软删除。所有文件、上传和 URL 入口复用同一核心构建链。
 
 常见追问：
 
@@ -667,7 +364,7 @@ Local 路最多消费重写列表的前 3 条，并按顺序逐条调用 `search
 4. `search_as_docs()` 把匹配实体和邻居依次转成 `ScoredDoc`，正文目前只有实体名，初始分数为 `1.0 - i*0.1`，metadata 保存实体总数和类型。
 5. 三条子查询的结果汇总后按文档 ID保留第一次出现的结果，第一次通常也代表更靠前的排名。
 
-由于当前 3.3 没有写实体关系，Neo4j 的 1～2 跳遍历通常拿不到真正的邻接信息，所以 Local 路现阶段主要贡献的是名称模糊匹配。还有一个实现细节是 workspace_id 为空时查询不会加租户过滤；正常 API 必须保证上游传入，不能依赖 Store 自动推断。
+关系入图后，Neo4j 的 1～2 跳遍历能够返回 `active/downgraded` 的真实邻接节点与关系；归档和软删除数据不会进入检索。还有一个实现细节是 workspace_id 为空时查询不会加租户过滤；正常 API 必须保证上游传入，不能依赖 Store 自动推断。
 
 #### 3. PGVector 语义检索
 
@@ -1309,8 +1006,10 @@ POST /api/v1/documents/upload
   → Celery Worker 下载 MinIO 文件
   → processing
   → KnowledgeGraphBuilder.build_from_bytes
-      → Loader/Chunker
-      → Gateway 完成实体与 Claim 抽取
+      → Loader 提取正文 + 独立/内嵌图片
+      → gateway.analyze_vision(vision) 做 OCR 与图片语义描述
+      → 合并带来源的 OCR 文本 → Chunker
+      → Gateway 完成实体、关系与 Claims 抽取
       → Gateway Embedding
       → Neo4j + PGVector 落库
   → indexed / failed
@@ -1334,7 +1033,7 @@ MinIO bucket 固定为 `prd-docs`，对象 key 为 `prd-docs/{workspace}/{yyyy}/
 
 Celery broker 和 result backend 都使用 REDIS_URL。Worker 是同步 Celery task，内部用 `asyncio.run()` 启动异步处理：按 document_id 查询 ORM 记录，缺记录或 storage_path 为空就返回 skipped；从 MinIO 下载字节后写 processing，调用 `build_from_bytes()`；成功写 indexed，异常写 failed/processing_error 后重新抛出，让 Celery 最多重试 3 次、默认间隔 60 秒。状态更新与入图库共用同一 async session 范围，但 Neo4j/PGVector 仍是外部独立提交，无法随文档状态一起回滚。
 
-上传、哈希、MinIO 和数据库落库都不需要 LLM；真正进入 Gateway 的位置在 Celery 调用 `KnowledgeGraphBuilder` 之后，包括实体/Claim 抽取和三类 Embedding。这样上传接口不会占用模型连接，也不会因为 Provider 暂时故障而让原文件丢失。Worker 内 Gateway 仍会执行限流、熔断和 Failover，最终失败则由 Celery 最多重试 3 次。
+上传、哈希、MinIO 和数据库落库都不需要 LLM；真正进入 Gateway 的位置在 Celery 调用 `KnowledgeGraphBuilder` 之后。若文件含图片，先走 `vision` 路由完成 OCR；之后实体、关系、Claims 抽取和 Chunk/Entity/Claim Embedding 继续走各自路由。Celery 字节流、Markdown 文件和 URL 最终复用 `build_from_text()` 的同一核心步骤。Worker 内 OCR 同样受护栏、预计 TPM、预算、熔断和 Failover 治理，最终失败则由 Celery 最多重试 3 次。
 
 需要注意两层重试边界：Gateway 的 Failover 是同一次抽取调用内切换 Provider；Celery 重试是整次文档入图任务在 60 秒后重跑。前者处理短时模型故障，后者处理数据库、对象存储或整个处理任务失败。语义缓存可以减少 Celery 重跑时相同 Prompt 的重复模型费用。
 

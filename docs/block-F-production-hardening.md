@@ -335,11 +335,12 @@ _provider_map = {"gpt-4o-mini": "openai", "deepseek-chat": "deepseek"}
 downgrade_provider = _provider_map.get(low_cost_model, "openai")
 ```
 
-问题：
-- ❌ Failover 链是硬编码的，不是配置驱动的
-- ❌ 没有 Provider 健康检测（不知道哪个 Provider 当前可用）
-- ❌ 只有预算触发的降级，没有**调用失败**触发的切换
-- ❌ Anthropic/Cohere Provider 都是桩代码，切换了也没用
+当前落地状态：
+- ✅ Failover 链来自用途级 YAML、环境变量、运行时 API、请求覆盖和代码枚举兜底
+- ✅ Provider 调用失败会在同一次请求内继续 fallback
+- ✅ CircuitBreaker 是失败计数和健康状态的唯一来源
+- ✅ Failover 只读熔断状态，不再维护 `healthy` 或绕过 Gateway 主动 ping
+- ✅ UniversalProvider 根据 protocol 适配 OpenAI-compatible、Anthropic 和 Cohere
 
 ### 3.2 设计方案
 
@@ -362,82 +363,39 @@ FAILOVER_CHAIN__EMBEDDING__FALLBACKS: "local:BAAI/bge-large-zh-v1.5"
 
 @dataclass
 class FailoverTarget:
-    """Failover 目标。"""
+    """不可变的 Failover 路由目标。"""
     provider: str
     model: str
     priority: int         # 0=primary, 1=fallback, 2=ultimate
-    healthy: bool = True
-    last_check: float = 0.0
+    model_type: str = "llm"
 
 class FailoverManager:
-    """Failover 管理器 — 自动切换 Provider。
+    """维护候选链，只读查询 CircuitBreaker 状态。"""
 
-    职责：
-    - 维护每个 model_type 的 Failover 链
-    - 定期健康检测（ping 每个 Provider）
-    - 调用失败时自动切到下一个
-    - 恢复后自动切回 Primary
-    """
-
-    def __init__(self):
-        # {model_type: [FailoverTarget, ...]}
+    def __init__(self, breaker_resolver=None):
         self._chains: dict[str, list[FailoverTarget]] = {}
-        # {model_type: 当前使用的索引}
-        self._current_index: dict[str, int] = {}
-        self._health_check_interval = 60.0  # 每 60 秒检测一次
+        self._breaker_resolver = breaker_resolver or (
+            lambda provider: CircuitBreakerManager.get(f"provider:{provider}")
+        )
 
     def configure(self, model_type: str, chain: list[FailoverTarget]) -> None:
         """配置 Failover 链。"""
-        self._chains[model_type] = chain
-        self._current_index[model_type] = 0
+        self._chains[model_type] = sorted(chain, key=lambda target: target.priority)
 
     async def get_target(self, model_type: str) -> FailoverTarget:
-        """获取当前可用的目标。自动跳过不健康的。"""
-        chain = self._chains.get(model_type, [])
-        idx = self._current_index.get(model_type, 0)
+        """获取最高优先级的可尝试目标。"""
+        targets = self.get_available_targets(model_type)
+        if not targets:
+            raise AllProvidersUnavailableError(model_type)
+        return targets[0]
 
-        for offset, target in enumerate(chain[idx:], start=idx):
-            if await self._is_healthy(target):
-                self._current_index[model_type] = offset
-                return target
-
-        raise AllProvidersUnavailableError(model_type)
-
-    async def record_failure(self, model_type: str, provider: str) -> None:
-        """记录调用失败，自动切到下一个。"""
-        chain = self._chains.get(model_type, [])
-        for target in chain:
-            if target.provider == provider:
-                target.healthy = False
-                break
-        # 自动跳到下一个健康的目标
-        self._current_index[model_type] = 0  # 重置从头找
-
-    async def _is_healthy(self, target: FailoverTarget) -> bool:
-        """检查目标是否健康（带缓存）。"""
-        if not target.healthy:
-            # 已经标记为不健康，等下次 health_check 恢复
-            return False
-        # 定期 ping 检测
-        now = time.monotonic()
-        if now - target.last_check > self._health_check_interval:
-            target.healthy = await self._ping(target)
-            target.last_check = now
-        return target.healthy
-
-    async def _ping(self, target: FailoverTarget) -> bool:
-        """检测 Provider 是否可用（发一个最小请求）。"""
-        try:
-            config = config_manager.get_config("llm", target.provider)
-            provider = ProviderFactory().create(config.provider, config)
-            await provider.complete(
-                prompt="ping",
-                model=target.model,
-                max_tokens=1,
-            )
-            return True
-        except Exception:
-            return False
+    def get_available_targets(self, model_type: str) -> list[FailoverTarget]:
+        """只读熔断状态；不计数、不探活、不修改状态。"""
+        return [
+            target for target in self._chains.get(model_type, [])
+            if (breaker := self._breaker_resolver(target.provider)) is None
+            or breaker.is_available
+        ]
 ```
 
 #### 3.2.3 集成到 Gateway
@@ -461,17 +419,17 @@ class LLMGateway:
     async def complete(self, prompt, task_type, ...):
         model_config, model_name = self.config_manager.resolve_model(task_type)
 
-        # 尝试 Failover 链
-        last_error = None
-        for attempt in range(3):  # 最多试 3 个 Provider
+        route_key, _ = self._configure_route_failover(task_type, rule)
+        targets = self.failover.get_available_targets(route_key)
+        for target in targets:
             try:
-                target = await self.failover.get_target("llm")
                 provider = self.provider_factory.create(target.provider, ...)
-                response = await provider.complete(prompt, model=target.model, ...)
+                breaker = self._ensure_circuit_breaker(target.provider)
+                response = await breaker.call(provider.complete, prompt, target.model, ...)
                 return response
-            except Exception as e:
-                last_error = e
-                await self.failover.record_failure("llm", target.provider)
+            except Exception:
+                # breaker.call 已唯一记录这次失败；Failover 不写健康状态
+                continue
 
         # 全部失败 → 返回降级响应
         logger.error("所有 LLM Provider 不可用: %s", last_error)
@@ -485,8 +443,9 @@ class LLMGateway:
 | Failover 链配置驱动 | 修改 `.env` 的 FAILOVER_CHAIN 后，切换生效 |
 | Primary 失败自动切 Fallback | Mock primary 抛异常 → 自动调 fallback |
 | Fallback 也失败切 Ultimate | 前两个都抛异常 → 自动调终极兜底 |
-| Provider 健康检测 | `_ping()` 失败 → 标记 unhealthy → 跳过 |
-| 恢复后自动切回 Primary | Primary 恢复健康 → 下一请求自动恢复 |
+| 熔断状态单一来源 | 一次 Provider 失败只使 CircuitBreaker.failure_count +1 |
+| OPEN 目标跳过 | Failover 读取 `is_available=False` 后不把目标交给 Gateway |
+| 恢复后自动切回 Primary | recovery_timeout 后 Primary 重新成为候选，成功试探后 CLOSED |
 
 ---
 
@@ -1189,42 +1148,31 @@ class LLMGateway:
 
     def _init_circuit_breakers(self):
         for provider_name in ["deepseek", "openai", "anthropic", "cohere"]:
-            cb = CircuitBreaker(
-                name=f"provider:{provider_name}",
-                failure_threshold=3,       # LLM 调用连续 3 次失败就熔断
-                recovery_timeout=30.0,     # 30 秒后试探恢复
-            )
-            CircuitBreakerManager.register(cb)
+            self._ensure_circuit_breaker(provider_name)
+            # 只注册缺失项，不覆盖其他 Gateway 实例已累计的状态
 
     async def complete(self, prompt, task_type, ...):
-        model_config, model_name = self.config_manager.resolve_model(task_type)
-        provider_name = model_config.provider
-
-        # 熔断检查
-        cb = CircuitBreakerManager.get(f"provider:{provider_name}")
-        if cb and not cb.is_available:
-            # 当前 Provider 熔断 → 走 Failover 链
-            return await self._fallback_complete(prompt, task_type, exclude=[provider_name])
-
-        try:
-            provider = self.provider_factory.create(...)
-            response = await cb.call(provider.complete, prompt, model_name)
-            return response
-        except CircuitBreakerError:
-            # 熔断器已打开 → Failover
-            return await self._fallback_complete(prompt, task_type, exclude=[provider_name])
+        rule = self.config_manager.resolve_rule(task_type)
+        route_key, _ = self._configure_route_failover(task_type, rule)
+        for target in self.failover.get_available_targets(route_key):
+            try:
+                cb = self._ensure_circuit_breaker(target.provider)
+                return await cb.call(provider_complete_with_timeout, target)
+            except Exception:
+                continue  # cb.call 已记录失败，继续 fallback
+        return unavailable_response
 ```
 
 ### 6.2 验收标准
 
 | 验收项 | 验证方式 |
 |--------|---------|
-| 连续失败 N 次后熔断 | Mock provider 抛 5 次异常 → 第 6 次直接抛 `CircuitBreakerError` |
+| 连续失败 N 次后熔断 | Gateway 默认 3 次 Provider 异常后 OPEN，后续请求由 Failover 跳过 |
 | 熔断后自动恢复 | 等待 recovery_timeout → 半开状态 → 成功调用 → 恢复 CLOSED |
 | 半开时限制请求数 | 半开时只允许 half_open_max_requests 个试探请求 |
 | 装饰器可用 | `@with_circuit_breaker()` 装饰任意异步函数 |
 | 熔断状态可查询 | `CircuitBreakerManager.get_all_status()` 返回所有状态 |
-| Prometheus 指标 | 每次状态变化记录 counter/gauge |
+| 单一状态来源 | Failover 查询前后不改变 state/failure_count，Provider 失败只累计一次 |
 
 ---
 
@@ -1637,11 +1585,11 @@ async def ensure_extensions(self) -> None:
 #### 8.2.4 管线集成
 
 ```python
-# pipeline.py KnowledgeGraphBuilder.build_from_document
+# pipeline.py KnowledgeGraphBuilder.build_from_text（文件、上传/Celery、URL 的统一核心链）
 
 # 在实体提取之后，添加上下文：
 # 5b. Claims 提取
-claims = await self.claims_extractor.extract(chunks)
+claims = await self.claims_extractor.extract(chunks, workspace_id=workspace_id)
 for claim in claims:
     claim.workspace_id = workspace_id
 
@@ -1652,6 +1600,8 @@ for claim in claims:
     )
     await self.vector_store.upsert_claim(claim, claim_emb)
 ```
+
+当前实现还会在同一核心链中执行 `RelationExtractor`：关系端点只能来自同一 Chunk 的候选实体，映射到消歧后的实体 ID 后，以固定 Neo4j `RELATED` 类型幂等写入；业务关系类型作为属性保存。Claim 使用内容派生的稳定 UUID，避免任务重试重复插入。
 
 #### 8.2.5 下游消费（TSD 生成）
 

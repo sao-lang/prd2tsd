@@ -72,8 +72,8 @@
 - generate=true 一键生成 TSD（转 complex_generation）
 
 **E15 — ⭐⭐ 多格式自动入图（整改 B3）**
-- 上传 pdf/csv/docx/md/txt/png/jpg 自动构建知识图谱
-- multi_format_loader 多格式文本提取（图片以元数据占位）
+- 上传 pdf/csv/docx/md/txt/png/jpg 自动构建实体、关系和 Claims 完整知识图谱
+- multi_format_loader 提取正文与独立/内嵌图片；图片经 Gateway Vision OCR 后合并入图
 - Celery 异步任务 index_document_to_kg + processing_status 状态跟踪
 
 ---
@@ -89,8 +89,8 @@
 | 统一交互入口 | 对话/提问/文档分析/复杂生成 单一入口可用 |
 | URL 文档可分析 | URL → 抓取 → 入库 → 可检索（可选一键生成 TSD） |
 | 多格式自动入图 | 上传 pdf/csv/docx/md/txt/png/jpg 自动构建知识图谱 |
-| Web 资源可索引 | URL 抓取 → 正文提取 → 知识图谱写入 |
-| 定时任务生效 | Celery Beat 定时刷新知识图谱 |
+| Web 资源可索引 | URL 抓取 → 正文提取 → 实体、关系、Claims 写入 |
+| 定时任务生效 | Celery Beat 每日执行 90/180/365 天知识老化并返回统计 |
 | SSE 流式推送 | EventBus 可用，SSE 端点就绪，流式 Q&A / 流式文档 / 实时审核通知全部可用 |
 | 端到端仍然通 | 块 D 的 test_full_flow.py 仍然 PASS |
 
@@ -117,6 +117,7 @@ new_deps:
   - scrapy                                 # Web 爬虫（可选，也可用 aiohttp）
   - pypdf                                  # PDF 文本提取（多格式入图）
   - python-docx                            # docx 读取（多格式入图）
+  - Pillow                                # 图片校验、解码与 Vision 输入规范化
   - transformers                           # 重排序模型（reranker）
   - httpx                                  # Webhook 发送 / URL 抓取
 
@@ -444,7 +445,8 @@ E1 — LLM Gateway 调用链路:
     → 按 request > runtime API > env > YAML > code enum 解析用途级路由
     → BudgetController.check(workspace_id) → 周/月预算阈值触发低成本路由
     → SemanticCache.lookup() → L1 精确命中或租户/任务/模型隔离的向量余弦命中
-    → CircuitBreaker + 配置化 Failover → UniversalProvider → 协议适配器
+    → Failover 只读 CircuitBreaker 状态并排列目标
+    → CircuitBreaker.call 唯一累计失败 → UniversalProvider → 协议适配器
     → 完整输出后置护栏（流式同样先缓冲检查，失败尝试不释放）
     → 成本写入 llm_call_logs；RateLimiter.reconcile() 用实际 Token 结算预留
     → 返回 LLMResponse
@@ -477,6 +479,12 @@ E4 — 文档管理链路:
         → 写入 uploaded_documents 表
         → 触发异步处理（Celery 或 asyncio）
       → 返回 document 信息
+
+  异步知识入图:
+    Celery 下载原始字节 → 提取正文与 PDF/DOCX/独立图片
+      → Pillow 校验与数量/体积限制
+      → gateway.analyze_vision(vision) OCR 可见文字和图片语义
+      → 合并来源标记文本 → 分块/实体/Embedding → Neo4j + PGVector
 
   文档搜索:
     GET /api/v1/documents/search?q=订单&workspace_id=xxx

@@ -114,6 +114,34 @@ class BuildStats(BaseModel):
     workspace_id: str = ""
 
 
+class KGRelation(BaseModel):
+    """知识图谱实体关系。
+
+    Neo4j 中统一使用 ``RELATED`` 关系类型，业务语义保存在 relation_type，
+    避免把模型输出直接拼入 Cypher。
+    """
+
+    id: str = ""
+    source_entity_id: str
+    target_entity_id: str
+    relation_type: str = "related_to"
+    description: str = ""
+    confidence: float = 0.8
+    source_text_unit_id: str = ""
+    workspace_id: str = ""
+
+
+class KnowledgeAgingStats(BaseModel):
+    """一次知识老化任务的状态变更统计。"""
+
+    downgraded_entities: int = 0
+    archived_entities: int = 0
+    deleted_entities: int = 0
+    downgraded_relations: int = 0
+    archived_relations: int = 0
+    deleted_relations: int = 0
+
+
 class Chunk(BaseModel):
     """文档分块结果。"""
 

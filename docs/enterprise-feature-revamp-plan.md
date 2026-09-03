@@ -178,7 +178,7 @@ POST /interact  { message: "分析这个 URL", url: "https://...", intent: docum
   → URL 校验（协议 http/https，防 SSRF 内网地址）
   → WebLoader.fetch(url) → Markdown（复用 app/web_indexing/web_loader.py）
   → 创建 uploaded_documents 记录（source_url 字段已存在 ✓，file_type="url"，storage 存 Markdown）
-  → 复用块 B 分析管道：分块 → 实体抽取 → 知识图谱写入
+  → 复用块 B 分析管道：分块 → 实体/关系/Claims 抽取 → Neo4j + PGVector 写入
   → 返回分析摘要（可选：一键生成 TSD → 转 complex_generation）
 ```
 
@@ -200,7 +200,7 @@ POST /interact  { message: "分析这个 URL", url: "https://...", intent: docum
 | `.csv` / `.tsv` | csv 标准库，每行转自然语言句子（**仅行级文本转换**，不做已删除的"列级 Embedding 双通路"） | 标准库 |
 | `.docx` | `python-docx` 读取段落 + 表格（依赖已存在，现仅用于导出） | python-docx |
 | `.pdf` | `pypdf` 逐页提取文本（**新增依赖**） | pypdf>=4.0 |
-| `.png` / `.jpg` / `.jpeg` | 图片无文本 → **元数据占位 chunk**（`[图片: 文件名, 类型, 大小]`，可被文件名检索）；不引入重型视觉方案（与已删除的 CLIP 一致） | 无 |
+| `.png` / `.jpg` / `.jpeg` | **已升级**：元数据 + Gateway Vision OCR，可见文字和语义描述共同入图 | Pillow + 既有 vision 路由 |
 
 ### 5.6.2 构建入口扩展
 
@@ -257,7 +257,7 @@ POST /interact  { message: "分析这个 URL", url: "https://...", intent: docum
 
 ### P2.5 — 多格式构建 + 自动入图（B3）
 
-- [ ] 新增 `multi_format_loader.py`：md/txt/csv/docx/pdf 文本提取 + 图片元数据占位
+- [x] `multi_format_loader.py`：md/txt/csv/docx/pdf 正文提取 + 独立/PDF/DOCX 图片提取；`image_ocr.py` 经 Gateway Vision OCR
 - [ ] `requirements.txt` 新增 `pypdf>=4.0`（PDF 解析）
 - [ ] `KnowledgeGraphBuilder.build_from_bytes()` 扩展
 - [ ] `service.py::upload()` 上传后异步触发入图（Celery 或 asyncio）
@@ -296,7 +296,7 @@ POST /interact  { message: "分析这个 URL", url: "https://...", intent: docum
 | 5 | 删除项是否同步清理依赖（Pillow / IMAGE_ENCODE_MODE） | 确认无引用后清理 |
 | 6 | 删除后原 `/chat` 已有客户端兼容 | 文档标注升级路径 |
 | 7 | **PDF 解析库**：`pypdf`（轻量，推荐）vs `pdfplumber`（表格提取更好） | `pypdf>=4.0` |
-| 8 | **图片入图方式**：A 元数据占位（推荐）/ B Vision LLM 描述 / C OCR | 默认 A，不引入重型视觉方案 |
+| 8 | **图片入图方式** | 最终采用 Gateway Vision OCR：保留元数据，同时转录文字并描述图表/流程/界面语义；不恢复 CLIP |
 | 9 | **异步机制**：Celery（可靠/可重试，推荐）vs `asyncio.create_task`（开发简单） | Celery（生产），开发可降级 asyncio |
 
 **风险提示**：

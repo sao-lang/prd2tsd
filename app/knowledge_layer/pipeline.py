@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+from pathlib import Path
 from typing import Any
 
 from app.core.logger import get_logger
@@ -12,6 +14,7 @@ from app.knowledge_layer.ingestion.document_loader import DocumentLoader
 from app.knowledge_layer.ingestion.entity_embedder import EntityEmbedder
 from app.knowledge_layer.ingestion.entity_extractor import EntityExtractor
 from app.knowledge_layer.ingestion.entity_resolver import EntityResolver
+from app.knowledge_layer.ingestion.relation_extractor import RelationExtractor
 from app.knowledge_layer.models import (
     BuildStats,
     RetrievalContext,
@@ -46,6 +49,8 @@ class KnowledgeGraphBuilder:
         reader: Any = None,
         chunker: Any = None,
         embedder: Any = None,
+        image_ocr: Any = None,
+        relation_extractor: RelationExtractor | None = None,
     ) -> None:
         """初始化构建器。
 
@@ -56,6 +61,8 @@ class KnowledgeGraphBuilder:
             reader: DocumentReader Protocol 实现（可选，默认 LocalDocumentLoader）。
             chunker: TextChunker Protocol 实现（可选，默认 MultiGranularityChunker）。
             embedder: TextEmbedder Protocol 实现（可选，默认 EntityEmbedder）。
+            image_ocr: 图片 OCR 实现（可选，默认 GatewayImageOCR）。
+            relation_extractor: 关系抽取器（可选）。
         """
         self.graph_store = graph_store or Neo4jGraphStore()
         self.vector_store = vector_store or PGVectorStore()
@@ -66,9 +73,16 @@ class KnowledgeGraphBuilder:
         )
         self.entity_extractor = EntityExtractor(model=entity_extractor_model)
         self.entity_resolver = EntityResolver()
+        self.relation_extractor = relation_extractor or RelationExtractor(resolver=self.entity_resolver)
         self.entity_embedder = EntityEmbedder()
+        if image_ocr is None:
+            from app.knowledge_layer.ingestion.image_ocr import GatewayImageOCR
+
+            image_ocr = GatewayImageOCR()
+        self.image_ocr = image_ocr
         # Block F: Claims 提取
         from app.knowledge_layer.ingestion.claims_extractor import ClaimsExtractor
+
         self.claims_extractor = ClaimsExtractor()
 
     async def build_from_document(
@@ -87,75 +101,20 @@ class KnowledgeGraphBuilder:
         """
         logger.info("开始构建实体索引: %s", file_path)
 
+        path = Path(file_path)
+        if path.suffix.lower() != ".md":
+            if not path.exists():
+                raise FileNotFoundError(f"文件不存在: {file_path}")
+            return await self.build_from_bytes(
+                path.read_bytes(),
+                file_path,
+                workspace_id=workspace_id,
+            )
+
         # 1. 加载文档
         text = self.doc_loader.load(file_path)
 
-        # 2. 多粒度分块（用段落级）
-        chunks = self.chunker.chunk(text, level="paragraph")
-
-        # 3. 实体提取
-        entities = await self.entity_extractor.extract(chunks)
-
-        # 4. 实体消歧
-        existing_entities = await self.graph_store.get_all_entities(workspace_id)
-        resolved_entities = await self.entity_resolver.resolve_batch(entities, existing_entities)
-        for entity in resolved_entities:
-            if not entity.workspace_id:
-                entity.workspace_id = workspace_id
-
-        # 5. 实体 Embedding（双源：名称+描述）— 通过 Gateway 调用
-        for entity in resolved_entities:
-            entity.embedding = await self.entity_embedder.embed_entity(entity)
-
-        # 6. 写入 Neo4j（仅实体）
-        await self.graph_store.upsert_entities(resolved_entities)
-
-        # 7. Block F: Claims 提取
-        claims = await self.claims_extractor.extract(chunks)
-        for claim in claims:
-            claim.workspace_id = workspace_id
-
-        # 8. Block F: Claims Embedding + 存储
-        for claim in claims:
-            claim_emb = await self.entity_embedder.embed_text(
-                f"{claim.subject}: {claim.content}"
-            )
-            await self.vector_store.upsert_claim(claim, claim_emb)
-
-        # 9. 写入 PGVector
-        await self.vector_store.ensure_extensions()
-        for chunk in chunks:
-            chunk_emb = await self.entity_embedder.embed_text(chunk.text)
-            await self.vector_store.upsert_chunk(
-                chunk,
-                chunk_emb,
-                workspace_id=workspace_id,
-            )
-        for entity in resolved_entities:
-            if entity.embedding:
-                await self.vector_store.upsert_entity_embedding(
-                    entity_id=entity.id,
-                    name=entity.name,
-                    entity_type=entity.type,
-                    description=entity.description,
-                    embedding=entity.embedding,
-                    workspace_id=workspace_id,
-                )
-
-        stats = BuildStats(
-            entities=len(resolved_entities),
-            chunks=len(chunks),
-            claims=len(claims),
-            file_path=file_path,
-            workspace_id=workspace_id,
-        )
-
-        logger.info(
-            "实体索引构建完成: entities=%d, chunks=%d",
-            stats.entities,
-            stats.chunks,
-        )
-        return stats
+        return await self.build_from_text(text, source_name=file_path, workspace_id=workspace_id)
 
     async def get_stats(self) -> BuildStats:
         """获取知识图谱构建统计（实体/关系数量）。
@@ -189,25 +148,58 @@ class KnowledgeGraphBuilder:
         chunks = self.chunker.chunk(text, level="paragraph")
 
         # 2. 实体提取
-        entities = await self.entity_extractor.extract(chunks)
+        entities = await self.entity_extractor.extract(chunks, workspace_id=workspace_id)
 
         # 3. 实体消歧
         existing_entities = await self.graph_store.get_all_entities(workspace_id)
-        resolved_entities = await self.entity_resolver.resolve_batch(entities, existing_entities)
+        resolved_entities = await self.entity_resolver.resolve_touched_batch(entities, existing_entities)
         for entity in resolved_entities:
+            if not entity.id:
+                entity.id = str(uuid.uuid4())
             if not entity.workspace_id:
                 entity.workspace_id = workspace_id
             if source_name and not entity.properties.get("source"):
                 entity.properties["source"] = source_name
 
-        # 4. 实体 Embedding — 通过 Gateway 调用
+        # 4. 关系和 Claims 抽取；所有入口统一执行。
+        relations = await self.relation_extractor.extract(
+            chunks,
+            source_entities=entities,
+            resolved_entities=resolved_entities,
+            workspace_id=workspace_id,
+        )
+        claims = await self.claims_extractor.extract(chunks, workspace_id=workspace_id)
+        for claim in claims:
+            claim.workspace_id = workspace_id
+            subject = self.entity_resolver.find_by_name(claim.subject, resolved_entities)
+            target = self.entity_resolver.find_by_name(claim.object, resolved_entities) if claim.object else None
+            claim.subject_entity_id = subject.id if subject else ""
+            claim.object_entity_id = target.id if target else ""
+            claim.id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    ":".join(
+                        (
+                            workspace_id,
+                            source_name,
+                            claim.claim_type,
+                            claim.subject,
+                            claim.object,
+                            claim.content,
+                        )
+                    ),
+                )
+            )
+
+        # 5. 实体 Embedding — 通过 Gateway 调用
         for entity in resolved_entities:
             entity.embedding = await self.entity_embedder.embed_entity(entity)
 
-        # 5. 写入 Neo4j
+        # 6. 先写实体，再幂等写关系，保证端点存在。
         await self.graph_store.upsert_entities(resolved_entities)
+        await self.graph_store.upsert_relations(relations)
 
-        # 6. 写入 PGVector
+        # 7. 写入 PGVector
         await self.vector_store.ensure_extensions()
         for chunk in chunks:
             chunk_emb = await self.entity_embedder.embed_text(chunk.text)
@@ -228,16 +220,26 @@ class KnowledgeGraphBuilder:
                     workspace_id=workspace_id,
                 )
 
+        for claim in claims:
+            claim_emb = await self.entity_embedder.embed_text(f"{claim.subject}: {claim.content}")
+            await self.vector_store.upsert_claim(claim, claim_emb)
+
         stats = BuildStats(
             entities=len(resolved_entities),
+            relations=len(relations),
             chunks=len(chunks),
+            claims=len(claims),
             file_path=source_name,
             workspace_id=workspace_id,
         )
 
         logger.info(
-            "文本实体索引构建完成: source=%s, entities=%d, chunks=%d",
-            source_name, stats.entities, stats.chunks,
+            "文本知识图谱构建完成: source=%s, entities=%d, relations=%d, chunks=%d, claims=%d",
+            source_name,
+            stats.entities,
+            stats.relations,
+            stats.chunks,
+            stats.claims,
         )
         return stats
 
@@ -250,8 +252,9 @@ class KnowledgeGraphBuilder:
     ) -> BuildStats:
         """从文件字节内容构建实体索引（多格式自动提取文本）。
 
-        Block E B3：支持 pdf / csv / docx / md / txt / png / jpg，
-        图片以元数据占位入图。复用 build_from_text 链路。
+        Block E B3：支持 pdf / csv / docx / md / txt / png / jpg。
+        独立图片及 PDF/DOCX 内嵌图片先经 Gateway Vision OCR，再与正文合并，
+        最后复用 build_from_text 链路。
 
         Args:
             content: 文件字节数据。
@@ -265,9 +268,15 @@ class KnowledgeGraphBuilder:
         Raises:
             ValueError: 文件无可提取文本内容。
         """
-        from app.knowledge_layer.ingestion.multi_format_loader import extract_text
+        from app.knowledge_layer.ingestion.image_ocr import GatewayImageOCR
+        from app.knowledge_layer.ingestion.multi_format_loader import extract_images, extract_text
 
         text = extract_text(content, filename)
+        images = extract_images(content, filename)
+        if images:
+            image_ocr = getattr(self, "image_ocr", None) or GatewayImageOCR()
+            ocr_text = await image_ocr.extract(images, workspace_id=workspace_id)
+            text = "\n\n".join(part for part in (text.strip(), ocr_text.strip()) if part)
         if not text.strip():
             raise ValueError(f"文件 {filename} 无可提取文本内容")
         return await self.build_from_text(

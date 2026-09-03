@@ -19,11 +19,17 @@ logger = get_logger("prd2tsd.budget")
 class BudgetStore(Protocol):
     """预算持久化接口，便于数据库实现与单元测试隔离。"""
 
-    async def get_config(self, workspace_id: str) -> dict[str, Any] | None: ...
+    async def get_config(self, workspace_id: str) -> dict[str, Any] | None:
+        """读取工作空间预算配置。"""
+        ...
 
-    async def set_config(self, workspace_id: str, config: dict[str, Any]) -> None: ...
+    async def set_config(self, workspace_id: str, config: dict[str, Any]) -> None:
+        """写入工作空间预算配置。"""
+        ...
 
-    async def get_cost(self, workspace_id: str, period_start: datetime) -> float: ...
+    async def get_cost(self, workspace_id: str, period_start: datetime) -> float:
+        """汇总指定周期起点后的成本。"""
+        ...
 
     async def record_cost(
         self,
@@ -34,7 +40,9 @@ class BudgetStore(Protocol):
         output_tokens: int,
         layer: str,
         node: str,
-    ) -> None: ...
+    ) -> None:
+        """追加一条实际成本记录。"""
+        ...
 
 
 class PostgresBudgetStore:
@@ -46,6 +54,7 @@ class PostgresBudgetStore:
         return connector.get_session()
 
     async def get_config(self, workspace_id: str) -> dict[str, Any] | None:
+        """从 PostgreSQL 读取预算配置。"""
         async with self._session() as session:
             row = await session.scalar(select(BudgetConfig).where(BudgetConfig.workspace_id == workspace_id))
             if row is None:
@@ -59,6 +68,7 @@ class PostgresBudgetStore:
             }
 
     async def set_config(self, workspace_id: str, config: dict[str, Any]) -> None:
+        """向 PostgreSQL 新增或更新预算配置。"""
         async with self._session() as session:
             row = await session.scalar(select(BudgetConfig).where(BudgetConfig.workspace_id == workspace_id))
             if row is None:
@@ -72,6 +82,7 @@ class PostgresBudgetStore:
             await session.commit()
 
     async def get_cost(self, workspace_id: str, period_start: datetime) -> float:
+        """从调用账本汇总当前周期成本。"""
         async with self._session() as session:
             total = await session.scalar(
                 select(func.coalesce(func.sum(LLMCallLog.cost), 0)).where(
@@ -91,6 +102,7 @@ class PostgresBudgetStore:
         layer: str,
         node: str,
     ) -> None:
+        """向 PostgreSQL 调用账本追加实际成本。"""
         if not workspace_id or cost <= 0:
             return
         async with self._session() as session:
@@ -117,12 +129,15 @@ class MemoryBudgetStore:
         self.costs: dict[str, list[tuple[datetime, float]]] = {}
 
     async def get_config(self, workspace_id: str) -> dict[str, Any] | None:
+        """读取测试内存中的预算配置。"""
         return self.configs.get(workspace_id)
 
     async def set_config(self, workspace_id: str, config: dict[str, Any]) -> None:
+        """写入测试内存中的预算配置。"""
         self.configs[workspace_id] = dict(config)
 
     async def get_cost(self, workspace_id: str, period_start: datetime) -> float:
+        """汇总测试内存中的周期成本。"""
         return sum(cost for timestamp, cost in self.costs.get(workspace_id, []) if timestamp >= period_start)
 
     async def record_cost(
@@ -135,6 +150,7 @@ class MemoryBudgetStore:
         layer: str,
         node: str,
     ) -> None:
+        """向测试内存账本追加实际成本。"""
         self.costs.setdefault(workspace_id, []).append((datetime.now(UTC), cost))
 
 

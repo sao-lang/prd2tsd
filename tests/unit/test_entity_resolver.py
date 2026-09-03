@@ -81,3 +81,18 @@ class TestEntityResolver:
         assert "Spring Boot" in names
         assert "Docker" in names
         assert "Kubernetes" in names
+
+    async def test_touched_batch_does_not_refresh_unrelated_entities(
+        self, resolver, existing_entities
+    ) -> None:
+        """当前摄取只返回命中或新增实体，避免刷新全部历史节点的老化时间。"""
+        new_entities = [
+            KGEntity(name="Spring Boot", type="TechStack"),
+            KGEntity(name="Docker", type="TechStack"),
+        ]
+
+        resolved = await resolver.resolve_touched_batch(new_entities, existing_entities)
+
+        assert [entity.name for entity in resolved] == ["Spring Boot", "Docker"]
+        assert "PostgreSQL" not in {entity.name for entity in resolved}
+        assert "Redis" not in {entity.name for entity in resolved}

@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.circuit_breaker import CircuitBreaker
 from app.llm_gateway import LLMGateway
 from app.llm_gateway.cache import SemanticCache
-from app.llm_gateway.failover import FailoverTarget
+from contracts.models import ModelType, RoutingRule
 
 
 class FakeStreamingProvider:
@@ -71,7 +72,6 @@ def gateway() -> LLMGateway:
     rate_limiter = cast(Any, instance.rate_limiter)
     budget_controller = cast(Any, instance.budget_controller)
     cost_tracker = cast(Any, instance.cost_tracker)
-    failover = cast(Any, instance.failover)
     config_manager.resolve_model = MagicMock(return_value=(model_config, "deepseek-chat"))
     config_manager.get_config = MagicMock(return_value=model_config)
     rate_limiter.reserve = AsyncMock(
@@ -81,10 +81,6 @@ def gateway() -> LLMGateway:
     budget_controller.check = AsyncMock(return_value={})
     budget_controller.record_usage = AsyncMock()
     cost_tracker.record = MagicMock(return_value=MagicMock(cost=0.001))
-    failover.get_target = AsyncMock(
-        return_value=FailoverTarget(provider="deepseek", model="deepseek-chat", priority=0),
-    )
-    failover.record_failure = AsyncMock()
     return instance
 
 
@@ -187,22 +183,34 @@ async def test_stream_discards_partial_output_from_failed_provider(gateway: LLMG
     failed_provider = FakeStreamingProvider(["partial-secret"], error=RuntimeError("upstream reset"))
     fallback_provider = FakeStreamingProvider(["safe fallback"])
     cast(Any, gateway.provider_factory).create = MagicMock(side_effect=[failed_provider, fallback_provider])
-    failover = cast(Any, gateway.failover)
-    failover.get_target = AsyncMock(
-        side_effect=[
-            FailoverTarget(provider="deepseek", model="deepseek-chat", priority=0),
-            FailoverTarget(provider="openai", model="gpt-4o-mini", priority=1),
-        ],
-    )
-    record_failure = AsyncMock()
-    failover.record_failure = record_failure
+    breakers = {
+        "deepseek": CircuitBreaker("provider:deepseek", failure_threshold=3),
+        "openai": CircuitBreaker("provider:openai", failure_threshold=3),
+    }
+    metric_context = MagicMock()
+    metric_context.__enter__.return_value = {}
+    metric_context.__exit__.return_value = False
 
-    chunks = await _collect_stream(gateway, "answer safely")
+    with (
+        patch.object(gateway, "_ensure_circuit_breaker", side_effect=breakers.get),
+        patch("app.llm_gateway.track_llm_call", return_value=metric_context),
+        patch("app.llm_gateway.LLM_CALL_TOTAL"),
+        patch("app.llm_gateway.LLM_COST_TOTAL"),
+    ):
+        chunks = [chunk async for chunk in gateway.stream_complete(prompt="answer safely", task_type="chat")]
 
     assert chunks == ["safe fallback"]
     assert "partial-secret" not in "".join(chunks)
-    record_failure.assert_awaited_once_with(
-        "chat:llm:deepseek:deepseek-chat",
-        "deepseek",
-        "deepseek-chat",
-    )
+    assert breakers["deepseek"].failure_count == 1
+    assert breakers["openai"].failure_count == 0
+
+
+def test_budget_downgrade_keeps_original_primary_as_fallback(gateway: LLMGateway) -> None:
+    """低成本路由替换主目标后仍应保留原主目标作为容灾回退。"""
+    rule = RoutingRule(type=ModelType.LLM, provider="deepseek", model="deepseek-chat")
+
+    model = gateway._apply_budget_downgrade(rule, rule.model)
+
+    assert model == "gpt-4o-mini"
+    assert rule.provider == "openai"
+    assert rule.fallbacks == [{"type": "llm", "provider": "deepseek", "model": "deepseek-chat"}]

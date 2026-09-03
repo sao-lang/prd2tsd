@@ -32,7 +32,8 @@
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐    │
 │  │              LLM Gateway                              │    │
-│  │  Provider/Router/CostTracker/Cache/ConfigManager      │    │
+│  │  UniversalProvider/Router/Guardrails/CircuitBreaker   │    │
+│  │  Failover/RateLimit/Budget/SemanticCache/Cost         │    │
 │  └──────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -212,7 +213,7 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 | `PUT` | `/api/v1/model-config` | 更新模型配置 | 否 |
 | `DELETE` | `/api/v1/model-config/runtime` | 重置运行时配置 | 否 |
 | `PUT` | `/api/v1/model-config/routing` | 更新用途级路由、超时与 failover | 否 |
-| `POST` | `/api/v1/knowledge/build` | 上传文档构建知识图谱 | 是 |
+| `POST` | `/api/v1/knowledge/build` | 上传多格式文档/图片构建知识图谱（含 OCR） | 是 |
 | `POST` | `/api/v1/knowledge/search` | 知识图谱检索 | 是 |
 
 ## 知识层使用示例
@@ -220,7 +221,8 @@ python scripts/run_agent_eval.py --dataset tests/eval/datasets/agent_tasks.json
 ### 构建知识图谱
 
 ```bash
-# 上传 .md 文件
+# 上传 md/txt/csv/tsv/docx/pdf/png/jpg；图片及 PDF/DOCX 内嵌图片走 Vision OCR
+# 所有入口统一抽取实体、受约束关系和 Claims；每日任务执行 90/180/365 天知识老化
 curl -X POST http://localhost:8012/api/v1/knowledge/build \
   -H "Authorization: Bearer <token>" \
   -F "file=@docs/sample.md"

@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import os
-import tempfile
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
 from app.auth.deps import get_current_user
 from app.core.logger import get_logger
+from app.knowledge_layer.ingestion.multi_format_loader import SUPPORTED_EXTENSIONS, is_indexable
 from app.knowledge_layer.models import BuildStats, RetrievalContext
 from app.knowledge_layer.pipeline import KnowledgeGraphBuilder, RetrievalPipeline
 from app.models.user import User
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 logger = get_logger("prd2tsd.knowledge.routes")
+MAX_KNOWLEDGE_FILE_SIZE = 50 * 1024 * 1024
 
 
 @router.post("/build", response_model=BuildStats)
@@ -27,7 +27,7 @@ async def build_from_document(
     """上传文档并构建知识图谱。
 
     Args:
-        file: 上传的 .md 文件。
+        file: 上传的可入图文档或图片。
         workspace_id: 工作空间 ID。
         current_user: 当前用户。
 
@@ -37,18 +37,16 @@ async def build_from_document(
     Raises:
         HTTPException: 文件格式不支持或构建失败时抛出。
     """
-    if not file.filename or not file.filename.endswith(".md"):
-        raise HTTPException(status_code=400, detail="仅支持 .md 文件")
-
-    # 保存上传文件到临时目录
-    tmp_dir = Path(tempfile.mkdtemp(prefix="kg_"))
-    tmp_path = tmp_dir / file.filename
+    if not file.filename or not is_indexable(file.filename):
+        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"不支持的文件格式，可用格式: {supported}")
     content = await file.read()
-    tmp_path.write_bytes(content)
+    if len(content) > MAX_KNOWLEDGE_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="文件超过 50MB 上限")
 
     try:
         builder = KnowledgeGraphBuilder()
-        stats = await builder.build_from_document(str(tmp_path), workspace_id=workspace_id)
+        stats = await builder.build_from_bytes(content, file.filename, workspace_id=workspace_id)
         logger.info(
             "知识图谱构建完成: file=%s, entities=%d, relations=%d",
             file.filename,
@@ -59,12 +57,6 @@ async def build_from_document(
     except Exception as e:
         logger.error("知识图谱构建失败: %s", str(e))
         raise HTTPException(status_code=500, detail=f"知识图谱构建失败: {str(e)}") from e
-    finally:
-        # 清理临时文件
-        if tmp_path.exists():
-            tmp_path.unlink()
-        if tmp_dir.exists():
-            tmp_dir.rmdir()
 
 
 @router.post("/build-from-path", response_model=BuildStats)

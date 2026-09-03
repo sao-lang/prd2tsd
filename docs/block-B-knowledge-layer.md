@@ -92,7 +92,7 @@ llm = get_llm()  # 返回 OpenAI 客户端（兼容 DeepSeek API）
 - 所有 public 函数必须有 type hint + Google 风格 docstring
 - 禁止 TODO / FIXME / pass / raise NotImplementedError
 - 跨 Phase 的功能用 VIBE_DEFER(块 X) 标记
-- 不做 CSV/Web/图片处理（那是块 E 的范围）
+- Block B 原始范围不做 CSV/Web/图片处理；最终实现已由块 E 扩展多格式字节流，并通过 Gateway Vision 补齐独立及 PDF/DOCX 内嵌图片 OCR
 ```
 
 ---
@@ -106,7 +106,10 @@ llm = get_llm()  # 返回 OpenAI 客户端（兼容 DeepSeek API）
   KGEntity:            # 知识图谱实体（统一标签，type 属性区分 TechStack/Component 等）
     properties: {id, name, type, category, description, embedding, confidence, workspace_id}
 
-关系类型：不预先定义，实体间关联由查询时 LLM 现场推理得出
+关系类型:
+  RELATED:             # 固定 Neo4j 类型，relation_type 属性保存 uses/depends_on/... 等业务语义
+    properties: {id, relation_type, description, confidence, source_text_unit_id,
+                 workspace_id, status, created_at, updated_at}
 ```
 
 ### 5.2 PGVector 集合
@@ -160,6 +163,8 @@ app/knowledge_layer/
 ├── ingestion/
 │   ├── __init__.py
 │   ├── document_loader.py                 # 多格式文档加载（先只做 .md）
+│   ├── multi_format_loader.py             # 块 E 扩展：多格式正文 + PDF/DOCX/独立图片提取
+│   ├── image_ocr.py                       # 块 E 扩展：Gateway Vision OCR 与图片语义描述
 │   ├── chunker.py                         # 多粒度分块（Sentence/Paragraph/Section）
 │   ├── entity_extractor.py                # LLM 实体提取
 │   ├── entity_resolver.py                 # 实体融合/消歧（两级策略）
@@ -266,15 +271,20 @@ class KnowledgeGraphBuilder:
 
 ```
 文档构建链路:
-  用户上传 .md 文件
-    → DocumentLoader.load(file_path)
+  用户上传 md/pdf/docx/csv/txt/图片或提交 URL
+    → 正文解析 + Gateway Vision OCR → build_from_text()
     → MultiGranularityChunker.chunk()          # 3 级分块
     → EntityExtractor.extract(chunks)          # LLM 提取实体
-    → EntityResolver.resolve_batch(entities)   # 两级消歧（精确+别名）
+    → EntityResolver.resolve_touched_batch()   # 两级消歧，只返回本次触达实体
     → EntityEmbedder.embed_entity(entity)      # 双源融合（名称+描述）
     → Neo4jGraphStore.upsert_entities(resolved) # Neo4j 写入实体
+    → RelationExtractor.extract(...)           # 候选端点校验 + 稳定 ID
+    → Neo4jGraphStore.upsert_relations()       # 固定 RELATED + relation_type 属性
+    → ClaimsExtractor.extract(chunks)          # 所有入口共用
     → PGVectorStore.upsert_text_unit(chunks)   # PGVector 写入分块向量
     → PGVectorStore.upsert_entity_embedding()  # PGVector 写入实体向量
+    → PGVectorStore.upsert_claim()             # PGVector 写入 Claim 向量
+    → Celery Beat 每日执行 90/180/365 天老化
     → 返回 BuildStats
 
 检索链路（含反思循环）:

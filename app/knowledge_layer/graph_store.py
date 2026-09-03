@@ -10,7 +10,7 @@ from neo4j import AsyncDriver
 from app.core.connections import connection_manager
 from app.core.logger import get_logger
 from app.knowledge_layer.config import kn_config
-from app.knowledge_layer.models import BuildStats, KGEntity
+from app.knowledge_layer.models import BuildStats, KGEntity, KGRelation, KnowledgeAgingStats
 
 logger = get_logger("prd2tsd.knowledge.graph_store")
 
@@ -53,6 +53,7 @@ class Neo4jGraphStore:
             await session.run(
                 """
                 MERGE (e:KGEntity {id: $id})
+                ON CREATE SET e.created_at = timestamp()
                 SET e.name = $name,
                     e.type = $type,
                     e.category = $category,
@@ -61,7 +62,9 @@ class Neo4jGraphStore:
                     e.confidence = $confidence,
                     e.workspace_id = $workspace_id,
                     e.source_text_unit_id = $source_text_unit_id,
+                    e.status = 'active',
                     e.updated_at = timestamp()
+                REMOVE e.archived_at, e.deleted_at
                 """,
                 id=entity_id,
                 name=entity.name,
@@ -103,6 +106,50 @@ class Neo4jGraphStore:
             实体 ID 列表。
         """
         return [await self.upsert_entity(e) for e in entities]
+
+    async def upsert_relation(self, relation: KGRelation) -> str:
+        """幂等创建或更新实体关系。
+
+        固定使用 ``RELATED`` 关系类型，模型输出仅作为属性写入，禁止动态拼接 Cypher。
+        """
+        relation_id = relation.id or str(uuid.uuid4())
+        driver = await self._get_driver()
+        async with driver.session(database=self._database) as session:
+            result = await session.run(
+                """
+                MATCH (source:KGEntity {id: $source_id, workspace_id: $workspace_id})
+                MATCH (target:KGEntity {id: $target_id, workspace_id: $workspace_id})
+                MERGE (source)-[r:RELATED {id: $id}]->(target)
+                ON CREATE SET r.created_at = timestamp()
+                SET r.relation_type = $relation_type,
+                    r.description = $description,
+                    r.confidence = $confidence,
+                    r.source_text_unit_id = $source_text_unit_id,
+                    r.workspace_id = $workspace_id,
+                    r.status = 'active',
+                    r.updated_at = timestamp()
+                REMOVE r.archived_at, r.deleted_at
+                RETURN r.id AS id
+                """,
+                id=relation_id,
+                source_id=relation.source_entity_id,
+                target_id=relation.target_entity_id,
+                relation_type=relation.relation_type,
+                description=relation.description,
+                confidence=relation.confidence,
+                source_text_unit_id=relation.source_text_unit_id,
+                workspace_id=relation.workspace_id,
+            )
+            record = await result.single()
+        if record is None:
+            raise ValueError(
+                f"关系端点不存在或不属于同一工作空间: {relation.source_entity_id} -> {relation.target_entity_id}"
+            )
+        return str(record["id"])
+
+    async def upsert_relations(self, relations: list[KGRelation]) -> list[str]:
+        """批量幂等写入实体关系。"""
+        return [await self.upsert_relation(relation) for relation in relations]
 
     async def get_entity(self, entity_id: str) -> KGEntity | None:
         """根据 ID 获取实体。
@@ -169,6 +216,7 @@ class Neo4jGraphStore:
         cypher = """
             MATCH (e:KGEntity)
             WHERE e.name CONTAINS $query
+              AND coalesce(e.status, 'active') IN ['active', 'downgraded']
         """
         params: dict[str, Any] = {"query": query, "limit": limit}
         if workspace_id:
@@ -199,6 +247,10 @@ class Neo4jGraphStore:
         driver = await self._get_driver()
         cypher = """
             MATCH path = (e:KGEntity {id: $entity_id})-[*1..$max_depth]-(neighbor)
+            WHERE coalesce(e.status, 'active') IN ['active', 'downgraded']
+              AND coalesce(neighbor.status, 'active') IN ['active', 'downgraded']
+              AND all(rel IN relationships(path)
+                      WHERE coalesce(rel.status, 'active') IN ['active', 'downgraded'])
             UNWIND nodes(path) AS n
             RETURN COLLECT(DISTINCT n) AS entities
         """
@@ -229,13 +281,147 @@ class Neo4jGraphStore:
         cypher = "MATCH (e:KGEntity)"
         params: dict[str, Any] = {}
         if workspace_id:
-            cypher += " WHERE e.workspace_id = $workspace_id"
+            cypher += (
+                " WHERE e.workspace_id = $workspace_id"
+                " AND coalesce(e.status, 'active') IN ['active', 'downgraded']"
+            )
             params["workspace_id"] = workspace_id
+        else:
+            cypher += " WHERE coalesce(e.status, 'active') IN ['active', 'downgraded']"
         cypher += " RETURN e"
         async with driver.session(database=self._database) as session:
             result = await session.run(cypher, params)
             records = await result.fetch(10000)
         return [self._record_to_entity(r["e"]) for r in records]
+
+    async def apply_aging(
+        self,
+        downgrade_before_ms: int,
+        archive_before_ms: int,
+        soft_delete_before_ms: int,
+        workspace_id: str = "",
+    ) -> KnowledgeAgingStats:
+        """按更新时间对实体及关系执行降级、归档和软删除。
+
+        最老数据先软删除，其次归档，最后降级，确保一次任务中状态不会被较轻阶段覆盖。
+        """
+        driver = await self._get_driver()
+        params: dict[str, Any] = {
+            "downgrade_before": downgrade_before_ms,
+            "archive_before": archive_before_ms,
+            "soft_delete_before": soft_delete_before_ms,
+            "workspace_id": workspace_id,
+        }
+        workspace_filter_entity = "AND ($workspace_id = '' OR e.workspace_id = $workspace_id)"
+        workspace_filter_relation = "AND ($workspace_id = '' OR r.workspace_id = $workspace_id)"
+
+        async with driver.session(database=self._database) as session:
+            await session.run(
+                """
+                MATCH (e:KGEntity)
+                WHERE e.updated_at IS NULL
+                  AND ($workspace_id = '' OR e.workspace_id = $workspace_id)
+                SET e.updated_at = coalesce(e.created_at, timestamp())
+                """,
+                params,
+            )
+            await session.run(
+                """
+                MATCH ()-[r:RELATED]->()
+                WHERE r.updated_at IS NULL
+                  AND ($workspace_id = '' OR r.workspace_id = $workspace_id)
+                SET r.updated_at = coalesce(r.created_at, timestamp())
+                """,
+                params,
+            )
+            deleted_entities = await self._aging_count(
+                session,
+                f"""
+                MATCH (e:KGEntity)
+                WHERE coalesce(e.status, 'active') <> 'deleted'
+                  AND coalesce(e.updated_at, 0) < $soft_delete_before
+                  {workspace_filter_entity}
+                SET e.status = 'deleted', e.deleted_at = timestamp()
+                RETURN count(e) AS changed
+                """,
+                params,
+            )
+            archived_entities = await self._aging_count(
+                session,
+                f"""
+                MATCH (e:KGEntity)
+                WHERE coalesce(e.status, 'active') IN ['active', 'downgraded']
+                  AND coalesce(e.updated_at, 0) < $archive_before
+                  {workspace_filter_entity}
+                SET e.status = 'archived', e.archived_at = timestamp()
+                RETURN count(e) AS changed
+                """,
+                params,
+            )
+            downgraded_entities = await self._aging_count(
+                session,
+                f"""
+                MATCH (e:KGEntity)
+                WHERE coalesce(e.status, 'active') = 'active'
+                  AND coalesce(e.updated_at, 0) < $downgrade_before
+                  {workspace_filter_entity}
+                SET e.status = 'downgraded'
+                RETURN count(e) AS changed
+                """,
+                params,
+            )
+            deleted_relations = await self._aging_count(
+                session,
+                f"""
+                MATCH ()-[r:RELATED]->()
+                WHERE coalesce(r.status, 'active') <> 'deleted'
+                  AND coalesce(r.updated_at, 0) < $soft_delete_before
+                  {workspace_filter_relation}
+                SET r.status = 'deleted', r.deleted_at = timestamp()
+                RETURN count(r) AS changed
+                """,
+                params,
+            )
+            archived_relations = await self._aging_count(
+                session,
+                f"""
+                MATCH ()-[r:RELATED]->()
+                WHERE coalesce(r.status, 'active') IN ['active', 'downgraded']
+                  AND coalesce(r.updated_at, 0) < $archive_before
+                  {workspace_filter_relation}
+                SET r.status = 'archived', r.archived_at = timestamp()
+                RETURN count(r) AS changed
+                """,
+                params,
+            )
+            downgraded_relations = await self._aging_count(
+                session,
+                f"""
+                MATCH ()-[r:RELATED]->()
+                WHERE coalesce(r.status, 'active') = 'active'
+                  AND coalesce(r.updated_at, 0) < $downgrade_before
+                  {workspace_filter_relation}
+                SET r.status = 'downgraded'
+                RETURN count(r) AS changed
+                """,
+                params,
+            )
+
+        return KnowledgeAgingStats(
+            downgraded_entities=downgraded_entities,
+            archived_entities=archived_entities,
+            deleted_entities=deleted_entities,
+            downgraded_relations=downgraded_relations,
+            archived_relations=archived_relations,
+            deleted_relations=deleted_relations,
+        )
+
+    @staticmethod
+    async def _aging_count(session: Any, query: str, params: dict[str, Any]) -> int:
+        """执行单阶段老化 Cypher 并读取变更数量。"""
+        result = await session.run(query, params)
+        record = await result.single()
+        return int(record["changed"]) if record else 0
 
     async def delete_entity(self, entity_id: str) -> bool:
         """删除实体及其关联关系。

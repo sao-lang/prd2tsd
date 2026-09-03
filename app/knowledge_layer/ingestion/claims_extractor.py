@@ -46,30 +46,32 @@ class ClaimsExtractor:
         """
         self._model = model
 
-    async def extract(self, chunks: list[Chunk]) -> list[Claim]:
+    async def extract(self, chunks: list[Chunk], workspace_id: str = "") -> list[Claim]:
         """从分块中提取 Claims。
 
         Args:
             chunks: 文档分块列表。
+            workspace_id: 工作空间 ID，用于 Gateway 治理隔离。
 
         Returns:
             提取的 Claim 列表。
         """
         all_claims: list[Claim] = []
         for chunk in chunks:
-            claims = await self._extract_from_chunk(chunk)
+            claims = await self._extract_from_chunk(chunk, workspace_id)
             all_claims.extend(claims)
 
         logger.info("Claims 提取完成: %d claims", len(all_claims))
         return all_claims
 
-    async def _extract_from_chunk(self, chunk: Chunk) -> list[Claim]:
+    async def _extract_from_chunk(self, chunk: Chunk, workspace_id: str = "") -> list[Claim]:
         """从单个分块中提取 Claims。"""
         prompt = CLAIMS_EXTRACTION_PROMPT.format(text=chunk.text[:2000])
         try:
             resp = await gateway.complete(
                 prompt=prompt,
                 task_type="default",
+                workspace_id=workspace_id,
                 layer="knowledge",
                 node="claims_extractor",
                 model=self._model,
@@ -77,7 +79,8 @@ class ClaimsExtractor:
                 max_tokens=2048,
             )
             data = self._parse_response(resp.content)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Claims 提取失败 (chunk %d): %s", chunk.index, exc)
             return []
 
         claims: list[Claim] = []

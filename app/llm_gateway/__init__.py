@@ -15,8 +15,10 @@ Block F 增强链路：
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import AsyncGenerator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -115,16 +117,14 @@ class LLMGateway:
         self.budget_controller = budget_controller or BudgetController()
         self.rate_limiter = rate_limiter or RateLimiter()
 
-        # ── Block F: Failover 管理器 ──
+        # ── Block F: Provider Circuit Breakers + 只读 Failover 路由 ──
+        self._init_circuit_breakers()
         self.failover = FailoverManager()
         self._init_failover_chains()
 
         # ── Block F: 护栏管理器 ──
         self.guardrails = GuardrailManager()
         self._init_guardrails()
-
-        # ── Block F: Provider Circuit Breakers ──
-        self._init_circuit_breakers()
 
         # Capabilities（API 优先，本地模型兜底）
         self.embedding_cap = embedding or UnifiedEmbedding(
@@ -159,14 +159,9 @@ class LLMGateway:
         logger.info("护栏初始化完成: 7 个护栏已注册")
 
     def _init_circuit_breakers(self) -> None:
-        """初始化 Provider Circuit Breakers。"""
+        """注册缺失的 Provider Circuit Breakers，不覆盖已有运行状态。"""
         for provider_name in ["deepseek", "openai", "anthropic", "cohere"]:
-            cb = CircuitBreaker(
-                name=f"provider:{provider_name}",
-                failure_threshold=3,
-                recovery_timeout=30.0,
-            )
-            CircuitBreakerManager.register(cb)
+            self._ensure_circuit_breaker(provider_name)
         logger.info("Circuit Breaker 初始化完成")
 
     @staticmethod
@@ -209,6 +204,21 @@ class LLMGateway:
         return input_tokens + output_tokens
 
     @staticmethod
+    def _cache_prompt(prompt: str, images: Any) -> tuple[str, bool]:
+        """把多模态内容指纹纳入精确缓存身份。
+
+        图片语义不能由文本 Prompt 的相似度代表，因此多模态请求禁用语义匹配，
+        仅允许相同 Prompt 与相同图片载荷命中一级精确缓存。
+        """
+        if not images:
+            return prompt, False
+        digest = hashlib.sha256()
+        for image in images:
+            canonical = json.dumps(image, ensure_ascii=True, sort_keys=True, default=str)
+            digest.update(canonical.encode("utf-8"))
+        return f"{prompt}\n[multimodal-sha256:{digest.hexdigest()}]", True
+
+    @staticmethod
     def _route_key(task_type: str, rule: RoutingRule) -> str:
         """构造隔离到任务路由的 Failover 状态键。"""
         return f"{task_type}:{rule.type.value}:{rule.provider}:{rule.model}"
@@ -236,13 +246,39 @@ class LLMGateway:
                     )
                 )
         route_key = self._route_key(task_type, rule)
+        for target in targets:
+            self._ensure_circuit_breaker(target.provider)
         self.failover.configure(route_key, targets)
-        return route_key, targets
+        return route_key, self.failover.get_available_targets(route_key)
 
     def _route_breakers(self, rule: RoutingRule) -> list[CircuitBreaker]:
         """返回主路由和回退路由涉及的全部熔断器。"""
         providers = [rule.provider, *(str(item.get("provider", "")) for item in rule.fallbacks)]
         return [self._ensure_circuit_breaker(provider) for provider in dict.fromkeys(providers) if provider]
+
+    def _apply_budget_downgrade(self, rule: RoutingRule, model_name: str) -> str:
+        """切换低成本主模型，并把原主目标保留为去重后的回退。"""
+        original = {"type": rule.type.value, "provider": rule.provider, "model": model_name}
+        low_cost_model = self._get_low_cost_model(model_name)
+        downgrade_provider = {"gpt-4o-mini": "openai", "deepseek-chat": "deepseek"}.get(
+            low_cost_model,
+            "openai",
+        )
+        if (downgrade_provider, low_cost_model) == (rule.provider, model_name):
+            return model_name
+
+        fallbacks = [original, *rule.fallbacks]
+        rule.provider = downgrade_provider
+        rule.model = low_cost_model
+        rule.type = ModelType.LLM
+        rule.fallbacks = []
+        seen = {(rule.provider, rule.model)}
+        for fallback in fallbacks:
+            key = (str(fallback.get("provider", "")), str(fallback.get("model", "")))
+            if all(key) and key not in seen:
+                rule.fallbacks.append(fallback)
+                seen.add(key)
+        return low_cost_model
 
     async def _cache_embedding(self, text: str) -> tuple[list[float], str]:
         """为语义缓存生成稳定向量；失败时返回空向量并跳过语义层。"""
@@ -356,6 +392,7 @@ class LLMGateway:
         model_name = rule.model or model_config.default_model
         primary_breaker = self._ensure_circuit_breaker(rule.provider)
         estimated_tokens = self._estimate_tokens(prompt, kwargs)
+        cache_prompt, is_multimodal = self._cache_prompt(prompt, kwargs.get("images"))
 
         with tracer.start_as_current_span(
             f"gateway.complete.{task_type}",
@@ -420,25 +457,20 @@ class LLMGateway:
             # ── 步骤 3: 预算检查 — 自动降级 ──
             budget_check = await self.budget_controller.check(workspace_id)
             if budget_check.get("should_downgrade"):
-                low_cost_model = self._get_low_cost_model(model_name)
+                low_cost_model = self._apply_budget_downgrade(rule, model_name)
                 span.set_attribute("budget_downgrade", True)
                 span.set_attribute("original_model", model_name)
                 span.set_attribute("downgraded_model", low_cost_model)
-                _provider_map = {"gpt-4o-mini": "openai", "deepseek-chat": "deepseek"}
-                downgrade_provider = _provider_map.get(low_cost_model, "openai")
-                rule.provider = downgrade_provider
-                rule.model = low_cost_model
-                rule.type = ModelType.LLM
                 model_name = low_cost_model
 
             # ── 指标追踪：包裹缓存命中 + 实际调用 + 成本（含失败路径） ──
             with track_llm_call(model_name, layer, node) as token_info:
                 # ── 步骤 4: 语义缓存 ──
-                cache_key = self.cache.make_key(prompt, task_type, workspace_id, model_name)
+                cache_key = self.cache.make_key(cache_prompt, task_type, workspace_id, model_name)
                 cached = self.cache.get(cache_key)
-                if cached is None and isinstance(self.cache, SemanticCache):
+                if cached is None and isinstance(self.cache, SemanticCache) and not is_multimodal:
                     cached = await self.cache.lookup(
-                        prompt=prompt,
+                        prompt=cache_prompt,
                         task_type=task_type,
                         workspace_id=workspace_id,
                         model=model_name,
@@ -500,9 +532,9 @@ class LLMGateway:
                         span.set_attribute("guardrail_blocked", output_block.name)
 
                 # ── 步骤 8: 设置缓存 / 成本 / 预算 / 速率 ──
-                if isinstance(self.cache, SemanticCache):
+                if isinstance(self.cache, SemanticCache) and not is_multimodal:
                     await self.cache.store(
-                        prompt=prompt,
+                        prompt=cache_prompt,
                         response=response.content,
                         task_type=task_type,
                         workspace_id=workspace_id,
@@ -589,6 +621,7 @@ class LLMGateway:
         model_name = rule.model
         estimated_tokens = self._estimate_tokens(prompt, kwargs)
         primary_breaker = self._ensure_circuit_breaker(rule.provider)
+        cache_prompt, is_multimodal = self._cache_prompt(prompt, kwargs.get("images"))
 
         # ── 步骤 0: 前置护栏 + 可逆脱敏 ──
         guard_context = {
@@ -616,33 +649,28 @@ class LLMGateway:
         # ── 步骤 3: 预算检查 — 自动降级 ──
         budget_check = await self.budget_controller.check(workspace_id)
         if budget_check.get("should_downgrade"):
-            low_cost_model = self._get_low_cost_model(model_name)
-            rule.provider = {"gpt-4o-mini": "openai", "deepseek-chat": "deepseek"}.get(
-                low_cost_model,
-                "openai",
-            )
-            rule.model = low_cost_model
-            rule.type = ModelType.LLM
-            model_name = low_cost_model
+            model_name = self._apply_budget_downgrade(rule, model_name)
 
         # ── 步骤 4: 安全流式缓存 ──
-        if isinstance(self.cache, SemanticCache):
+        cache_key = self.cache.make_key(cache_prompt, task_type, workspace_id, model_name)
+        cached = self.cache.get(cache_key)
+        if cached is None and isinstance(self.cache, SemanticCache) and not is_multimodal:
             cached = await self.cache.lookup(
-                prompt=prompt,
+                prompt=cache_prompt,
                 task_type=task_type,
                 workspace_id=workspace_id,
                 model=model_name,
                 embedding_loader=self._cache_embedding,
             )
-            if cached is not None:
-                await self.rate_limiter.reconcile(workspace_id, reservation_id, 0)
-                yield cached
-                return
+        if cached is not None:
+            await self.rate_limiter.reconcile(workspace_id, reservation_id, 0)
+            yield cached
+            return
 
         # ── 步骤 5: Failover 链 + Provider 流式调用 ──
         input_tokens = 0
         output_tokens = 0
-        route_key, targets = self._configure_route_failover(task_type, rule)
+        _, targets = self._configure_route_failover(task_type, rule)
 
         # 指标追踪：包裹流式调用（流式结束后统计 token / 成本）
         with track_llm_call(model_name, layer, node) as token_info:
@@ -652,8 +680,6 @@ class LLMGateway:
                     target_model = target.model
                     target_config = self.config_manager.get_config(target.model_type, target_provider)
                     cb = self._ensure_circuit_breaker(target_provider)
-                    if not cb.is_available:
-                        continue
 
                     provider = self.provider_factory.create(target_config.provider, target_config)
                     actual_model = target_model
@@ -744,15 +770,23 @@ class LLMGateway:
                             input_tokens + output_tokens,
                         )
 
-                        if isinstance(self.cache, SemanticCache):
+                        actual_cache_key = self.cache.make_key(
+                            cache_prompt,
+                            task_type,
+                            workspace_id,
+                            actual_model,
+                        )
+                        if isinstance(self.cache, SemanticCache) and not is_multimodal:
                             await self.cache.store(
-                                prompt=prompt,
+                                prompt=cache_prompt,
                                 response=safe_content,
                                 task_type=task_type,
                                 workspace_id=workspace_id,
                                 model=actual_model,
                                 embedding_loader=self._cache_embedding,
                             )
+                        else:
+                            self.cache.set(actual_cache_key, safe_content)
 
                         span.set_attribute("input_tokens", input_tokens)
                         span.set_attribute("output_tokens", output_tokens)
@@ -772,8 +806,6 @@ class LLMGateway:
                     return
                 except Exception as exc:
                     logger.warning("流式调用失败 (attempt=%d): %s", attempt, exc)
-                    with suppress(Exception):
-                        await self.failover.record_failure(route_key, target_provider, target.model)
                     if attempt == len(targets) - 1:
                         logger.exception("流式调用全部重试失败: task_type=%s", task_type)
                         await self.rate_limiter.reconcile(workspace_id, reservation_id, 0)
@@ -808,15 +840,13 @@ class LLMGateway:
         Returns:
             (LLMResponse, model_name) 或 (None, "") 全部失败。
         """
-        route_key, targets = self._configure_route_failover(task_type, rule)
+        _, targets = self._configure_route_failover(task_type, rule)
         for attempt, target in enumerate(targets):
             target_provider = target.provider
             try:
                 target_model = target.model
                 target_config = self.config_manager.get_config(target.model_type, target_provider)
                 target_cb = self._ensure_circuit_breaker(target_provider)
-                if not target_cb.is_available:
-                    continue
 
                 # 构建调用闭包 — 通过参数默认值捕获循环变量
                 _cfg_ref = target_config
@@ -840,8 +870,6 @@ class LLMGateway:
                 return resp, resp.model or target_model
             except Exception as exc:
                 logger.warning("Provider 调用失败 (attempt=%d): %s", attempt, exc)
-                with suppress(Exception):
-                    await self.failover.record_failure(route_key, target_provider, target.model)
 
         return (None, "")
 

@@ -46,27 +46,29 @@ class EntityExtractor:
         """
         self._model = model
 
-    async def extract(self, chunks: list[Chunk]) -> list[KGEntity]:
+    async def extract(self, chunks: list[Chunk], workspace_id: str = "") -> list[KGEntity]:
         """从分块中提取实体。
 
         Args:
             chunks: 文档分块列表。
+            workspace_id: 工作空间 ID，用于 Gateway 治理隔离。
 
         Returns:
             提取的实体列表。
         """
         all_entities: list[KGEntity] = []
         for chunk in chunks:
-            entities = await self._extract_from_chunk(chunk)
+            entities = await self._extract_from_chunk(chunk, workspace_id)
             all_entities.extend(entities)
         logger.info("实体提取完成: %d entities", len(all_entities))
         return all_entities
 
-    async def _extract_from_chunk(self, chunk: Chunk) -> list[KGEntity]:
+    async def _extract_from_chunk(self, chunk: Chunk, workspace_id: str = "") -> list[KGEntity]:
         """从单个分块中提取实体。
 
         Args:
             chunk: 文档分块。
+            workspace_id: 工作空间 ID。
 
         Returns:
             提取的实体列表。
@@ -76,6 +78,7 @@ class EntityExtractor:
             resp = await gateway.complete(
                 prompt=prompt,
                 task_type="default",
+                workspace_id=workspace_id,
                 layer="knowledge",
                 node="entity_extractor",
                 model=self._model,

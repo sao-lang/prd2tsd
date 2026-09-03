@@ -8,6 +8,7 @@ import pytest
 
 from app.knowledge_layer.ingestion.multi_format_loader import (
     SUPPORTED_EXTENSIONS,
+    extract_images,
     extract_text,
     get_ext,
     is_indexable,
@@ -30,7 +31,15 @@ class TestMultiFormatLoader:
         assert is_indexable("a.png") is True
         assert is_indexable("a.exe") is False
         assert {
-            ".md", ".txt", ".csv", ".tsv", ".docx", ".pdf", ".png", ".jpg", ".jpeg",
+            ".md",
+            ".txt",
+            ".csv",
+            ".tsv",
+            ".docx",
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
         } == SUPPORTED_EXTENSIONS
 
     def test_extract_markdown(self) -> None:
@@ -101,6 +110,82 @@ class TestMultiFormatLoader:
         """验证 jpg 元数据占位。"""
         text = extract_text(b"fake-jpeg", "pic.jpg")
         assert "类型 jpg" in text
+
+    def test_extract_standalone_image_for_ocr(self) -> None:
+        """独立图片应作为真实 Vision 输入提取，而不只有元数据占位。"""
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (32, 16), "white").save(buf, format="PNG")
+
+        images = extract_images(buf.getvalue(), "architecture.png")
+
+        assert len(images) == 1
+        assert images[0].media_type == "image/png"
+        assert images[0].source_label == "architecture.png"
+        assert images[0].content.startswith(b"\x89PNG")
+
+    def test_extract_docx_embedded_image_for_ocr(self) -> None:
+        """DOCX 的 word/media 图片应被提取并保留来源。"""
+        from docx import Document
+        from PIL import Image
+
+        image_buf = BytesIO()
+        Image.new("RGB", (32, 16), "white").save(image_buf, format="PNG")
+        doc = Document()
+        doc.add_picture(BytesIO(image_buf.getvalue()))
+        doc_buf = BytesIO()
+        doc.save(doc_buf)
+
+        images = extract_images(doc_buf.getvalue(), "architecture.docx")
+
+        assert len(images) == 1
+        assert images[0].source_label == "DOCX 图片 image1.png"
+
+    def test_extract_pdf_embedded_image_for_ocr(self) -> None:
+        """PDF 页内图片应被提取并带页码来源。"""
+        from fpdf import FPDF
+        from PIL import Image
+
+        image_buf = BytesIO()
+        Image.new("RGB", (32, 16), "white").save(image_buf, format="PNG")
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.image(BytesIO(image_buf.getvalue()), x=10, y=10, w=20)
+        pdf_buf = BytesIO()
+        pdf.output(pdf_buf)
+
+        images = extract_images(pdf_buf.getvalue(), "architecture.pdf")
+
+        assert len(images) == 1
+        assert images[0].source_label.startswith("PDF 第 1 页图片")
+
+    def test_pdf_image_limit_is_enforced_during_extraction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PDF 应边提取边限量，避免先把全部解码图片堆入内存。"""
+        from fpdf import FPDF
+        from PIL import Image
+
+        from app.core.config import settings
+
+        first = BytesIO()
+        second = BytesIO()
+        Image.new("RGB", (32, 16), "white").save(first, format="PNG")
+        Image.new("RGB", (32, 16), "black").save(second, format="PNG")
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.image(BytesIO(first.getvalue()), x=10, y=10, w=20)
+        pdf.image(BytesIO(second.getvalue()), x=40, y=10, w=20)
+        pdf_buf = BytesIO()
+        pdf.output(pdf_buf)
+        monkeypatch.setattr(settings, "KNOWLEDGE_OCR_MAX_IMAGES", 1)
+
+        with pytest.raises(ValueError, match="PDF 图片数量超过 OCR 限制"):
+            extract_images(pdf_buf.getvalue(), "too-many-images.pdf")
+
+    def test_invalid_image_is_rejected_for_ocr(self) -> None:
+        """伪造扩展名的图片不能送入 Vision Provider。"""
+        with pytest.raises(ValueError, match="无法解析待 OCR 图片"):
+            extract_images(b"not-an-image", "fake.png")
 
     def test_unsupported_extension(self) -> None:
         """验证不支持格式抛错。"""

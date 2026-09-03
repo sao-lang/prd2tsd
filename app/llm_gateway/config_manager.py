@@ -377,6 +377,10 @@ class ModelConfigManager:
             data["timeout"] = fallback.timeout
         if provider:
             data["provider"] = provider
+            if not model:
+                provider_config = self.get_config(rule.type, provider)
+                if provider_config.default_model:
+                    data["model"] = provider_config.default_model
         if model:
             data["model"] = model
         resolved = RoutingRule(**data)

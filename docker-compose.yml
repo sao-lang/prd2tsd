@@ -192,7 +192,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/prd2tsd
       - REDIS_URL=redis://redis:6379/0
-    command: celery -A app.batch.scheduler beat --loglevel=info
+    command: celery -A app.batch.tasks:celery_app beat --loglevel=info
     depends_on:
       postgres:
         condition: service_started

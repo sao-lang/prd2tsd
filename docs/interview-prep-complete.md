@@ -44,8 +44,8 @@
 
 **块 3：工程化证据（必会）**
 
-- 三句话：仓库有 400+ 自动化测试（全量收集 438 个）+ CI（ruff / mypy / 技术栈合规 / 真实 PG 集成测试）；Docker Compose 一键起 9 个服务；观测用 Jaeger + Prometheus + Grafana。
-- 关键动作：**面试前亲自跑一遍 pytest tests/unit -q**，亲眼看到当前实测结果 "357 passed, 1 failed, 18 errors"（18 个 error 是 DB 依赖用例，需本地 PostgreSQL；1 个失败是 test_batch，需 Redis；起齐后转通过）。跑过之后，这句话就从"文档说的"变成"我验证过的"——这是最大的差别。
+- 三句话：仓库有 400+ 自动化测试（全量收集 494 个）+ CI（ruff / mypy / 技术栈合规 / 真实 PG 集成测试）；Docker Compose 一键起 9 个服务；观测用 Jaeger + Prometheus + Grafana。
+- 关键动作：**面试前亲自跑一遍 pytest tests/unit -q**，2026-09-03 本机实测结果为 "412 passed, 1 failed, 18 errors"（18 个 error 是 DB 依赖用例，需本地 PostgreSQL；1 个失败是 test_batch，需 Redis；起齐后转通过）。跑过之后，这句话就从"文档说的"变成"我验证过的"——这是最大的差别。
 
 ### 0.5.3 诚实定位话术（被问"这是你写的吗"）
 
@@ -57,7 +57,7 @@
 
 | 说法 | 验证命令 | 预期结果 | 需要环境 |
 |------|----------|----------|----------|
-| 单元测试基本全绿 | pytest tests/unit -q | 357 passed, 1 failed, 18 errors（DB 用例需 PostgreSQL；test_batch 需 Redis） | 本地 + PostgreSQL |
+| 单元测试基本全绿 | pytest tests/unit -q | 412 passed, 1 failed, 18 errors（DB 用例需 PostgreSQL；test_batch 需 Redis，2026-09-03 实测） | 本地 + PostgreSQL |
 | lint / 类型干净 | `ruff check app/ + mypy app/` | All checks passed / Success | 本地即可 |
 | 迁移链正确 | `alembic heads` | f3a4b5c6d7e8 (head) | 本地即可 |
 | 一键部署 | docker compose up -d | 9 个容器健康 | 需要 Docker |
@@ -125,7 +125,7 @@
 | Embedding | BAAI/bge-large-zh-v1.5，1024 维 | `tech-stack.yml`、`config.py` |
 | 重排模型 | BAAI/bge-reranker-v2-m3（Cross-encoder） | `app/knowledge_layer/retrieval/reranker.py` |
 | 评测数据集 | RAG 12 条 / Agent 4 条 | `tests/eval/datasets/` |
-| 测试基线 | 单元 357 过 / 1 败 / 18 error（DB 用例需 PG；test_batch 需 Redis，2026-08-18 实测）；完整环境基线 380 过 / 1 败（`overview.md` 条目 32）；集成 54 过 / lint+tech-stack 7 过 | `overview.md` 条目 30/32 + 实测 |
+| 测试基线 | 单元 412 过 / 1 败 / 18 error（DB 用例需 PG；test_batch 需 Redis，2026-09-03 实测）；完整环境历史基线 380 过 / 1 败（`overview.md` 条目 32）；本次无基础设施回归 447 过 / 3 个 PG 失败 / 1 跳过 | `overview.md` 条目 30/32/39 + 实测 |
 | 冒烟 | 真实 Postgres/Redis/Neo4j/MinIO 4/4 通过 | `overview.md` 条目 30 |
 | 代码规模 | app 262 个 py 文件 / 约 2.25 万行；tests 约 5.8 千行 | 仓库统计 |
 | 观测 | Jaeger（OTLP）、Prometheus（/api/v1/metrics）、Grafana | `docker-compose.yml` |
@@ -222,13 +222,15 @@ flowchart LR
 
 ### 3.3 知识图谱构建（Ingestion）链路
 
-- **做什么**：文档 → 文本 → 多粒度分块 → 实体提取 → 实体消歧 → Embedding → 双写 Neo4j（实体+关系）+ PGVector（chunk/entity/claim 向量）→ Claims 提取。
+- **做什么**：文档 → 正文/图片提取 → Gateway Vision OCR → 合并文本 → 分块 → 实体/关系/Claims 提取 → 消歧与 Embedding → Neo4j 实体关系 + PGVector chunk/entity/claim 向量。
 - **关键实现**：
-  - 多格式加载：md/pdf/docx/csv/txt/图片（`multi_format_loader.py`）。
+  - 多格式加载：md/pdf/docx/csv/txt/图片；PDF `page.images` 与 DOCX `word/media` 内嵌图片也会提取。
+  - 图片 OCR：Pillow 校验/规范化后走 `gateway.analyze_vision()`，输出可见文字和图表/流程/界面语义并保留来源；OCR 失败会使异步入图失败重试，不写伪语义。
   - 分块：sentence 50 词 / paragraph 500 词。
   - 消歧：与图库已有实体比对合并，避免同一实体重复入库。
-  - Claims：决策断言提取，带 subject/claim_type/object 结构化入向量表。
-  - 老化策略：90 天降级 / 180 天归档 / 365 天软删除。
+  - 关系：仅从同一 Chunk 的候选实体中抽取，校验端点后用稳定 ID 写为固定 `RELATED` 类型，业务类型保存在属性中。
+  - Claims：Markdown、本地文件、上传/Celery 和 URL 都统一在 `build_from_text()` 提取，并用稳定 ID upsert。
+  - 老化策略：每日 Celery Beat 执行 90 天降级 / 180 天归档 / 365 天软删除；重新摄取会恢复 active。
 - **关键文件**：`app/knowledge_layer/pipeline.py`、`ingestion/*.py`、`graph_store.py`、`vector_store.py`。
 - **追问**：实体提取用 LLM 还是规则？→ LLM（成本可控，实体质量更高）；分块为什么两级？→ 段落级保证上下文完整、句子级服务细粒度检索，配合实体链接弥补召回。
 
@@ -408,7 +410,7 @@ flowchart LR
 
 - **理由**：生产调用 LLM 不只是"发个请求"，需要统一的路由、熔断、降级、限流、缓存、护栏、成本、观测。直接 SDK 每个 Provider 一套代码，重复且不安全；LiteLLM 是可选，但它把"多 Provider 统一"做成黑盒，护栏/预算/熔断仍需自己写，且引入额外依赖（项目用 `tech-stack.yml` 白名单约束依赖，LiteLLM 未登记）。
 - **核心设计**：`GatewayChatModel(BaseChatModel)` 把 Gateway 包装成 LangChain 标准模型——节点内部既能用 LangChain 的 prompt/parser，又能保留 Gateway 全部生产能力。这是文档里"不可能三角"（编排灵活性 / 节点内便利 / 生产能力）的解法。
-- **调用链（要能背）**：前置护栏（注入/PII/超时）→ 限流 → 路由 → 预算检查（90% 降级）→ 语义缓存 → 熔断+Failover 链 → 追踪+调用 → 后置护栏（内容安全/输出校验/空响应/重试决策）→ 成本/预算/速率记录。
+- **调用链（要能背）**：用途级路由与预计 Token → 前置护栏 → RPM/TPM 原子预留 → 周/月预算检查与路由降级 → L1 精确/L2 向量缓存 → Failover 只读熔断状态排列目标 → `CircuitBreaker.call()` 唯一计数并调用 Provider → 后置护栏 → 缓存、成本、预算账本和实际 Token 校正。
 - **关键文件**：`app/llm_gateway/__init__.py`、`app/llm_gateway/langchain_adapter.py`、`app/llm_gateway/guardrails/*.py`、`app/llm_gateway/failover.py`、`app/core/circuit_breaker.py`。
 
 ### 4.9 为什么 Redis？
@@ -640,7 +642,7 @@ flowchart LR
 
 ### 6.5 "你们最终评测分数是多少？"怎么答
 
-> 真实评测需要有效的 judge key 和完整环境。仓库基线里：单元 380 过 / 1 败（完整环境，overview 条目 32）、集成 54 过、真实中间件冒烟 4/4 通过；2026-08-18 本机实测（未起外部服务）为 357 过 / 1 败 / 18 error（DB 用例需 PG）。评测闭环用 mock LLM 验证可产出报告。真实指标我会在面试前用有效 key 补跑一次，把报告（`tests/eval/reports/`）作为证据。
+> 真实评测需要有效的 judge key 和完整环境。仓库历史基线里：单元 380 过 / 1 败（完整环境，overview 条目 32）、集成 54 过、真实中间件冒烟 4/4 通过；2026-09-03 本机实测（未起外部服务）为 412 过 / 1 败 / 18 error（DB 用例需 PG，批任务用例需 Redis）。评测闭环用 mock LLM 验证可产出报告。真实指标我会在面试前用有效 key 补跑一次，把报告（`tests/eval/reports/`）作为证据。
 
 **建议（重要）**：面试前真的跑一次 `python scripts/run_rag_eval.py --ab-reflection` 和 `python scripts/run_agent_eval.py`，把报告数字背下来。有真实数字的评测故事，比任何理论都强。
 
@@ -674,7 +676,7 @@ flowchart LR
 
 ### 7.2 测试层证据
 
-- 基线（overview 条目 30/32）：单元 380 过 / 1 败（完整环境）、集成 54 过、lint + 技术栈合规 7 过、冒烟 4/4 通过。2026-08-18 本机实测（未起外部服务）：357 过 / 1 败 / 18 error（18 例为 DB 依赖用例，需本地 PostgreSQL）。
+- 基线（overview 条目 30/32/39）：历史完整环境单元 380 过 / 1 败、集成 54 过、lint + 技术栈合规 7 过、冒烟 4/4 通过。2026-09-03 本机实测（未起外部服务）：单元 412 过 / 1 败 / 18 error；排除已知依赖 PostgreSQL/Redis 的单元文件后，跨层回归 447 过 / 3 个仍依赖 PostgreSQL 的集成失败 / 1 跳过。
 - 单元测试默认用 SQLite 内存库（`tests/conftest.py`），逻辑层不依赖真实中间件；集成测试在 CI 里跑真实 PostgreSQL（pgvector/pgvector:pg16）+ Redis 7。
 - 工程方法亮点：除组件单测外，专门加了"接线断言测试"——断言 State 字段被谁消费、节点结果真的流到下一个节点。这是因为 AI 辅助开发最常见的 bug 是"代码写了但没被调用"，这类测试专治断点。
 
@@ -801,7 +803,7 @@ flowchart LR
 
 1. **不编造**：不编"生产部署/用户量/压测数据/评测高分"。没有就是没有，用"测试基线 + 冒烟 + CI"证明工程质量。
 2. **不把计划当完成**：多模态、SSO、Web UI、协同编辑都删了或没做，简历和口述都别写。
-3. **数字必须准确**：9 维评测、7 护栏、3 轮反思、最多 3 轮迭代、k=60、1024 维、阈值 85/70、主编排 16 节点、单元 357 过 / 1 败 / 18 error（DB 用例需 PG）——说错一个都会让前面全被怀疑。
+3. **数字必须准确**：9 维评测、7 护栏、3 轮反思、最多 3 轮迭代、k=60、1024 维、阈值 85/70、主编排 16 节点、单元 412 过 / 1 败 / 18 error（DB 用例需 PG，批任务用例需 Redis）——说错一个都会让前面全被怀疑。
 4. **不背文档原文**：面试官追问"为什么"时，背稿的痕迹很明显。把每个答案压缩成"结论 + 一个代码事实"。
 5. **不回避"哪些是 AI 写的"**：这是必问题，诚实 + 深度是唯一解法（§2.4）。
 
@@ -847,7 +849,7 @@ flowchart LR
 
 **主链路（默画）**：POST /api/v1/interact → 意图分类（规则 + LLM）→ [复杂生成] 知识检索（图 + 向量 + 反思）→ Analysis(11) → 人工审核 → Planning(14) → 人工审核 → Generation(8) → Evaluation(9 维并行) → 迭代决策（≥85 过 / <70 回退，最多 3 轮）→ 记忆压缩 → 会话保存。
 
-**核心数字**：主编排 16 节点｜Analysis 11 / Planning 14 / Generation 8 / Evaluation 9+1｜RRF k=60｜反思最多 3 轮｜7 护栏｜熔断 3 次 30s｜Failover deepseek-chat → gpt-4o-mini｜阈值 85/70｜单测 357 过 / 1 败 / 18 error（DB 用例需 PG）｜全量 438 收集｜SSRF 21 例｜SSE 20 种事件。
+**核心数字**：主编排 16 节点｜Analysis 11 / Planning 14 / Generation 8 / Evaluation 9+1｜RRF k=60｜反思最多 3 轮｜7 护栏｜熔断 3 次 30s｜Failover deepseek-chat → gpt-4o-mini｜阈值 85/70｜单测 412 过 / 1 败 / 18 error（DB 用例需 PG，批任务用例需 Redis）｜全量 494 收集｜SSRF 21 例｜SSE 20 种事件。
 
 **八句话定位**：输入 PRD → LangGraph 主编排 + 4 层子图 → 9 维评测门禁自动迭代 → 关键节点人工审核 → PostgresSaver 断点续跑 → 自研 LLM Gateway（护栏/熔断/降级/缓存/成本）→ 自研双路检索（Neo4j + PGVector + 反思）→ 观测三件套（Jaeger / Prometheus / 回放）+ 评测闭环（deepeval + rubric）。
 
@@ -944,13 +946,14 @@ Analysis/Planning 后由 `needs_review()` 判断是否审核；`interrupt()` 暂
 → 按用途解析请求/API/环境/YAML/代码多级模型路由
 → PostgreSQL 周/月预算检查与低成本模型降级
 → 租户隔离的精确 + 持久化向量语义缓存
-→ 动态 Provider 熔断和配置化 Failover
+→ Failover 只读 Provider 熔断状态并按配置排列候选
+→ CircuitBreaker 唯一累计失败并控制 OPEN/HALF_OPEN/CLOSED
 → 模型调用
 → 输出护栏与 PII 还原
 → 成本、token 和指标记录
 ```
 
-`SemanticCache` 先按 workspace/task/model/护栏版本执行进程内精确匹配，再从 PostgreSQL 读取同作用域、未过期且向量模型一致的候选计算余弦相似度；原始 Prompt 只保留哈希。预算配置和成本账本已持久化，限流窗口仍是单进程内存状态，多实例部署需要迁移到 Redis 或共享限流服务。
+`SemanticCache` 先按 workspace/task/model/护栏版本执行进程内精确匹配，再从 PostgreSQL 读取同作用域、未过期且向量模型一致的候选计算余弦相似度；原始 Prompt 只保留哈希。图片载荷指纹进入多模态精确键，多模态禁用文本语义命中，避免不同图片串用 OCR 结果。预算配置和成本账本已持久化，限流窗口仍是单进程内存状态，多实例部署需要迁移到 Redis 或共享限流服务。
 
 #### Q：Pydantic 怎么约束结构化输出？
 

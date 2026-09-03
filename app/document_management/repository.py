@@ -185,12 +185,14 @@ class DocumentRepository:
             "tags",
             "processing_status",
             "processing_error",
+            "indexed_at",
+            "entity_count",
+            "relation_count",
             "file_type",
             "source_url",
         ):
-            val = getattr(data, field, None)
-            if val is not None:
-                values[field] = val
+            if field in data.model_fields_set:
+                values[field] = getattr(data, field)
         if not values:
             return await self.get(db, document_id)
 

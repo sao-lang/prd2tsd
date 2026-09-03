@@ -4,6 +4,85 @@
 
 ---
 
+## 知识图谱关系、Claims 与老化调度自省（2026-09-04）
+
+### 四维检查
+
+| 维度 | 结论 | 证据 |
+|---|---|---|
+| 功能完整性 | ✅ | 关系抽取/upsert、全入口 Claims、90/180/365 老化和文档统计均已实现 |
+| 功能间联通 | ✅ | 字节/URL/文件 → 统一文本构建 → 实体消歧 → 关系/Claims → Neo4j/PGVector；每日 Beat → 老化 → 图统计 |
+| 模块间联通 | ✅ | Gateway workspace 隔离、Celery app/Beat、文档 ORM 字段、API schema、Docker 命令和 docs 已同步 |
+| 可用性 | ⚠️ 环境受限 | 专项测试通过；全单元 423 passed，18 errors 均为 PostgreSQL 连接拒绝；Ruff/mypy 通过 |
+
+### 发现并修复的问题
+
+| 问题 | 严重程度 | 修复 |
+|---|---|---|
+| 老化查询把缺少 `updated_at` 的历史节点按时间戳 0 处理，首次任务可能直接软删除 | 严重 | 老化前以 `created_at` 或当前时间回填实体/关系时间戳；新写入同时维护 created_at/updated_at |
+| 旧 `resolve_batch()` 返回整个 workspace 实体，构建会刷新无关节点的 updated_at，导致永不老化 | 严重 | 新增并接入 `resolve_touched_batch()`，只嵌入和 upsert 本轮命中/新增实体 |
+| Celery 入图成功只更新 processing_status，entity_count/relation_count/indexed_at 未落库且旧错误无法清空 | 中等 | 扩展 DocumentUpdate/Repository 字段与显式 None 更新语义，任务完成时一次写入统计和时间 |
+| Beat 配置只定义在 BatchScheduler，容器命令指向没有 Celery app 的模块 | 严重 | 将 BEAT_SCHEDULE 注册到 tasks.celery_app，容器改用 `app.batch.tasks:celery_app` |
+
+### 二次自省结论
+
+三项用户指出的边界均已从“文档声明”变成可执行链路，并用端点白名单、固定关系类型和稳定 ID 控制 LLM 关系输出风险。老化不会误伤旧数据，也不会被无关实体批量刷新架空；上传、URL 和本地文件不再存在 Claims 能力差异。剩余限制已明确记录：跨 Chunk 关系、Chunk 幂等和真实外部基础设施 E2E。
+
+---
+
+## Gateway 熔断与知识图片 OCR 自省（2026-09-03）
+
+### 四维检查
+
+| 维度 | 结论 | 证据 |
+|---|---|---|
+| 功能完整性 | ✅ | 熔断单一计数源、只读 Failover、独立/内嵌图片提取、Gateway Vision OCR、多模态缓存隔离、上传格式扩展均有实现与测试 |
+| 功能间联通 | ✅ | 文档字节 → 正文/图片提取 → OCR → 来源化文本合并 → Chunk/实体/Embedding；路由候选 → 熔断过滤 → `CircuitBreaker.call()` → fallback 已贯通同步与流式入口 |
+| 模块间联通 | ✅ | Settings、环境变量、Pillow 依赖、Gateway vision 路由、API/Celery 构建入口和架构文档已同步；现有接口保持兼容 |
+| 可用性 | ⚠️ 环境受限 | 专项 62/62；无基础设施跨层回归 447 通过、3 个 PostgreSQL 集成失败、1 跳过；生产代码 Ruff/mypy 通过，真实 Vision/数据库未启动 |
+
+### 发现并修复的问题
+
+| 问题 | 严重程度 | 修复 |
+|---|---|---|
+| 详细面试文档仍称 TimeoutGuardrail 未绑定熔断器，与动态注入主目标/fallback 熔断器的代码矛盾 | 中等 | 更新护栏和 Provider/Failover 章节，明确护栏只读、CircuitBreaker 唯一转换状态和计数 |
+| PDF 先收集全部解码图片、之后才检查数量和体积，恶意或超大 PDF 可能造成瞬时内存放大 | 严重 | 在遍历 `page.images` 时逐图检查数量、单图大小和累计大小，并新增限制回归测试 |
+
+### 二次自省结论
+
+失败计数与健康状态已收敛为 CircuitBreaker 单一事实源，Failover 不再拥有任何可变健康字段或主动探活。图片语义已进入知识构建正文，而非只留下文件元数据；OCR 仍受 Gateway 的护栏、预计 TPM、预算、缓存、熔断和 Failover 管理。剩余边界是 PDF 纯矢量内容不属于 `page.images`、DOCX/PDF 图片按提取顺序追加而非精确回插原段落位置，以及真实外部服务尚未验证。
+
+---
+
+## LLM Gateway 六项治理改造自省（2026-09-03 07:36）
+
+### 四维检查
+
+| 维度 | 结论 | 证据 |
+|---|---|---|
+| 功能完整性 | ✅ | 前置护栏、预计 TPM、五用途模型路由、统一 Provider、持久化周期预算、语义缓存均有实现与专项测试 |
+| 功能间联通 | ✅ | 请求覆盖 → 路由 → 预算降级 → Failover/熔断 → 护栏 → 缓存/成本/TPM 对账已贯通同步与安全流式入口 |
+| 模块间联通 | ✅ | LangChain Adapter、Interact 同步/SSE、异步任务 ContextVar、配置 API、SQLAlchemy ORM 与 Alembic 迁移已接线 |
+| 可用性 | ⚠️ 环境受限 | Ruff 与生产代码 mypy 通过；关联测试 113/113；外部服务端口均未监听，Smoke/E2E 无法完成 |
+
+### 发现并修复的问题
+
+| 问题 | 严重程度 | 修复 |
+|---|---|---|
+| 环境变量主路由会擦除 YAML/代码 fallback，导致流式失败后不切换 Provider | 严重 | 分层合并路由，非显式空运行时规则继承代码容灾链 |
+| OPEN 熔断器恢复窗口结束后 `is_available` 仍永久为 false | 严重 | 恢复窗口到期允许调用进入 HALF_OPEN 试探 |
+| 配置 API 与全局 Gateway 使用不同 `ModelConfigManager` 实例 | 严重 | 全局 Gateway 显式注入全局配置管理器 |
+| 预算降级替换主模型后可能去重掉唯一 fallback | 严重 | 统一降级函数，把原主目标作为类型明确、去重后的回退 |
+| 请求只覆盖 Provider 时仍沿用原 Provider 的模型名 | 严重 | Provider-only 覆盖自动选取目标 Provider 默认模型 |
+| 匿名调用可能通过语义相似度跨上下文复用响应 | 严重 | 缺少 workspace_id 时禁用语义匹配和持久化，只保留精确缓存 |
+| 语义缓存保存原始 Prompt 会扩大敏感数据持久化面 | 中等 | 数据库仅保存 Prompt 哈希、向量和经过后置护栏的响应 |
+
+### 二次自省结论
+
+六项功能在代码和 Mock/内存 Store 测试层已闭环，未发现新的同步/流式旁路。剩余风险是环境验证和规模化性能：PostgreSQL 迁移与真实持久化尚未执行，语义候选为数据库过滤后应用层余弦计算，流式安全策略牺牲首 chunk 延迟。
+
+---
+
 ## LLM Gateway 流式护栏一致性自省（2026-09-02 13:30）
 
 ### 四维检查

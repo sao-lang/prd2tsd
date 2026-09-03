@@ -224,14 +224,14 @@ PromptStore:     ⚠️ 当前为内存实现（dict），未接数据库
 
 | 能力 | 实现 |
 |------|------|
-| Provider 抽象 | `providers/`：OpenAI / Anthropic / Cohere / Custom，经 `ProviderFactory` 创建 |
+| Provider 抽象 | `UniversalProvider` 统一门面；按 protocol 适配 OpenAI-compatible / Anthropic / Cohere |
 | 模型路由 | `config_manager.resolve_model(task_type)`（按 task_type → model_type/provider/model） |
 | 成本追踪 | `cost_tracker.record()` → llm_call_logs 语义 + `LLM_COST_TOTAL` 指标 |
-| 语义缓存 | `cache.py`：SHA-256(prompt+task_type) 精确匹配，TTL 1h，max 1000 条 |
+| 语义缓存 | L1 租户隔离精确缓存 + L2 PostgreSQL 向量语义缓存；多模态按图片指纹精确匹配 |
 | 速率限制 | `rate_limiter.py`：RPM（默认 60）/ TPM（默认 100000）滑动窗口，按 workspace |
 | 预算控制 | `budget_controller.py`：PostgreSQL 持久化自然周/月预算，超阈值自动降级到低成本模型 |
 | 熔断 | 每个 Provider 独立 `CircuitBreaker`（failure_threshold=3, recovery_timeout=30s） |
-| Failover | LLM 链：deepseek-chat → gpt-4o-mini；每 60s 健康检测 |
+| Failover | 配置化 Primary + fallbacks；只读 CircuitBreaker 状态，不独立计数或主动 ping |
 | 护栏 | 7 个可插拔护栏（详见第七章） |
 
 #### 2.4.2 配置三级优先级
@@ -260,7 +260,7 @@ model_types: llm / embedding / rerank / judge / vision
   embedding: text-embedding-3-small（API） + BAAI/bge-large-zh-v1.5（本地兜底）
   rerank:    cohere-rerank-english-v3.0（API） + BAAI/bge-reranker-v2-m3（本地）
   judge:     gpt-4o-mini（评测用低成本模型）
-  vision:    gpt-4o（已弃用 CLIP 多模态，仅配置保留）
+  vision:    gpt-4o（图片 OCR/语义分析，经 Gateway 完整治理链）
 ```
 
 > **⚠️ 注意**：`app/llm_gateway/router.py` 的 `ModelRouter` **已废弃**（DeprecationWarning），功能合并到 `ModelConfigManager`。
@@ -415,6 +415,12 @@ HTTP 请求
 DocumentLoader.load(file_path)          # 仅 .md（构建器主路径）
   或 multi_format_loader.extract_text() # 多格式字节流提取（上传/URL 路径）
     │
+    ├─ extract_images(): 独立图片 + PDF page.images + DOCX word/media
+    │      → Pillow 校验/规范化 + 数量/体积限制 + 内容去重
+    │      → GatewayImageOCR → gateway.analyze_vision(vision)
+    │      → 可见文字转录 + 图表/流程/界面语义描述（保留页码/图片名）
+    │
+    ▼ 正文与 OCR 文本合并
     ▼
 MultiGranularityChunker.chunk(text, level)
     │  三级分块:
@@ -428,7 +434,7 @@ EntityExtractor.extract(chunks)
     │  实体类型(5种): TechStack / Component / ArchitecturePattern / Constraint / Concept
     │
     ▼
-EntityResolver.resolve_batch(new_entities, existing)
+EntityResolver.resolve_touched_batch(new_entities, existing)
     │  两级消歧: ① 精确名称匹配 ② ALIAS_MAP 别名表 + MD5 归一化 key（去 -_ 空格）
     │  _merge_entities: 保留更长描述、取 max confidence、合并 properties
     │
@@ -441,22 +447,30 @@ EntityEmbedder.embed_entity(entity)
 Neo4j 写入（KGEntity 节点）+ PGVector 写入（entity_embeddings）
     │
     ▼
-ClaimsExtractor.extract(chunks)         # Block F: 决策断言提取（5 种类型）
+RelationExtractor.extract(chunks, source_entities, resolved_entities)
+    │  只允许同 Chunk 候选端点，绑定消歧后 ID，过滤幻觉端点/自环
+    ▼
+Neo4j 写入（固定 RELATED 类型，relation_type 为参数化属性）
+    │
+    ▼
+ClaimsExtractor.extract(chunks)         # 决策断言提取（5 种类型，所有入口共用）
     │  逐 chunk 调 gateway.complete，source_text_unit_id=chunk.id
     ▼
 PGVector 写入（claim_embeddings）
     │
     ▼
-BuildStats { entities, chunks, file_path, workspace_id }
+BuildStats { entities, relations, chunks, claims, file_path, workspace_id }
 ```
+
+Markdown 路径、文档上传/Celery 字节流与 URL 抓取最终都汇入 `build_from_text()`；实体、关系、Claims 和三类向量由这一处统一执行，避免入口间能力漂移。
 
 **三条构建入口**：
 
 | 入口 | 方法 | 说明 |
 |------|------|------|
-| 文件路径 | `KnowledgeGraphBuilder.build_from_document(file_path, workspace_id)` | 9 步完整流程（含 Claims） |
-| 文本 | `KnowledgeGraphBuilder.build_from_text(text, source_name, workspace_id)` | 与上面一致，**少 Claims 步骤** |
-| 字节流 | `KnowledgeGraphBuilder.build_from_bytes(content, filename, workspace_id)` | `multi_format_loader.extract_text` 提取后走 build_from_text；空文本抛 ValueError |
+| 文件路径 | `KnowledgeGraphBuilder.build_from_document(file_path, workspace_id)` | Markdown 读取后委托统一文本链；非 Markdown 委托字节流链 |
+| 文本 | `KnowledgeGraphBuilder.build_from_text(text, source_name, workspace_id)` | 统一核心链：Chunk、实体、关系、Claims 和向量落库 |
+| 字节流 | `KnowledgeGraphBuilder.build_from_bytes(content, filename, workspace_id)` | `extract_text + extract_images → Gateway Vision OCR → 合并来源化文本 → build_from_text`；最终无文本抛 ValueError |
 
 **多格式加载器（multi_format_loader.py）**：
 
@@ -465,10 +479,12 @@ SUPPORTED_EXTENSIONS = {.md,.txt,.csv,.tsv,.docx,.pdf,.png,.jpg,.jpeg}
 extract_text(content: bytes, filename: str) -> str:
   md/txt   → 直接 decode
   csv/tsv  → 每行转 "记录: a，b。"
-  docx     → python-docx（段落 + 表格行）
-  pdf      → pypdf（每页标 "[第 N 页]"）
-  图片     → "[图片: {filename}, 类型, 大小 KB]"（仅元数据占位，多模态已删）
+  docx     → python-docx（段落 + 表格行）+ word/media 内嵌图片 OCR
+  pdf      → pypdf（每页标 "[第 N 页]"）+ page.images 页内图片 OCR
+  图片     → 元数据 + Gateway Vision 可见文字转录和语义描述
 ```
+
+OCR 不直接调用厂商 SDK。每张图转为受控 data URL 后进入 `vision` 路由，继续执行输入护栏、预计 Token 预留、预算、熔断、Failover、输出护栏和成本记录。图片内容 SHA-256 会进入精确缓存身份，多模态调用禁用仅基于文字 Prompt 的语义匹配。OCR 返回限流、护栏阻断、全部 Provider 失败或空内容时，构建任务失败并交给 Celery 重试，避免“无图片语义但状态为 indexed”。默认限制为每文档 50 张、单图 20MB、图片总量 50MB。
 
 ### 3.4 向量存储（app/knowledge_layer/vector_store.py）
 
@@ -551,6 +567,8 @@ Compressor.compress(results):
 ```text
 KGEntity:     id, name, type(5种), category, description, properties, embedding,
               confidence=0.9, source_text_unit_id, workspace_id
+KGRelation:   id, source_entity_id, target_entity_id, relation_type, description,
+              confidence, source_text_unit_id, workspace_id
 Claim:        id, subject, subject_entity_id, object, object_entity_id,
               claim_type(5种: comparison/decision/specification/constraint/prediction),
               content, confidence, source_text_unit_id, workspace_id
@@ -569,7 +587,9 @@ Chunk:        id, text, level(sentence/paragraph/section), section_path, index, 
 | local_top_k / global_top_k / hybrid_top_k | 10 / 5 / 10 |
 | rrf_k | 60 |
 | max_compress_tokens | 4000 |
-| 老化 downgrade/archive/soft_delete_days | 90 / 180 / 365（当前无人调用） |
+| 老化 downgrade/archive/soft_delete_days | 90 / 180 / 365（每日 Celery Beat 执行） |
+
+老化任务对实体和 `RELATED` 关系先处理最老数据：365 天软删除、180 天归档、90 天降级，避免同一次执行中重状态被轻状态覆盖；检索只允许 `active/downgraded`。历史节点若缺少时间戳，会先以 `created_at` 或本次任务时间安全回填，不会被当成 Unix epoch 旧数据立即删除。实体或关系被后续文档再次 upsert 时恢复 `active` 并清除归档/删除时间。
 
 ### 3.11 Protocol 接口边界（app/knowledge_layer/interfaces.py）
 
@@ -603,17 +623,21 @@ Chunk:        id, text, level(sentence/paragraph/section), section_path, index, 
     │
     ▼ EntityExtractor.extract(chunks)   # 逐 chunk LLM，5 种实体类型
     │
-    ▼ EntityResolver.resolve_batch()    # 精确匹配 + ALIAS_MAP 别名消歧
+    ▼ EntityResolver.resolve_touched_batch() # 精确匹配 + ALIAS_MAP；只返回本次触达实体
     │
     ▼ EntityEmbedder.embed_entity()     # 名称×0.5 + 描述×0.5，bge-large-zh-v1.5
     │
     ▼ 双写: Neo4j(KGEntity) + PGVector(entity_embeddings)
     │
-    ▼ ClaimsExtractor.extract(chunks)   # （build_from_document 路径）
+    ▼ RelationExtractor.extract(...)    # 候选端点白名单 + 稳定关系 ID
+    │
+    ▼ Neo4j(:KGEntity)-[:RELATED {relation_type,...}]->(:KGEntity)
+    │
+    ▼ ClaimsExtractor.extract(chunks)   # 所有入口共用，稳定 Claim ID
     │
     ▼ PGVector(claim_embeddings)
     │
-    ▼ BuildStats{entities, chunks, file_path, workspace_id}
+    ▼ BuildStats{entities, relations, chunks, claims, file_path, workspace_id}
     │
     ▼ （入口 A）更新 uploaded_documents: entity_count / relation_count /
         indexed_at / processing_status
@@ -1206,10 +1230,13 @@ BEAT_SCHEDULE（app/batch/scheduler.py）:
   sync-web-resources       → prd2tsd.batch.tasks.sync_web_resources       （2h）
 
 Celery 任务（app/batch/tasks.py，均 max_retries=3）:
-  refresh_knowledge_graph:    KnowledgeGraphBuilder.get_stats()（retry 60s）
+  refresh_knowledge_graph:    KnowledgeAgingPolicy.run() → get_stats()（retry 60s）
   cleanup_expired_sessions:   SessionRepository + SessionCleanupPolicy（retry 30s）
-  sync_web_resources:         WebIndexer().sync_all()（retry 120s）⚠️ WebIndexer 类不存在（见 21）
+  sync_web_resources:         从 uploaded_documents 取 URL → WebSyncScheduler.sync_all()（retry 120s）
   index_document_to_kg(doc_id): 查 UploadedDocument → 下载 → build_from_bytes → 更新 processing_status
+
+celery_app.conf.beat_schedule = BatchScheduler.BEAT_SCHEDULE；容器 Beat 使用
+`celery -A app.batch.tasks:celery_app beat`，与 Worker 共用同一个已注册任务的 app。
 
 BatchTaskService: 批量重索引/重新生成（内存存储，重启丢失，注明需迁 PG）
 手动触发: POST /api/v1/batch/scheduler/trigger/{task_name} → celery_app.send_task 真正触发
@@ -1247,7 +1274,8 @@ POST /api/v1/documents/upload（multipart 文件）
        celery index_document_to_kg.delay(document_id)（Celery 不可用降级跳过）
         │
         └─ 异步执行（见第三章 3.12 构建链路）:
-           下载字节 → extract_text → build_from_text → 双写 Neo4j+PGVector
+           下载字节 → 正文/图片 OCR → build_from_text
+           → 实体/关系/Claims 抽取 → 双写 Neo4j+PGVector
            → 更新 processing_status(processing→indexed) + entity_count/relation_count
 
 查询消费:
@@ -1305,7 +1333,15 @@ Gateway 中的使用:
 FailoverManager:
   路由键 = task_type:model_type:provider:model
   主目标及 fallbacks 来自运行时 API / 环境变量 / config/model-routing.yaml / 代码枚举兜底
-  每个 fallback 可声明自己的 type/provider/model，失败尝试按路由键记录
+  每个 fallback 可声明自己的 type/provider/model
+  FailoverTarget 仅保存不可变路由元数据
+  get_available_targets() 只读 provider:<name> 熔断器的 is_available
+  不保存 healthy/last_check，不执行 ping，不记录失败
+
+CircuitBreaker:
+  Provider 调用必须经过 cb.call()，由它唯一累计 failure_count
+  成功清零并回到 CLOSED；阈值达到进入 OPEN；恢复窗口到期控制 HALF_OPEN 试探
+  同一 Provider 的不同模型共享状态，新建 Gateway 不覆盖已有熔断计数
 
 UniversalProvider:
   Gateway 只依赖一个统一 Provider 门面
@@ -2161,49 +2197,39 @@ SectionWriterNode 流式生成:
 ```python
 async def complete(self, prompt, task_type="default", workspace_id="",
                    layer="", node="", **kwargs) -> LLMResponse:
-    with tracer.start_as_current_span(f"gateway.complete.{task_type}", kind=SpanKind.CLIENT):
-        # 0. 前置护栏
-        input_results = await self.guardrails.check_input(prompt, guard_context)
-        for r in input_results:
-            if r.blocked:  LLM_CALL_TOTAL.inc(); return blocked_response
+    rule, timeout = resolve_route(request_override, runtime_api, env, yaml, enum_default)
+    estimated_tokens = explicit_estimate or estimate(prompt, max_tokens)
+    cache_input = prompt + image_payload_sha256_if_multimodal
+    with gateway_client_span(task_type, workspace_id, layer, node):
+        guarded_prompt = await guard_input(prompt, timeout, all_route_breakers)
+        reservation = await rate_limiter.reserve(workspace_id, estimated_tokens)
+        rule = await budget_controller.check_and_maybe_downgrade(rule)
+        cached = exact_cache(cache_input)
+        if cached is None and not images:
+            cached = await semantic_cache.lookup(cache_input, scoped_dimensions)
+        if cached is not None:
+            await rate_limiter.reconcile(reservation, actual_tokens=0)
+            return cached_response
 
-        # 1. 速率限制
-        rate_result = await self.rate_limiter.check(workspace_id)
-        if not rate_result["allowed"]:  LLM_CALL_TOTAL.inc(); return rate_limited_response
+        route_key, targets = configure_primary_and_fallbacks(rule)
+        targets = failover.get_available_targets(route_key)  # 只读熔断状态
+        for target in targets:
+            try:
+                response = await circuit_breaker(target.provider).call(
+                    provider_complete_with_timeout
+                )
+                break
+            except Exception:
+                continue  # 失败计数已由 CircuitBreaker 唯一完成
+        else:
+            await rate_limiter.reconcile(reservation, actual_tokens=0)
+            return all_failed_response
 
-        # 2. 模型路由
-        model_config, model_name = self.config_manager.resolve_model(task_type)
-
-        # 3. 预算检查（自动降级）
-        if await self.budget_controller.check_and_record(workspace_id, 0, model_name) \
-                .get("should_downgrade"):
-            model_name = self._get_low_cost_model(model_name)   # → gpt-4o-mini/deepseek-chat
-
-        # 指标追踪（含缓存命中/失败路径）
-        with track_llm_call(model_name, layer, node) as token_info:
-            # 4. 语义缓存
-            cache_key = self.cache.make_key(prompt, task_type)
-            if (cached := self.cache.get(cache_key)) is not None:
-                return LLMResponse(cached=True, cost=0, ...)
-
-            # 5. Circuit Breaker + Failover 链
-            if cb and not cb.is_available:  # 当前 Provider 已熔断 → 走 Failover
-                span.set_attribute("circuit_broken", True)
-            response, model_name = await self._failover_call(prompt, kwargs)
-            if response is None:  LLM_CALL_TOTAL.inc(); return all_failed_response
-
-            # 7. 后置护栏
-            output_results = await self.guardrails.check_output(response.content, ...)
-            #  blocked + masked_text → 替换；否则标记 [输出被护栏拦截]
-
-            # 8. 缓存 / 成本 / 预算 / 速率
-            self.cache.set(cache_key, response.content)
-            self.cost_tracker.record(model=model_name, input_tokens=..., output_tokens=...)
-            LLM_COST_TOTAL.labels(model_name).inc(response.cost)
-            await self.budget_controller.check_and_record(ws, response.cost, model_name)
-            await self.rate_limiter.record(ws, tokens)
-            token_info["input_tokens"] = ...; token_info["output_tokens"] = ...
-            return response
+        response.content = await guard_output(response.content)
+        await cache_safe_response(exact_only=bool(images))
+        await record_cost_and_budget(response, actual_target)
+        await rate_limiter.reconcile(reservation, response.total_tokens)
+        return response
 ```
 
 ### 15.3 GatewayChatModel 适配器（app/llm_gateway/langchain_adapter.py）
@@ -2243,8 +2269,8 @@ pre_llm 护栏: PromptInjectionGuardrail → PIIDetectorGuardrail → TimeoutGua
     ▼
 速率限制 → 模型路由 → 预算降级 → 语义缓存
     ▼
-Circuit Breaker + Failover 链（deepseek-chat → gpt-4o-mini）
-    │  熔断的 Provider 自动跳过；全部不可用 → AllProvidersUnavailableError → 降级响应
+Failover 读取 CircuitBreaker 状态并排列可用目标（如 deepseek-chat → gpt-4o-mini）
+    │  OPEN 目标跳过；Provider 异常只由 CircuitBreaker 累计；全部失败 → 降级响应
     ▼
 LLM 调用（OpenAI SDK 兼容 Provider）+ OTel Span + track_llm_call 指标
     ▼
@@ -2595,7 +2621,7 @@ services:
   grafana:        grafana/grafana:latest → 3000    挂载 ./storage/grafana/provisioning + dashboards
   api:            Dockerfile          → 8000    env 注入 DB/Redis/MinIO/Neo4j/OTEL
   celery-worker:  Dockerfile          → -       celery -A app.batch.tasks worker --concurrency=4
-  celery-beat:    Dockerfile          → -       celery -A app.batch.scheduler beat
+  celery-beat:    Dockerfile          → -       celery -A app.batch.tasks:celery_app beat
 volumes:  pgdata
 ```
 
@@ -2643,11 +2669,11 @@ volumes:  pgdata
 | 2 | **SaveSessionNode 语义偏差**：注释声称写 PG，实际仅发 `task.saved` SSE 事件 — ✅ 已修复（条目 29 / 2026-07-28） | 会话消息/摘要未真正持久化到 sessions/session_messages | 现经 connection_manager 自建 DB 会话，写入 sessions/session_messages 表 |
 | 3 | **IterationDecider 阈值硬编码**：85/70 未读 `OrchestratorConfig.evaluation_pass_threshold/replan_threshold` | 配置项失效 | 改为从 config 读取 |
 | 4 | **EVENT_TYPES 不全**：`chat.status/chat.chunk/chat.done/chat.clarify/task.saved` 未登记 | SSE 文档/校验不一致 | 补全 EVENT_TYPES |
-| 5 | **WebIndexer 悬空引用**：`batch/tasks.py` 的 `sync_web_resources` 导入不存在的 `WebIndexer` 类 | Celery 环境该任务必然 ImportError → retry | 实现 WebIndexer 或改为 WebSyncScheduler |
+| 5 | ~~WebIndexer 悬空引用~~ — ✅ 已改为 `WebSyncScheduler`，并从 `uploaded_documents` 读取 URL | 已修复 | 保持任务接线测试 |
 | 6 | **agents/tools/ ToolRegistry 已废弃但文件保留** | 代码库存在无调用死代码 | 彻底清理或迁移到 LangChain ToolNode |
 | 7 | **ScoringNode 无显式加权公式**；`completeness` 维度无子节点 | 评分权重不可调，completeness 全靠 LLM 补 | 按需实现显式加权 |
 | 8 | **ScoreCalibrator 仅实现历史比对**（平行评测为占位）；history 不持久化 | 校准能力打折 | 补平行评测/持久化 |
-| 9 | **BuildStats 缺 `claims` 字段**（pipeline 传了但模型没有） | 访问 stats.claims 会失败 | 补字段 |
+| 9 | ~~BuildStats 缺 `claims` 字段~~ — ✅ 已包含 `relations/claims` | 已修复 | 保持构建统计测试 |
 | 10 | **MemoryRetriever recency 用 now 计算 timestamp**；relevance 向量未用 | recency 实际全近 1.0，四策略退化 | 修复时间戳来源 |
 | 11 | **ImplementabilityEvalNode 读不存在的 `node_outputs`**（不在 EvaluationState） | 实际走默认值分支 | 定义字段或注入 planning node_outputs |
 | 12 | **tech-stack.yml 过时/矛盾**：celery/redis 同时在 forbidden 与 allowed；禁 langchain-core 但实际使用；声明 PG16 实为 15 | 合规测试与实现矛盾 | 更新 tech-stack.yml 为真实状态 |
@@ -2706,7 +2732,7 @@ volumes:  pgdata
 | JWT access/refresh 有效期 | 15 分钟 / 7 天 |
 | SSE keepalive 间隔 | 30 秒 |
 | EventBus queue maxsize | 128 |
-| Failover 健康检测间隔 | 60 秒 |
+| Failover 健康检测 | 无独立探活；每次路由只读 CircuitBreaker 状态 |
 | Provider 熔断阈值 / 恢复超时 | 3 次 / 30 秒 |
 | Embedding 维度 | 1024（bge-large-zh-v1.5） |
 | RRF k 值 | 60 |

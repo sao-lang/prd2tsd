@@ -17,6 +17,7 @@ storage:
   graph: neo4j                      # 5.x Community
   cache: redis                      # 7.x
   object: minio                     # 文档/图片存储
+  image_parser: pillow              # OCR 前图片校验与 PNG/JPEG 规范化
 
 # === 测试 & 质量 ===
 test:

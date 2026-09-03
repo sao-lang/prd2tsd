@@ -1,6 +1,51 @@
 # PRD2TSD Agents — 开发记录
 
+### 2026-09-04
+
+#### 40. 知识图谱关系、Claims 全入口与老化调度闭环
+
+- **时间：** 2026-09-04
+- **发起人：** user（“补关系抽取/upsert、知识老化调度，以及上传/URL Claims，并更新文档”）
+- **修改文件：** `app/knowledge_layer/{models.py,pipeline.py,graph_store.py,aging.py}`、`app/knowledge_layer/ingestion/{entity_extractor.py,entity_resolver.py,claims_extractor.py,relation_extractor.py}`、`app/batch/tasks.py`、`app/document_management/{models.py,repository.py}`、`app/api/schemas/document.py`、`docker-compose.yml`、相关测试、README 与 `docs/` 架构/面试文档
+- **修改内容：**
+  1. 新增受候选实体约束的关系抽取，校验/绑定消歧后端点，以稳定 UUID 和固定 Neo4j `RELATED` 类型幂等写入，业务关系类型仅作参数化属性。
+  2. Markdown、本地多格式、上传/Celery、URL 统一委托 `build_from_text()`，每条入口都执行实体、关系与 Claims；Claim 改用内容派生稳定 ID并关联主客体实体。
+  3. 新增 90/180/365 天实体与关系老化策略，检索排除 archived/deleted，再次 upsert 自动激活；Celery Beat 每日任务实际接线并修正容器 Beat app。
+  4. 主构建链只 upsert 本轮触达实体，避免刷新整个 workspace 使老化失效；历史缺时间戳数据先安全回填，避免首轮误删。
+  5. 异步入图完成后持久化 indexed_at、entity_count、relation_count 并显式清理旧 processing_error；API 响应补 relation_count。
+- **复盘结果：** 任务后自省发现并修复“历史无 updated_at 会按 epoch 被立即软删除”和“文档已 indexed 但构建统计/旧错误未持久化”两项联通问题。关系/Claims/老化/调度专项 32+16 个测试通过；全单元回归 423 个通过，18 个仅因本机 PostgreSQL 未启动而 setup error；`ruff check app tests`、`mypy app contracts`、diff whitespace 均通过。
+- **潜在风险：** 当前关系限于同 Chunk 候选，尚无跨 Chunk 关系归并、本体约束或关系向量；Chunk ID 仍随机，重建可能产生重复块；真实 Neo4j/PostgreSQL/Redis/Provider 未在本机启动，部署态持久化和定时任务 E2E 仍需验证。
+
 ### 2026-09-03
+
+#### 39. Gateway 熔断单一状态源与知识入图 OCR 闭环
+
+- **时间：** 2026-09-03
+- **发起人：** user（“熔断器统一管理失败计数，Failover 只读熔断状态；知识库构建补图片 OCR；更新全部相关文档”）
+- **修改文件：** `app/llm_gateway/failover.py`、`app/llm_gateway/__init__.py`、`app/knowledge_layer/ingestion/image_ocr.py`、`app/knowledge_layer/ingestion/multi_format_loader.py`、`app/knowledge_layer/pipeline.py`、`app/api/routes/knowledge.py`、OCR/Gateway 相关测试、README、PRD、技术栈与 `docs/` 相关文档
+- **修改内容：**
+  1. `FailoverTarget` 收敛为不可变路由元数据；Failover 删除私有健康位、失败计数、游标、重置和主动 ping，只按优先级读取 `provider:<name>` CircuitBreaker 状态。
+  2. 同步和安全流式 Provider 调用统一由 `CircuitBreaker.call()` 记录成功/失败并控制 OPEN/HALF_OPEN/CLOSED；Gateway 初始化不再覆盖进程内已有熔断状态。
+  3. 独立 PNG/JPEG、DOCX `word/media/*`、PDF `page.images` 的栅格图片经过 Pillow 校验/规范化和数量/体积限制后，通过 Gateway `vision` 路由生成可见文字转录及图表、流程、UI 语义描述；失败显式终止入图，避免静默索引占位文本。
+  4. 多模态调用把图片载荷指纹纳入精确缓存身份并禁用纯文本语义命中，防止相同 OCR Prompt 在不同图片间串缓存；知识构建上传接口扩展为全部支持格式。
+  5. 同步更新 Gateway、知识库构建、异步入图和面试链路文档，并清理 TimeoutGuardrail 未绑定熔断器、图片只写占位等过时口径。
+- **复盘结果：** 任务后自省发现并修复两项：详细面试文档残留旧 TimeoutGuardrail 结论；PDF 原先提取完全部图片后才限量，已改为逐图限制。专项回归 62/62，通过外部基础设施无关的跨层回归 447 个；`ruff check app tests` 与 `mypy app contracts` 通过。
+- **潜在风险：** 当前机器未启动 PostgreSQL/Redis/MinIO/Neo4j 且没有有效 Vision Provider 环境，真实 OCR、持久化与 E2E 尚待部署验证；PDF 仅提取栅格图片，纯矢量图形不会单独 OCR；最多 50 张图片按顺序调用 Vision，超长文档仍需异步队列承担延迟和成本。
+
+#### 38. LLM Gateway 六项治理能力补齐
+
+- **时间：** 2026-09-03 07:36:41
+- **发起人：** user（“关于 gateway 的一些问题……确认并继续任务”）
+- **修改文件：** `app/llm_gateway/`、`app/core/config.py`、`app/core/circuit_breaker.py`、`app/api/routes/interact.py`、`app/api/routes/model_config.py`、`app/api/schemas/`、`app/models/block_e.py`、`contracts/models.py`、`config/model-routing.yaml`、`alembic/versions/g4b5c6d7e8f9_gateway_budget_semantic_cache.py`、`.env.example`、Gateway 相关测试与架构文档
+- **修改内容：**
+  1. Timeout Guardrail 改为读取本次动态 Failover 熔断器与期限；Prompt Injection 增加 NFKC/零宽归一化、中英文加权风险检测。
+  2. TPM 从历史用量检查升级为调用前预计 Token 原子预留、调用后实际 Token 对账，交互请求支持 `estimated_tokens`。
+  3. Analysis/Planning/Generation/Evaluation/Vision 支持代码枚举、YAML、环境变量、运行时 API、单次请求五级路由配置，并将超时、熔断、预算降级和 Failover 一并改为路由驱动。
+  4. Gateway 统一使用 `UniversalProvider`，OpenAI-compatible、Anthropic Messages、Cohere V2 的差异收敛为内部协议适配器。
+  5. 预算配置和实际成本改用 PostgreSQL `budget_configs + llm_call_logs`，支持自然周/月周期；语义缓存升级为租户/任务/模型/护栏版本隔离的 L1 精确缓存与 PostgreSQL 向量候选余弦匹配。
+  6. 新增数据库迁移、环境变量示例、请求参数、用途路由/Provider/预算/缓存/护栏/TPM/流式 Failover 测试，并同步 README、Block E、全架构和面试说明。
+- **复盘结果：** 模式三自省发现并修复“预算降级后丢失原主目标回退”及“只覆盖 Provider 时沿用旧厂商模型名”两个联通缺口；本次范围 Ruff/mypy 通过，专项与关联测试 113 个通过，排除未启动基础设施后的最终回归 431 个通过、1 个条件跳过。
+- **潜在风险：** 当前环境的 PostgreSQL、Redis、MinIO、Neo4j、API 均未启动，真实迁移、持久化语义缓存和 E2E 尚待部署环境验证；语义候选目前在应用层计算余弦，规模增长后应迁移到 pgvector 索引查询；流式内容为保证后置护栏安全仍需完整缓冲后交付。
 
 #### 37. 新增 3.1–3.15 功能链路面试详解
 

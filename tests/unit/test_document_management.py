@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.document_management.deduplication import DocumentDeduplicator
-from app.document_management.models import DocumentCreate
+from app.document_management.models import DocumentCreate, DocumentUpdate
 from app.document_management.preview import DocumentPreviewGenerator
 from app.document_management.repository import DocumentRepository
 from app.document_management.search import DocumentSearchService
@@ -87,6 +89,32 @@ class TestDocumentRepository:
 
         not_found = await repo.get_by_hash(db_session, "ws-hash", "nonexist")
         assert not_found is None
+
+    @pytest.mark.asyncio
+    async def test_update_persists_build_counts_and_clears_error(self) -> None:
+        """入图完成时应保存实体/关系统计，并允许显式清空旧错误。"""
+        repo = DocumentRepository()
+        repo.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        db = MagicMock(spec=AsyncSession)
+        db.execute = AsyncMock()
+
+        await repo.update(
+            db,
+            "doc-1",
+            DocumentUpdate(
+                processing_status="indexed",
+                processing_error=None,
+                entity_count=2,
+                relation_count=1,
+            ),
+        )
+
+        statement = db.execute.await_args.args[0]
+        params = statement.compile().params
+        assert params["processing_status"] == "indexed"
+        assert params["processing_error"] is None
+        assert params["entity_count"] == 2
+        assert params["relation_count"] == 1
 
 
 class TestDocumentSearch:

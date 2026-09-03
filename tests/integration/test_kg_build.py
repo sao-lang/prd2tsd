@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.knowledge_layer.models import KGEntity
+from app.knowledge_layer.models import Claim, KGEntity, KGRelation
 from app.knowledge_layer.pipeline import KnowledgeGraphBuilder
 
 
@@ -23,11 +23,13 @@ async def test_build_from_markdown(tmp_path) -> None:
     mock_graph = MagicMock()
     mock_graph.get_all_entities = AsyncMock(return_value=[])
     mock_graph.upsert_entities = AsyncMock(return_value=[])
+    mock_graph.upsert_relations = AsyncMock(return_value=[])
 
     mock_vector = MagicMock()
     mock_vector.ensure_extensions = AsyncMock()
     mock_vector.upsert_chunk = AsyncMock()
     mock_vector.upsert_entity_embedding = AsyncMock()
+    mock_vector.upsert_claim = AsyncMock()
 
     builder = KnowledgeGraphBuilder(
         graph_store=mock_graph,
@@ -43,10 +45,25 @@ async def test_build_from_markdown(tmp_path) -> None:
     )
     builder.entity_embedder.embed_entity = AsyncMock(return_value=[0.1] * 1024)
     builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
+    builder.relation_extractor.extract = AsyncMock(
+        return_value=[
+            KGRelation(
+                id="r1",
+                source_entity_id="e1",
+                target_entity_id="e2",
+                relation_type="uses",
+            )
+        ]
+    )
+    builder.claims_extractor.extract = AsyncMock(
+        return_value=[Claim(subject="Spring Boot", content="使用 PostgreSQL", object="PostgreSQL")]
+    )
 
     stats = await builder.build_from_document(str(md_file))
 
     assert stats.entities >= 2
+    assert stats.relations == 1
+    assert stats.claims == 1
     assert stats.chunks >= 1
     assert stats.file_path == str(md_file)
 
@@ -60,12 +77,15 @@ async def test_build_empty_file(tmp_path) -> None:
     mock_graph = MagicMock()
     mock_graph.get_all_entities = AsyncMock(return_value=[])
     mock_graph.upsert_entities = AsyncMock(return_value=[])
+    mock_graph.upsert_relations = AsyncMock(return_value=[])
 
     mock_vector = MagicMock()
     mock_vector.ensure_extensions = AsyncMock()
 
     builder = KnowledgeGraphBuilder(graph_store=mock_graph, vector_store=mock_vector)
     builder.entity_extractor.extract = AsyncMock(return_value=[])
+    builder.relation_extractor.extract = AsyncMock(return_value=[])
+    builder.claims_extractor.extract = AsyncMock(return_value=[])
     builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
 
     stats = await builder.build_from_document(str(md_file))
@@ -81,11 +101,13 @@ async def test_build_from_text() -> None:
     mock_graph = MagicMock()
     mock_graph.get_all_entities = AsyncMock(return_value=[])
     mock_graph.upsert_entities = AsyncMock(return_value=[])
+    mock_graph.upsert_relations = AsyncMock(return_value=[])
 
     mock_vector = MagicMock()
     mock_vector.ensure_extensions = AsyncMock()
     mock_vector.upsert_chunk = AsyncMock()
     mock_vector.upsert_entity_embedding = AsyncMock()
+    mock_vector.upsert_claim = AsyncMock()
 
     builder = KnowledgeGraphBuilder(
         graph_store=mock_graph,
@@ -93,9 +115,22 @@ async def test_build_from_text() -> None:
     )
     builder.entity_extractor.extract = AsyncMock(
         return_value=[
-            KGEntity(id="e1", name="Spring Boot", type="TechStack",
-                     category="框架", description="Java 框架"),
+            KGEntity(id="e1", name="Spring Boot", type="TechStack", category="框架", description="Java 框架"),
+            KGEntity(id="e2", name="PostgreSQL", type="TechStack", category="数据库"),
         ]
+    )
+    builder.relation_extractor.extract = AsyncMock(
+        return_value=[
+            KGRelation(
+                id="r1",
+                source_entity_id="e1",
+                target_entity_id="e2",
+                relation_type="uses",
+            )
+        ]
+    )
+    builder.claims_extractor.extract = AsyncMock(
+        return_value=[Claim(subject="Spring Boot", content="使用 PostgreSQL", object="PostgreSQL")]
     )
     builder.entity_embedder.embed_entity = AsyncMock(return_value=[0.1] * 1024)
     builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
@@ -107,16 +142,24 @@ async def test_build_from_text() -> None:
     )
 
     assert stats.entities >= 1
+    assert stats.relations == 1
+    assert stats.claims == 1
     assert stats.chunks >= 1
     assert stats.file_path == "https://example.com/test"
     assert stats.workspace_id == "ws-1"
 
     # 验证写入 Neo4j
     mock_graph.upsert_entities.assert_awaited_once()
+    mock_graph.upsert_relations.assert_awaited_once()
 
     # 验证写入 PGVector
     mock_vector.ensure_extensions.assert_awaited_once()
     mock_vector.upsert_chunk.assert_awaited()
+    mock_vector.upsert_claim.assert_awaited_once()
+    stored_claim = mock_vector.upsert_claim.await_args.args[0]
+    assert stored_claim.workspace_id == "ws-1"
+    assert stored_claim.subject_entity_id == "e1"
+    assert stored_claim.object_entity_id == "e2"
 
 
 @pytest.mark.asyncio
@@ -125,12 +168,15 @@ async def test_build_from_text_empty() -> None:
     mock_graph = MagicMock()
     mock_graph.get_all_entities = AsyncMock(return_value=[])
     mock_graph.upsert_entities = AsyncMock(return_value=[])
+    mock_graph.upsert_relations = AsyncMock(return_value=[])
 
     mock_vector = MagicMock()
     mock_vector.ensure_extensions = AsyncMock()
 
     builder = KnowledgeGraphBuilder(graph_store=mock_graph, vector_store=mock_vector)
     builder.entity_extractor.extract = AsyncMock(return_value=[])
+    builder.relation_extractor.extract = AsyncMock(return_value=[])
+    builder.claims_extractor.extract = AsyncMock(return_value=[])
     builder.entity_embedder.embed_text = AsyncMock(return_value=[0.1] * 1024)
 
     stats = await builder.build_from_text(text="", source_name="test")

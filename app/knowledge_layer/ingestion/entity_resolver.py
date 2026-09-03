@@ -84,6 +84,56 @@ class EntityResolver:
                         break
         return resolved
 
+    async def resolve_touched_batch(
+        self,
+        new_entities: list[KGEntity],
+        existing_entities: list[KGEntity],
+    ) -> list[KGEntity]:
+        """消歧并仅返回本轮新增或更新的实体。
+
+        ``resolve_batch`` 为兼容旧调用保留全量返回语义；构建链使用本方法，
+        避免一次新文档写入刷新整个工作空间实体的 ``updated_at``，从而让老化策略失效。
+        """
+        working = list(existing_entities)
+        touched_by_id: dict[str, KGEntity] = {}
+        new_without_id: dict[str, KGEntity] = {}
+        for new_entity in new_entities:
+            result, action = await self.resolve(new_entity, working)
+            if result is None:
+                continue
+            if action == "merge":
+                for index, entity in enumerate(working):
+                    if entity.id == result.id:
+                        working[index] = result
+                        break
+                touched_by_id[result.id] = result
+            else:
+                working.append(result)
+                if result.id:
+                    touched_by_id[result.id] = result
+                else:
+                    new_without_id[self._normalize_key(result.name)] = result
+        return [*touched_by_id.values(), *new_without_id.values()]
+
+    def find_by_name(self, name: str, entities: list[KGEntity]) -> KGEntity | None:
+        """按精确名称或已知别名查找消歧后的实体。
+
+        Args:
+            name: 抽取器返回的实体名称。
+            entities: 已消歧实体集合。
+
+        Returns:
+            匹配实体；未找到时返回 None。
+        """
+        candidate = KGEntity(name=name)
+        for entity in entities:
+            if self._exact_match(candidate, entity):
+                return entity
+        for entity in entities:
+            if self._alias_match(candidate, entity):
+                return entity
+        return None
+
     def _exact_match(self, a: KGEntity, b: KGEntity) -> bool:
         """精确名称匹配。
 

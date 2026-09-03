@@ -24,6 +24,7 @@ class DocumentResponse(BaseModel):
     processing_error: str | None = None
     indexed_at: str | None = None
     entity_count: int = 0
+    relation_count: int = 0
     tags: list[str] = []
     created_at: str | None = None
     updated_at: str | None = None

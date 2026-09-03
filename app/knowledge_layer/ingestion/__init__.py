@@ -7,6 +7,7 @@ from app.knowledge_layer.ingestion.document_loader import DocumentLoader
 from app.knowledge_layer.ingestion.entity_embedder import EntityEmbedder
 from app.knowledge_layer.ingestion.entity_extractor import EntityExtractor
 from app.knowledge_layer.ingestion.entity_resolver import EntityResolver
+from app.knowledge_layer.ingestion.relation_extractor import RelationExtractor
 from app.knowledge_layer.models import Chunk
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "EntityExtractor",
     "EntityResolver",
     "EntityEmbedder",
+    "RelationExtractor",
 ]

@@ -147,6 +147,14 @@ def test_request_override_preserves_failover_chain(manager: ModelConfigManager) 
     assert rule.fallbacks
 
 
+def test_provider_only_override_uses_target_provider_default_model(manager: ModelConfigManager) -> None:
+    """只覆盖 Provider 时应选用该 Provider 的默认模型，避免跨厂商模型名错配。"""
+    rule = manager.resolve_rule("analysis", provider="anthropic")
+
+    assert rule.provider == "anthropic"
+    assert rule.model == "claude-sonnet-4-6"
+
+
 def test_global_gateway_uses_runtime_api_config_manager() -> None:
     """运行时配置 API 与全局 Gateway 必须共享同一个管理器实例。"""
     assert gateway.config_manager is config_manager

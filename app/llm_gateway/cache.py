@@ -43,7 +43,9 @@ class SemanticCacheStore(Protocol):
         embedding_model: str,
         guardrail_version: str,
         limit: int,
-    ) -> list[CacheCandidate]: ...
+    ) -> list[CacheCandidate]:
+        """读取同作用域的未过期缓存候选。"""
+        ...
 
     async def upsert(
         self,
@@ -57,7 +59,9 @@ class SemanticCacheStore(Protocol):
         embedding_model: str,
         guardrail_version: str,
         expires_at: datetime,
-    ) -> None: ...
+    ) -> None:
+        """新增或更新一个语义缓存条目。"""
+        ...
 
 
 class PostgresSemanticCacheStore:
@@ -76,6 +80,7 @@ class PostgresSemanticCacheStore:
         guardrail_version: str,
         limit: int,
     ) -> list[CacheCandidate]:
+        """读取同作用域且未过期的 PostgreSQL 缓存候选。"""
         async with self._session() as session:
             rows = (
                 await session.scalars(
@@ -114,6 +119,7 @@ class PostgresSemanticCacheStore:
         guardrail_version: str,
         expires_at: datetime,
     ) -> None:
+        """向 PostgreSQL 新增或更新一个语义缓存条目。"""
         async with self._session() as session:
             row = await session.scalar(
                 select(SemanticCacheEntry).where(
@@ -160,6 +166,7 @@ class MemorySemanticCacheStore:
         guardrail_version: str,
         limit: int,
     ) -> list[CacheCandidate]:
+        """读取测试内存中同作用域且未过期的候选。"""
         now = datetime.now(UTC)
         matched = [
             entry
@@ -176,6 +183,7 @@ class MemorySemanticCacheStore:
         ]
 
     async def upsert(self, **entry: Any) -> None:
+        """向测试内存新增或替换一个缓存条目。"""
         self.entries = [
             current
             for current in self.entries

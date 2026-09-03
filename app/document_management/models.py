@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -27,6 +29,9 @@ class DocumentUpdate(BaseModel):
     tags: list[str] | None = None
     processing_status: str | None = None
     processing_error: str | None = None
+    indexed_at: datetime | None = None
+    entity_count: int | None = None
+    relation_count: int | None = None
     file_type: str | None = None
     source_url: str | None = None
 
